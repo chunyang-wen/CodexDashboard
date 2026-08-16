@@ -1,0 +1,470 @@
+import Foundation
+import SQLite3
+
+/// Private transactional store shared by rollout checkpoints and durable metrics.
+/// It stores only Codable metric values; rollout conversation content never enters it.
+final class MetricsDatabase: @unchecked Sendable {
+    private var handle: OpaquePointer?
+    private let lock = NSLock()
+    let url: URL
+
+    init(userHome: URL) throws {
+        let directory = userHome.appendingPathComponent("Library/Application Support/CodexDashboard", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        url = directory.appendingPathComponent("metrics-v1.sqlite")
+        guard sqlite3_open_v2(url.path, &handle, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            let message = handle.map { String(cString: sqlite3_errmsg($0)) } ?? "Unknown error"
+            if let handle { sqlite3_close(handle) }
+            handle = nil
+            throw CodexStoreError.openFailed(message)
+        }
+        sqlite3_busy_timeout(handle, 2_000)
+        try execute("PRAGMA journal_mode=WAL")
+        try execute("PRAGMA synchronous=NORMAL")
+        try execute("""
+            CREATE TABLE IF NOT EXISTS rollout_checkpoint (
+                path TEXT PRIMARY KEY,
+                device_id INTEGER,
+                file_id INTEGER,
+                committed_offset INTEGER NOT NULL,
+                modified_at REAL NOT NULL,
+                boundary_hash INTEGER,
+                enrichment BLOB NOT NULL
+            )
+            """)
+        // Databases created by the first metrics-v1 development build are upgraded
+        // in place. Duplicate-column failure means the schema is already current.
+        try? execute("ALTER TABLE rollout_checkpoint ADD COLUMN boundary_hash INTEGER")
+        try execute("""
+            CREATE TABLE IF NOT EXISTS historical_session (
+                id TEXT PRIMARY KEY,
+                updated_at REAL NOT NULL,
+                metric BLOB NOT NULL
+            )
+            """)
+        try execute("""
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value BLOB NOT NULL
+            )
+            """)
+    }
+
+    deinit { if let handle { sqlite3_close(handle) } }
+
+    func rollout(for path: String) -> CachedRollout? {
+        locked {
+            guard let statement = prepare("SELECT device_id, file_id, committed_offset, modified_at, boundary_hash, enrichment FROM rollout_checkpoint WHERE path = ?") else { return nil }
+            defer { sqlite3_finalize(statement) }
+            bind(path, to: statement, at: 1)
+            guard sqlite3_step(statement) == SQLITE_ROW,
+                  let enrichmentData = data(statement, 5),
+                  let enrichment = try? JSONDecoder().decode(RolloutEnrichment.self, from: enrichmentData) else { return nil }
+            return CachedRollout(
+                fileSize: sqlite3_column_int64(statement, 2),
+                modifiedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 3)),
+                enrichment: enrichment,
+                deviceID: optionalUInt64(statement, 0),
+                fileID: optionalUInt64(statement, 1),
+                boundaryHash: optionalUInt64(statement, 4)
+            )
+        }
+    }
+
+    func storeRollout(_ rollout: CachedRollout, for path: String) throws {
+        let encoded = try JSONEncoder().encode(rollout.enrichment)
+        try lockedThrowing {
+            guard let statement = prepare("""
+                INSERT INTO rollout_checkpoint(path, device_id, file_id, committed_offset, modified_at, boundary_hash, enrichment)
+                VALUES(?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                    device_id=excluded.device_id, file_id=excluded.file_id,
+                    committed_offset=excluded.committed_offset, modified_at=excluded.modified_at,
+                    boundary_hash=excluded.boundary_hash, enrichment=excluded.enrichment
+                """) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            bind(path, to: statement, at: 1)
+            bind(rollout.deviceID, to: statement, at: 2)
+            bind(rollout.fileID, to: statement, at: 3)
+            sqlite3_bind_int64(statement, 4, rollout.fileSize)
+            sqlite3_bind_double(statement, 5, rollout.modifiedAt.timeIntervalSince1970)
+            bind(rollout.boundaryHash, to: statement, at: 6)
+            bind(encoded, to: statement, at: 7)
+            guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError() }
+        }
+    }
+
+    func historicalSessions() throws -> [SessionMetric] {
+        try lockedThrowing {
+            guard let statement = prepare("SELECT metric FROM historical_session ORDER BY updated_at DESC") else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            let decoder = Self.decoder()
+            var result: [SessionMetric] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let encoded = data(statement, 0) else { continue }
+                result.append(try decoder.decode(SessionMetric.self, from: encoded))
+            }
+            return result
+        }
+    }
+
+    func upsertHistoricalSessions(_ sessions: [SessionMetric]) throws {
+        guard !sessions.isEmpty else { return }
+        let encoder = Self.encoder()
+        let encoded = try sessions.map { ($0, try encoder.encode($0)) }
+        try transaction {
+            guard let statement = prepare("""
+                INSERT INTO historical_session(id, updated_at, metric) VALUES(?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at, metric=excluded.metric
+                """) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            for (session, bytes) in encoded {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                bind(session.id, to: statement, at: 1)
+                sqlite3_bind_double(statement, 2, session.updatedAt.timeIntervalSince1970)
+                bind(bytes, to: statement, at: 3)
+                guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError() }
+            }
+        }
+    }
+
+    func pricing() throws -> PricingHistory? {
+        try metadata(PricingHistory.self, key: "pricing")
+    }
+
+    func storePricing(_ pricing: PricingHistory) throws {
+        try storeMetadata(pricing, key: "pricing")
+    }
+
+    private func metadata<T: Decodable>(_ type: T.Type, key: String) throws -> T? {
+        try lockedThrowing {
+            guard let statement = prepare("SELECT value FROM metadata WHERE key = ?") else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            bind(key, to: statement, at: 1)
+            guard sqlite3_step(statement) == SQLITE_ROW, let encoded = data(statement, 0) else { return nil }
+            return try Self.decoder().decode(type, from: encoded)
+        }
+    }
+
+    private func storeMetadata<T: Encodable>(_ value: T, key: String) throws {
+        let encoded = try Self.encoder().encode(value)
+        try lockedThrowing {
+            guard let statement = prepare("INSERT INTO metadata(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value") else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            bind(key, to: statement, at: 1)
+            bind(encoded, to: statement, at: 2)
+            guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError() }
+        }
+    }
+
+    private func transaction(_ body: () throws -> Void) throws {
+        try lockedThrowing {
+            try executeUnlocked("BEGIN IMMEDIATE")
+            do {
+                try body()
+                try executeUnlocked("COMMIT")
+            } catch {
+                try? executeUnlocked("ROLLBACK")
+                throw error
+            }
+        }
+    }
+
+    private func execute(_ sql: String) throws { try lockedThrowing { try executeUnlocked(sql) } }
+    private func executeUnlocked(_ sql: String) throws {
+        guard sqlite3_exec(handle, sql, nil, nil, nil) == SQLITE_OK else { throw databaseError() }
+    }
+    private func prepare(_ sql: String) -> OpaquePointer? {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { return nil }
+        return statement
+    }
+    private func databaseError() -> CodexStoreError {
+        .queryFailed(handle.map { String(cString: sqlite3_errmsg($0)) } ?? "Metrics database unavailable")
+    }
+    private func locked<T>(_ body: () -> T) -> T { lock.withLock(body) }
+    private func lockedThrowing<T>(_ body: () throws -> T) throws -> T { try lock.withLock(body) }
+    private func optionalUInt64(_ statement: OpaquePointer, _ index: Int32) -> UInt64? {
+        sqlite3_column_type(statement, index) == SQLITE_NULL ? nil : UInt64(bitPattern: sqlite3_column_int64(statement, index))
+    }
+    private func data(_ statement: OpaquePointer, _ index: Int32) -> Data? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL,
+              let bytes = sqlite3_column_blob(statement, index) else { return nil }
+        return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, index)))
+    }
+    private func bind(_ value: String, to statement: OpaquePointer, at index: Int32) {
+        sqlite3_bind_text(statement, index, value, -1, Self.transient)
+    }
+    private func bind(_ value: Data, to statement: OpaquePointer, at index: Int32) {
+        _ = value.withUnsafeBytes { bytes in
+            sqlite3_bind_blob(statement, index, bytes.baseAddress, Int32(bytes.count), Self.transient)
+        }
+    }
+    private func bind(_ value: UInt64?, to statement: OpaquePointer, at index: Int32) {
+        if let value { sqlite3_bind_int64(statement, index, Int64(bitPattern: value)) }
+        else { sqlite3_bind_null(statement, index) }
+    }
+    private static var transient: sqlite3_destructor_type { unsafeBitCast(-1, to: sqlite3_destructor_type.self) }
+    private static func encoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        return encoder
+    }
+    private static func decoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        return decoder
+    }
+}
+
+public struct HistoricalArchive: Codable, Sendable {
+    public static let currentSchemaVersion = 1
+
+    public let schemaVersion: Int
+    public let exportedAt: Date
+    public let sessions: [SessionMetric]
+    public let pricing: PricingHistory
+
+    public init(
+        schemaVersion: Int = HistoricalArchive.currentSchemaVersion,
+        exportedAt: Date = .now,
+        sessions: [SessionMetric],
+        pricing: PricingHistory
+    ) {
+        self.schemaVersion = schemaVersion
+        self.exportedAt = exportedAt
+        self.sessions = sessions
+        self.pricing = pricing
+    }
+}
+
+public enum HistoricalStoreError: LocalizedError {
+    case unsupportedSchema(Int)
+    case archiveTooLarge
+
+    public var errorDescription: String? {
+        switch self {
+        case .unsupportedSchema(let version):
+            "History archive schema \(version) is not supported."
+        case .archiveTooLarge:
+            "History archive exceeds the 500 MB import limit."
+        }
+    }
+}
+
+/// Durable, conversation-free metric history. Unlike the rollout parser cache, this
+/// archive is never invalidated when source logs move, disappear, or parser versions change.
+public actor HistoricalStore {
+    public let url: URL
+    private var archive: HistoricalArchive?
+    private let database: MetricsDatabase?
+
+    public init(userHome: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        let directory = userHome.appendingPathComponent("Library/Application Support/CodexDashboard", isDirectory: true)
+        self.url = directory.appendingPathComponent("history-v1.json")
+        self.database = try? MetricsDatabase(userHome: userHome)
+    }
+
+    public func pricingHistory() throws -> PricingHistory {
+        try load().pricing.merging(.bundled)
+    }
+
+    public func mergedSessions(with indexed: [SessionMetric]) throws -> [SessionMetric] {
+        let stored = try load().sessions
+        let storedByID = Dictionary(uniqueKeysWithValues: stored.map { ($0.id, $0) })
+        var result = indexed.map { session in
+            guard let historical = storedByID[session.id] else { return session }
+            return Self.combine(historical, session, enrichmentAvailable: false)
+        }
+        let indexedIDs = Set(indexed.map(\.id))
+        result.append(contentsOf: stored.filter { !indexedIDs.contains($0.id) })
+        return result.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    @discardableResult
+    public func record(_ sessions: [SessionMetric], pricing: PricingHistory = .bundled) throws -> Int {
+        guard !sessions.isEmpty else { return 0 }
+        let current = try load()
+        var byID = Dictionary(uniqueKeysWithValues: current.sessions.map { ($0.id, $0) })
+        var changed: [SessionMetric] = []
+        for session in sessions where session.enrichmentAvailable {
+            if let existing = byID[session.id] {
+                byID[session.id] = Self.combine(existing, session, enrichmentAvailable: true)
+            } else {
+                byID[session.id] = session
+            }
+            if let value = byID[session.id] { changed.append(value) }
+        }
+        archive = HistoricalArchive(
+            sessions: byID.values.sorted { $0.updatedAt > $1.updatedAt },
+            pricing: current.pricing.merging(pricing).merging(.bundled)
+        )
+        try persist(changedSessions: changed)
+        return byID.count
+    }
+
+    public func export(to destination: URL) throws {
+        let current = try load()
+        let portable = HistoricalArchive(
+            sessions: current.sessions.sorted { $0.updatedAt > $1.updatedAt },
+            pricing: current.pricing.merging(.bundled)
+        )
+        try Self.encode(portable).write(to: destination, options: .atomic)
+    }
+
+    @discardableResult
+    public func importArchive(from source: URL) throws -> Int {
+        let values = try source.resourceValues(forKeys: [.fileSizeKey])
+        if let size = values.fileSize, size > 500_000_000 { throw HistoricalStoreError.archiveTooLarge }
+        let imported = try Self.decode(Data(contentsOf: source))
+        guard imported.schemaVersion == HistoricalArchive.currentSchemaVersion else {
+            throw HistoricalStoreError.unsupportedSchema(imported.schemaVersion)
+        }
+        let current = try load()
+        var byID = Dictionary(uniqueKeysWithValues: current.sessions.map { ($0.id, $0) })
+        var changed: [SessionMetric] = []
+        for session in imported.sessions {
+            if let existing = byID[session.id] {
+                byID[session.id] = Self.combine(existing, session, enrichmentAvailable: true)
+            } else {
+                byID[session.id] = session
+            }
+            if let value = byID[session.id] { changed.append(value) }
+        }
+        archive = HistoricalArchive(
+            sessions: byID.values.sorted { $0.updatedAt > $1.updatedAt },
+            pricing: current.pricing.merging(imported.pricing).merging(.bundled)
+        )
+        try persist(changedSessions: changed)
+        return imported.sessions.count
+    }
+
+    public func sessionCount() throws -> Int { try load().sessions.count }
+
+    public func sessions(withIDs ids: Set<String>) throws -> [SessionMetric] {
+        try load().sessions.filter { ids.contains($0.id) }
+    }
+
+    public func recordPricing(_ pricing: PricingHistory) throws {
+        let current = try load()
+        archive = HistoricalArchive(
+            sessions: current.sessions,
+            pricing: current.pricing.merging(pricing).merging(.bundled)
+        )
+        if let database {
+            try database.storePricing(archive!.pricing)
+        } else {
+            try persistJSON()
+        }
+    }
+
+    private func load() throws -> HistoricalArchive {
+        if let archive { return archive }
+        if let database {
+            let stored = try database.historicalSessions()
+            let storedPricing = try database.pricing()
+            if !stored.isEmpty || storedPricing != nil {
+                let loaded = HistoricalArchive(sessions: stored, pricing: (storedPricing ?? .bundled).merging(.bundled))
+                archive = loaded
+                return loaded
+            }
+            // One-time migration from the former whole-file JSON archive.
+            if FileManager.default.fileExists(atPath: url.path) {
+                let decoded = try Self.decode(Data(contentsOf: url))
+                guard decoded.schemaVersion == HistoricalArchive.currentSchemaVersion else {
+                    throw HistoricalStoreError.unsupportedSchema(decoded.schemaVersion)
+                }
+                try database.upsertHistoricalSessions(decoded.sessions)
+                try database.storePricing(decoded.pricing.merging(.bundled))
+                archive = decoded
+                let backup = url.deletingLastPathComponent().appendingPathComponent("history-v1.migrated.json")
+                if !FileManager.default.fileExists(atPath: backup.path) {
+                    try? FileManager.default.moveItem(at: url, to: backup)
+                }
+                return decoded
+            }
+            let empty = HistoricalArchive(sessions: [], pricing: .bundled)
+            archive = empty
+            return empty
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            let empty = HistoricalArchive(sessions: [], pricing: .bundled)
+            archive = empty
+            return empty
+        }
+        let decoded = try Self.decode(Data(contentsOf: url))
+        guard decoded.schemaVersion == HistoricalArchive.currentSchemaVersion else {
+            throw HistoricalStoreError.unsupportedSchema(decoded.schemaVersion)
+        }
+        archive = decoded
+        return decoded
+    }
+
+    private func persist(changedSessions: [SessionMetric]) throws {
+        guard let archive else { return }
+        if let database {
+            try database.upsertHistoricalSessions(changedSessions)
+            try database.storePricing(archive.pricing)
+            return
+        }
+        try persistJSON()
+    }
+
+    private func persistJSON() throws {
+        guard let archive else { return }
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Self.encode(archive).write(to: url, options: .atomic)
+    }
+
+    private static func encode(_ archive: HistoricalArchive) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(archive)
+    }
+
+    private static func decode(_ data: Data) throws -> HistoricalArchive {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        return try decoder.decode(HistoricalArchive.self, from: data)
+    }
+
+    private static func combine(
+        _ older: SessionMetric,
+        _ newer: SessionMetric,
+        enrichmentAvailable: Bool
+    ) -> SessionMetric {
+        let preferred = newer.updatedAt >= older.updatedAt ? newer : older
+        let fallback = newer.updatedAt >= older.updatedAt ? older : newer
+        let events = Array(Set(older.usageEvents + newer.usageEvents)).sorted { $0.date < $1.date }
+        let turns = Array(Set(older.turns + newer.turns)).sorted { $0.completedAt < $1.completedAt }
+        let eventUsage = events.reduce(TokenUsage.zero) { $0 + $1.usage }
+        let usage = eventUsage.total > 0 ? eventUsage : preferred.usage
+        return SessionMetric(
+            id: preferred.id,
+            rolloutPath: preferred.rolloutPath.isEmpty ? fallback.rolloutPath : preferred.rolloutPath,
+            projectPath: preferred.projectPath,
+            title: preferred.title,
+            source: preferred.source,
+            provider: preferred.provider,
+            createdAt: min(older.createdAt, newer.createdAt),
+            updatedAt: max(older.updatedAt, newer.updatedAt),
+            model: preferred.model ?? fallback.model,
+            reasoningEffort: preferred.reasoningEffort ?? fallback.reasoningEffort,
+            gitBranch: preferred.gitBranch ?? fallback.gitBranch,
+            cliVersion: preferred.cliVersion ?? fallback.cliVersion,
+            archived: preferred.archived,
+            usage: usage,
+            usageEvents: events,
+            turns: turns,
+            toolCalls: max(older.toolCalls, newer.toolCalls),
+            userMessages: max(older.userMessages, newer.userMessages),
+            abortedTurns: max(older.abortedTurns, newer.abortedTurns),
+            enrichmentAvailable: enrichmentAvailable
+        )
+    }
+}
