@@ -20,10 +20,57 @@ enum DashboardPage: String, CaseIterable, Identifiable {
     }
 }
 
+private struct ActivityIndicator: View {
+    let size: CGFloat
+    let lineWidth: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isRotating = false
+
+    var body: some View {
+        Circle()
+            .trim(from: 0.12, to: 0.78)
+            .stroke(.secondary, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+            .rotationEffect(.degrees(isRotating ? 360 : 0))
+            .frame(width: size, height: size)
+            .animation(
+                reduceMotion ? nil : .linear(duration: 0.8).repeatForever(autoreverses: false),
+                value: isRotating
+            )
+            .onAppear { isRotating = true }
+            .accessibilityLabel("In progress")
+    }
+}
+
+private struct MetricProgressBar: View {
+    let value: Double
+    var total: Double = 1
+
+    private var fraction: Double {
+        guard total > 0, value.isFinite, total.isFinite else { return 0 }
+        return min(1, max(0, value / total))
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(.quaternary)
+                Capsule()
+                    .fill(.tint)
+                    .frame(width: proxy.size.width * fraction)
+            }
+        }
+        .frame(height: 4)
+        .accessibilityElement()
+        .accessibilityLabel("Progress")
+        .accessibilityValue(fraction.formatted(.percent.precision(.fractionLength(0))))
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject private var store: DashboardStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection: DashboardPage? = .overview
+    @State private var selectedRange: DashboardStore.Range = .thirtyDays
 
     var body: some View {
         NavigationSplitView {
@@ -42,8 +89,10 @@ struct ContentView: View {
         } detail: {
             Group {
                 if store.isLoading && store.sessions.isEmpty {
-                    ProgressView("Indexing Codex history…")
-                        .controlSize(.large)
+                    VStack(spacing: 10) {
+                        ActivityIndicator(size: 32, lineWidth: 3)
+                        Text("Indexing Codex history…")
+                    }
                 } else if let error = store.errorMessage, store.sessions.isEmpty {
                     ContentUnavailableView("Couldn’t load metrics", systemImage: "exclamationmark.triangle", description: Text(error))
                 } else {
@@ -57,19 +106,26 @@ struct ContentView: View {
                 }
             }
             .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: store.isUpdatingAnalytics)
+            .onChange(of: store.range) { _, newRange in
+                if selectedRange != newRange {
+                    selectedRange = newRange
+                }
+            }
             .toolbar {
                 ToolbarItemGroup {
-                    Picker("Range", selection: $store.range) {
+                    Picker("Range", selection: $selectedRange) {
                         ForEach(DashboardStore.Range.allCases) { Text($0.rawValue).tag($0) }
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 245)
+                    .onChange(of: selectedRange) { _, newRange in
+                        store.updateRange(newRange)
+                    }
                     Button { store.load() } label: { Image(systemName: "arrow.clockwise") }
                         .help("Refresh metrics")
                         .disabled(store.isBusy)
                     if store.isEnriching && !store.isUpdatingAnalytics {
-                        ProgressView(value: store.enrichmentFraction)
-                            .progressViewStyle(.linear)
+                        MetricProgressBar(value: store.enrichmentFraction)
                             .frame(width: 76)
                             .help(store.enrichmentLabel)
                         Text("\(store.enrichedSessions)/\(store.enrichmentTotal)")
@@ -102,8 +158,7 @@ private struct AnalyticsUpdateOverlay: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 12) {
-                ProgressView()
-                    .controlSize(.large)
+                ActivityIndicator(size: 32, lineWidth: 3)
                 Text(label)
                     .font(.headline)
                 Text("Refreshing metrics and charts")
@@ -751,12 +806,19 @@ private struct ModelPricingView: View {
                     title: "Model prices",
                     subtitle: "USD per 1 million tokens. Price changes are saved locally when a new models.dev rate card is observed."
                 )
-                Picker("Model", selection: $selectedModel) {
-                    ForEach(models, id: \.self) { Text($0).tag($0) }
+                if models.isEmpty {
+                    Text("No models")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Picker("Model", selection: Binding(
+                        get: { model },
+                        set: { selectedModel = $0 }
+                    )) {
+                        ForEach(models, id: \.self) { Text($0).tag($0) }
+                    }
+                    .labelsHidden()
+                    .frame(width: 240)
                 }
-                .labelsHidden()
-                .frame(width: 240)
-                .onAppear { if selectedModel.isEmpty { selectedModel = defaultModel } }
             }
 
             if let currentPrice {
@@ -880,7 +942,9 @@ struct BillingView: View {
                             .foregroundStyle(.secondary)
                     }
                     HStack(spacing: 6) {
-                        if store.isRefreshingPricing { ProgressView().controlSize(.small) }
+                        if store.isRefreshingPricing {
+                            ActivityIndicator(size: 12, lineWidth: 1.5)
+                        }
                         Text("Pricing: \(store.pricingSource)")
                         if let updatedAt = store.pricingUpdatedAt {
                             Text("· updated \(updatedAt, style: .relative)")
@@ -993,7 +1057,7 @@ private struct QuotaWindowCard: View {
                 Text("\(window.usedPercent.formatted(.number.precision(.fractionLength(0...1))))% used")
                     .font(.subheadline.weight(.semibold)).monospacedDigit()
             }
-            ProgressView(value: min(100, max(0, window.usedPercent)), total: 100)
+            MetricProgressBar(value: window.usedPercent, total: 100)
                 .tint(quotaColor)
             HStack {
                 Text("\(window.remainingPercent.formatted(.number.precision(.fractionLength(0...1))))% remaining")

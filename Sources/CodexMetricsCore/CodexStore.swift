@@ -35,27 +35,52 @@ public final class CodexStore: @unchecked Sendable {
     /// Loads the compact Codex index without scanning rollout JSONL files.
     public func loadIndexedSessions() throws -> [SessionMetric] {
         let databaseURL = try locateDatabase()
+        var lastFailure: DatabaseReadFailure?
+        for attempt in 0..<4 {
+            do {
+                return try readIndexedSessions(from: databaseURL)
+            } catch let failure as DatabaseReadFailure {
+                lastFailure = failure
+                guard failure.isTransient, attempt < 3 else { throw failure.publicError }
+                // Codex may checkpoint and remove the WAL between sqlite3_open_v2 and the
+                // first read. Reopening gives SQLite a coherent view of the new file set.
+                Thread.sleep(forTimeInterval: 0.025 * pow(2, Double(attempt)))
+            }
+        }
+        throw lastFailure?.publicError ?? CodexStoreError.openFailed("Unknown error")
+    }
+
+    private func readIndexedSessions(from databaseURL: URL) throws -> [SessionMetric] {
         var database: OpaquePointer?
         let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
-        guard sqlite3_open_v2(databaseURL.path, &database, flags, nil) == SQLITE_OK, let database else {
+        let openResult = sqlite3_open_v2(databaseURL.path, &database, flags, nil)
+        guard openResult == SQLITE_OK, let database else {
             let message = database.map { String(cString: sqlite3_errmsg($0)) } ?? "Unknown error"
+            let code = database.map(sqlite3_extended_errcode) ?? openResult
             if let database { sqlite3_close(database) }
-            throw CodexStoreError.openFailed(message)
+            throw DatabaseReadFailure.open(code: code, message: message)
         }
         defer { sqlite3_close(database) }
+        sqlite3_extended_result_codes(database, 1)
+        sqlite3_busy_timeout(database, 250)
 
         let columns = try tableColumns(database)
         let names = ["id", "rollout_path", "cwd", "title", "source", "model_provider", "created_at", "updated_at", "tokens_used", "model", "reasoning_effort", "git_branch", "cli_version", "archived"]
         let selections = names.map { columns.contains($0) ? $0 : "NULL AS \($0)" }.joined(separator: ", ")
         let sql = "SELECT \(selections) FROM threads ORDER BY updated_at DESC"
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
-            throw CodexStoreError.queryFailed(String(cString: sqlite3_errmsg(database)))
+        let prepareResult = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
+        guard prepareResult == SQLITE_OK, let statement else {
+            throw DatabaseReadFailure.query(
+                code: sqlite3_extended_errcode(database),
+                message: String(cString: sqlite3_errmsg(database))
+            )
         }
         defer { sqlite3_finalize(statement) }
 
         var sessions: [SessionMetric] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
+        var stepResult = sqlite3_step(statement)
+        while stepResult == SQLITE_ROW {
             let total = int(statement, 8)
             sessions.append(SessionMetric(
                 id: text(statement, 0) ?? UUID().uuidString,
@@ -73,6 +98,13 @@ public final class CodexStore: @unchecked Sendable {
                 archived: int(statement, 13) != 0,
                 usage: .init(total: total)
             ))
+            stepResult = sqlite3_step(statement)
+        }
+        guard stepResult == SQLITE_DONE else {
+            throw DatabaseReadFailure.query(
+                code: sqlite3_extended_errcode(database),
+                message: String(cString: sqlite3_errmsg(database))
+            )
         }
         return sessions
     }
@@ -189,13 +221,28 @@ public final class CodexStore: @unchecked Sendable {
 
     private func tableColumns(_ database: OpaquePointer) throws -> Set<String> {
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(database, "PRAGMA table_info(threads)", -1, &statement, nil) == SQLITE_OK, let statement else {
-            throw CodexStoreError.queryFailed("threads schema unavailable")
+        let prepareResult = sqlite3_prepare_v2(database, "PRAGMA table_info(threads)", -1, &statement, nil)
+        guard prepareResult == SQLITE_OK, let statement else {
+            throw DatabaseReadFailure.query(
+                code: sqlite3_extended_errcode(database),
+                message: String(cString: sqlite3_errmsg(database))
+            )
         }
         defer { sqlite3_finalize(statement) }
         var columns = Set<String>()
-        while sqlite3_step(statement) == SQLITE_ROW {
+        var stepResult = sqlite3_step(statement)
+        while stepResult == SQLITE_ROW {
             if let name = text(statement, 1) { columns.insert(name) }
+            stepResult = sqlite3_step(statement)
+        }
+        guard stepResult == SQLITE_DONE else {
+            throw DatabaseReadFailure.query(
+                code: sqlite3_extended_errcode(database),
+                message: String(cString: sqlite3_errmsg(database))
+            )
+        }
+        guard !columns.isEmpty else {
+            throw DatabaseReadFailure.query(code: SQLITE_ERROR, message: "threads schema unavailable")
         }
         return columns
     }
@@ -211,6 +258,33 @@ public final class CodexStore: @unchecked Sendable {
 
     private func int(_ statement: OpaquePointer, _ index: Int32) -> Int64 {
         sqlite3_column_int64(statement, index)
+    }
+}
+
+private enum DatabaseReadFailure: Error {
+    case open(code: Int32, message: String)
+    case query(code: Int32, message: String)
+
+    private var details: (code: Int32, message: String) {
+        switch self {
+        case .open(let code, let message), .query(let code, let message): (code, message)
+        }
+    }
+
+    var isTransient: Bool {
+        switch details.code & 0xff {
+        case SQLITE_BUSY, SQLITE_LOCKED, SQLITE_CANTOPEN, SQLITE_IOERR, SQLITE_PROTOCOL:
+            true
+        default:
+            false
+        }
+    }
+
+    var publicError: CodexStoreError {
+        switch self {
+        case .open(_, let message): .openFailed(message)
+        case .query(_, let message): .queryFailed(message)
+        }
     }
 }
 

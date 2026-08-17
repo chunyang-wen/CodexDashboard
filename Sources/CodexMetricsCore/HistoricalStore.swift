@@ -33,8 +33,11 @@ final class MetricsDatabase: @unchecked Sendable {
             )
             """)
         // Databases created by the first metrics-v1 development build are upgraded
-        // in place. Duplicate-column failure means the schema is already current.
-        try? execute("ALTER TABLE rollout_checkpoint ADD COLUMN boundary_hash INTEGER")
+        // in place. Check the schema before altering it so SQLite does not emit a
+        // duplicate-column error on every app launch.
+        if !tableHasColumn("rollout_checkpoint", named: "boundary_hash") {
+            try execute("ALTER TABLE rollout_checkpoint ADD COLUMN boundary_hash INTEGER")
+        }
         try execute("""
             CREATE TABLE IF NOT EXISTS historical_session (
                 id TEXT PRIMARY KEY,
@@ -172,6 +175,17 @@ final class MetricsDatabase: @unchecked Sendable {
     }
 
     private func execute(_ sql: String) throws { try lockedThrowing { try executeUnlocked(sql) } }
+
+    private func tableHasColumn(_ table: String, named column: String) -> Bool {
+        guard let statement = prepare("PRAGMA table_info(\(table))") else { return false }
+        defer { sqlite3_finalize(statement) }
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let name = sqlite3_column_text(statement, 1) else { continue }
+            if String(cString: name) == column { return true }
+        }
+        return false
+    }
+
     private func executeUnlocked(_ sql: String) throws {
         guard sqlite3_exec(handle, sql, nil, nil, nil) == SQLITE_OK else { throw databaseError() }
     }

@@ -166,19 +166,12 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var historySessionCount = 0
     @Published private(set) var historyMessage: String?
     @Published private(set) var errorMessage: String?
-    @Published var range: Range = .thirtyDays {
-        didSet {
-            guard range != oldValue else { return }
-            scheduleAnalyticsRefresh()
-            // Filtering is independent of rollout parsing. Keep an active scan alive
-            // instead of cancelling and restarting it every time the range changes.
-            if !sessions.isEmpty, !isEnriching { startEnrichmentForSelectedRange() }
-        }
-    }
+    @Published private(set) var range: Range = .thirtyDays
     private var loadTask: Task<Void, Never>?
     private var enrichmentTask: Task<Void, Never>?
     private var pricingTask: Task<Void, Never>?
     private var analyticsTask: Task<Void, Never>?
+    private var rangeRefreshTask: Task<Void, Never>?
     private var backgroundRefreshTask: Task<Void, Never>?
     private var loadID = UUID()
     private var enrichmentID = UUID()
@@ -420,6 +413,27 @@ final class DashboardStore: ObservableObject {
         }
     }
 
+    /// Apply a range selected by the view after SwiftUI has finished the current
+    /// update transaction. The Picker must not write directly to an @Published
+    /// property, because that can publish while the view tree is being updated.
+    func updateRange(_ newRange: Range) {
+        rangeRefreshTask?.cancel()
+        guard newRange != range else { return }
+        rangeRefreshTask = Task { [weak self] in
+            // A short delay crosses the current AppKit/SwiftUI run-loop turn.
+            try? await Task.sleep(for: .milliseconds(1))
+            guard let self, !Task.isCancelled else { return }
+            guard self.range != newRange else { return }
+            self.range = newRange
+            self.scheduleAnalyticsRefresh()
+            // Filtering is independent of rollout parsing. Keep an active scan alive
+            // instead of cancelling and restarting it every time the range changes.
+            if !self.sessions.isEmpty, !self.isEnriching {
+                self.startEnrichmentForSelectedRange()
+            }
+        }
+    }
+
     private func scheduleAnalyticsRefresh() {
         analyticsTask?.cancel()
         isUpdatingAnalytics = true
@@ -473,7 +487,7 @@ final class DashboardStore: ObservableObject {
         if range == .all {
             startEnrichmentForSelectedRange()
         } else {
-            range = .all
+            updateRange(.all)
         }
     }
 

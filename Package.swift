@@ -20,7 +20,8 @@ let package = Package(
         ),
         .executableTarget(
             name: "CodexDashboard",
-            dependencies: ["CodexMetricsCore"]
+            dependencies: ["CodexMetricsCore"],
+            exclude: ["Assets.xcassets"]
         ),
         .testTarget(
             name: "CodexMetricsCoreTests",
