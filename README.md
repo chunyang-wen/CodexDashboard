@@ -8,11 +8,26 @@
 
 ![Codex Dashboard overview](docs/images/overview.png)
 
+## See what Codex actually exchanged
+
+Open **Debug Conversation** from any session to inspect its local rollout in a separate window. The readable timeline puts user and assistant messages, reasoning summaries, tool calls, and tool results in order; **Raw events** exposes the original JSON when you need to understand the protocol itself. Filter by sent or received events, expand only what matters, and copy a single event or the filtered conversation with common credential formats redacted by default.
+
+![Conversation Debugger showing a sent and received event timeline](docs/images/debug-conversation.png)
+
+<details>
+  <summary><strong>See the original JSON events</strong></summary>
+  <br>
+
+  ![Conversation Debugger showing a received raw JSON event](docs/images/debug-conversation-raw.png)
+</details>
+
+The debugger is deliberately on-demand: conversation payloads are read from the selected rollout only after you open the debugger, kept in memory for that window, and never added to dashboard history. Because raw payloads can still contain private data, copying is redacted by default and copying the original requires an explicit confirmation.
+
 ## What you can see
 
 - **At-a-glance activity:** projects, sessions, tokens, cache hit rate, agent runtime, turn latency, tool calls, skill activations, and estimated spend.
 - **Projects and sessions:** move from a portfolio view into a project and then an individual session, with token composition and activity trends at each level.
-- **Conversation debugger:** explicitly load a selected session's local rollout to compare sent and received messages, tool calls, tool results, and raw JSON events with redacted copying.
+- **Conversation debugger:** inspect sent and received messages, reasoning summaries, tool calls, tool results, and original JSON events—with on-demand loading and redacted copying by default.
 - **Model portfolio:** compare usage volume, runtime, cache behavior, session count, and API-equivalent cost across models.
 - **Subscription usage:** see the latest plan, quota windows, reset times, credits, and limit status reported by Codex.
 - **Historical analysis:** switch between 7 days, 30 days, 90 days, one year, or all history, with daily, weekly, and monthly charts.

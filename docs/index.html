@@ -4,9 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#0b0d0f">
-    <meta name="description" content="Codex Dashboard is a private, local-first macOS dashboard for understanding how you use Codex.">
+    <meta name="description" content="Codex Dashboard is a private, local-first macOS dashboard for metrics and on-demand conversation debugging.">
     <meta property="og:title" content="Codex Dashboard — Your Codex activity, clearly.">
-    <meta property="og:description" content="Projects, sessions, models, tokens, tools, skills, and estimated cost. Read locally. Kept locally.">
+    <meta property="og:description" content="Metrics at a glance. Every local conversation event when you need it. Read locally. Kept locally.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://chunyang-wen.github.io/CodexDashboard/">
     <meta property="og:image" content="https://chunyang-wen.github.io/CodexDashboard/images/overview.png">
@@ -30,6 +30,7 @@
         <span>CODEX / DASHBOARD</span>
       </a>
       <nav aria-label="Main navigation">
+        <a href="#debugger">Debugger</a>
         <a href="#features">Explore</a>
         <a href="#privacy">Privacy</a>
         <a class="nav-cta" href="https://github.com/chunyang-wen/CodexDashboard">View on GitHub <span aria-hidden="true">↗</span></a>
@@ -66,8 +67,43 @@
 
       <section class="ticker" aria-label="Product capabilities">
         <div>
-          <span>PROJECTS</span><i>✦</i><span>SESSIONS</span><i>✦</i><span>MODELS</span><i>✦</i><span>TOKENS</span><i>✦</i><span>TOOLS</span><i>✦</i><span>SKILLS</span><i>✦</i><span>COST</span><i>✦</i>
-          <span aria-hidden="true">PROJECTS</span><i aria-hidden="true">✦</i><span aria-hidden="true">SESSIONS</span><i aria-hidden="true">✦</i><span aria-hidden="true">MODELS</span><i aria-hidden="true">✦</i><span aria-hidden="true">TOKENS</span><i aria-hidden="true">✦</i>
+          <span>CONVERSATIONS</span><i>✦</i><span>RAW EVENTS</span><i>✦</i><span>PROJECTS</span><i>✦</i><span>SESSIONS</span><i>✦</i><span>MODELS</span><i>✦</i><span>TOKENS</span><i>✦</i><span>TOOLS</span><i>✦</i>
+          <span aria-hidden="true">CONVERSATIONS</span><i aria-hidden="true">✦</i><span aria-hidden="true">RAW EVENTS</span><i aria-hidden="true">✦</i><span aria-hidden="true">PROJECTS</span><i aria-hidden="true">✦</i><span aria-hidden="true">SESSIONS</span><i aria-hidden="true">✦</i><span aria-hidden="true">MODELS</span><i aria-hidden="true">✦</i><span aria-hidden="true">TOKENS</span><i aria-hidden="true">✦</i><span aria-hidden="true">TOOLS</span><i aria-hidden="true">✦</i>
+        </div>
+      </section>
+
+      <section class="debugger section-shell" id="debugger">
+        <div class="debugger-heading" data-reveal>
+          <span class="section-index">NEW / CONVERSATION DEBUGGER</span>
+          <h2>See the exchange.<br><em>Down to the event.</em></h2>
+          <p>Metrics tell you what happened. The debugger shows how it happened—without sending the conversation anywhere.</p>
+        </div>
+
+        <div class="debugger-stage" data-reveal>
+          <div class="debugger-orbit debugger-orbit-one" aria-hidden="true"></div>
+          <div class="debugger-orbit debugger-orbit-two" aria-hidden="true"></div>
+          <div class="debugger-callout debugger-callout-sent"><b>SENT</b><span>Prompts · tool results</span></div>
+          <div class="debugger-callout debugger-callout-received"><b>RECEIVED</b><span>Responses · tool calls</span></div>
+          <div class="window-frame debugger-window">
+            <img src="images/debug-conversation.png" alt="Conversation Debugger showing sent and received events in a readable timeline" loading="lazy" width="2048" height="1574">
+          </div>
+        </div>
+
+        <div class="debugger-details">
+          <div class="debugger-copy" data-reveal>
+            <span class="debugger-kicker">TWO VIEWS / ONE ROLLOUT</span>
+            <h3>Readable when you want context.<br>Raw when you need proof.</h3>
+            <p>Follow messages, reasoning summaries, tool calls, and tool results in sequence. Filter the model exchange by direction, then switch to the original JSON to investigate the exact event shape.</p>
+            <ul>
+              <li><span>01</span>Expand only the events that matter</li>
+              <li><span>02</span>Filter by sent or received</li>
+              <li><span>03</span>Copy with credential redaction by default</li>
+            </ul>
+          </div>
+          <figure class="raw-peek" data-reveal>
+            <img src="images/debug-conversation-raw.png" alt="Conversation Debugger displaying an original received JSON event" loading="lazy" width="2048" height="1516">
+            <figcaption><span>RAW / JSON</span> The original event, still on your Mac.</figcaption>
+          </figure>
         </div>
       </section>
 
@@ -127,8 +163,8 @@
           </article>
           <article data-reveal>
             <span class="privacy-icon">◉</span>
-            <h3>No conversation text</h3>
-            <p>Stores aggregate metrics and session metadata—not prompts, responses, or credentials.</p>
+            <h3>On-demand inspection</h3>
+            <p>Conversation payloads load only when you open the debugger, stay in memory, and are never added to history.</p>
           </article>
           <article data-reveal>
             <span class="privacy-icon">⌂</span>
