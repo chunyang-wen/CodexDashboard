@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0b0d0f">
+    <meta name="description" content="Codex Dashboard is a private, local-first macOS dashboard for understanding how you use Codex.">
+    <meta property="og:title" content="Codex Dashboard — Your Codex activity, clearly.">
+    <meta property="og:description" content="Projects, sessions, models, tokens, tools, skills, and estimated cost. Read locally. Kept locally.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://chunyang-wen.github.io/CodexDashboard/">
+    <meta property="og:image" content="https://chunyang-wen.github.io/CodexDashboard/images/overview.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <link rel="canonical" href="https://chunyang-wen.github.io/CodexDashboard/">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='15' fill='%23111417'/%3E%3Crect x='14' y='30' width='8' height='20' rx='3' fill='%23f1f0e9'/%3E%3Crect x='28' y='14' width='8' height='36' rx='3' fill='%23ff6b35'/%3E%3Crect x='42' y='23' width='8' height='27' rx='3' fill='%23f1f0e9'/%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Azeret+Mono:wght@500;600;700&amp;family=Manrope:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <title>Codex Dashboard — Your Codex activity, clearly.</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
+
+    <header class="site-header" data-reveal>
+      <a class="brand" href="#top" aria-label="Codex Dashboard home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>CODEX / DASHBOARD</span>
+      </a>
+      <nav aria-label="Main navigation">
+        <a href="#features">Explore</a>
+        <a href="#privacy">Privacy</a>
+        <a class="nav-cta" href="https://github.com/chunyang-wen/CodexDashboard">View on GitHub <span aria-hidden="true">↗</span></a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top">
+        <div class="eyebrow" data-reveal>
+          <span class="status-dot"></span>
+          Native macOS · Local-first · Open source
+        </div>
+        <h1 data-reveal>Your Codex activity,<br><em>finally visible.</em></h1>
+        <div class="hero-bottom" data-reveal>
+          <p>Understand the work behind the work. Codex Dashboard turns your local activity into a clear view of projects, models, tokens, tools, time, and API-equivalent cost.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#install">Run from source <span aria-hidden="true">↓</span></a>
+            <a class="button button-secondary" href="https://github.com/chunyang-wen/CodexDashboard">Source code <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+
+        <div class="product-stage" data-reveal>
+          <div class="stage-label stage-label-top"><span>01</span> ACTIVITY / OVERVIEW</div>
+          <div class="window-frame">
+            <div class="window-bar" aria-hidden="true">
+              <span></span><span></span><span></span>
+              <b>30D</b>
+            </div>
+            <img src="images/overview.png" alt="Codex Dashboard overview showing activity metrics and a usage trend chart" width="2632" height="1712">
+          </div>
+          <div class="stage-label stage-label-bottom">READ ONLY <span>●</span> YOUR MAC</div>
+        </div>
+      </section>
+
+      <section class="ticker" aria-label="Product capabilities">
+        <div>
+          <span>PROJECTS</span><i>✦</i><span>SESSIONS</span><i>✦</i><span>MODELS</span><i>✦</i><span>TOKENS</span><i>✦</i><span>TOOLS</span><i>✦</i><span>SKILLS</span><i>✦</i><span>COST</span><i>✦</i>
+          <span aria-hidden="true">PROJECTS</span><i aria-hidden="true">✦</i><span aria-hidden="true">SESSIONS</span><i aria-hidden="true">✦</i><span aria-hidden="true">MODELS</span><i aria-hidden="true">✦</i><span aria-hidden="true">TOKENS</span><i aria-hidden="true">✦</i>
+        </div>
+      </section>
+
+      <section class="features section-shell" id="features">
+        <div class="section-heading" data-reveal>
+          <span class="section-index">01 / SEE THE SYSTEM</span>
+          <h2>From portfolio<br>to single prompt.</h2>
+          <p>Move from your entire Codex history to one project, one session, or one model—without losing the thread.</p>
+        </div>
+
+        <div class="feature-grid">
+          <article class="feature-card feature-card-wide" data-reveal>
+            <div class="card-copy">
+              <span class="card-number">01</span>
+              <h3>Follow every project</h3>
+              <p>Compare workspaces, expand their sessions, and see how activity changes over time.</p>
+            </div>
+            <div class="image-well image-well-projects">
+              <img src="images/projects.png" alt="Projects view with workspace metrics and session details" loading="lazy" width="2562" height="1516">
+            </div>
+          </article>
+
+          <article class="feature-card" data-reveal>
+            <div class="card-copy">
+              <span class="card-number">02</span>
+              <h3>Know your models</h3>
+              <p>Compare volume, runtime, cache behavior, session count, and estimated cost.</p>
+            </div>
+            <div class="image-well image-well-model">
+              <img src="images/model.png" alt="Model portfolio with token and cost comparison" loading="lazy" width="2632" height="1712">
+            </div>
+          </article>
+
+          <article class="feature-card feature-card-menu" data-reveal>
+            <div class="card-copy">
+              <span class="card-number">03</span>
+              <h3>Keep the pulse nearby</h3>
+              <p>Check remaining quota and today's key metrics right from your menu bar.</p>
+            </div>
+            <div class="menu-visual">
+              <img src="images/menubar.png" alt="Codex Dashboard menu bar popover" loading="lazy" width="772" height="746">
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="privacy section-shell" id="privacy">
+        <div class="privacy-intro" data-reveal>
+          <span class="section-index">02 / LOCAL BY DESIGN</span>
+          <h2>Your work stays<br><em>your work.</em></h2>
+        </div>
+        <div class="privacy-grid">
+          <article data-reveal>
+            <span class="privacy-icon">⌁</span>
+            <h3>Read-only source</h3>
+            <p>Opens your local Codex index read-only and enriches metrics from local rollout files.</p>
+          </article>
+          <article data-reveal>
+            <span class="privacy-icon">◉</span>
+            <h3>No conversation text</h3>
+            <p>Stores aggregate metrics and session metadata—not prompts, responses, or credentials.</p>
+          </article>
+          <article data-reveal>
+            <span class="privacy-icon">⌂</span>
+            <h3>Local history</h3>
+            <p>Your durable metrics database lives in Application Support on your Mac.</p>
+          </article>
+        </div>
+        <div class="privacy-path" data-reveal>
+          <span>DATA PATH</span>
+          <code>~/Library/Application Support/CodexDashboard/metrics-v1.sqlite</code>
+          <button type="button" aria-label="Copy data path" data-copy="~/Library/Application Support/CodexDashboard/metrics-v1.sqlite">COPY</button>
+        </div>
+      </section>
+
+      <section class="install section-shell" id="install">
+        <div class="install-panel" data-reveal>
+          <div>
+            <span class="section-index">03 / RUN IT</span>
+            <h2>Make the invisible<br><em>measurable.</em></h2>
+            <p>Requires macOS 14 or later and a Swift 6.1-compatible Xcode toolchain.</p>
+          </div>
+          <div class="terminal" aria-label="Installation commands">
+            <div class="terminal-bar"><span></span><span></span><span></span><b>zsh</b></div>
+            <pre><code><span>$</span> git clone git@github.com:chunyang-wen/CodexDashboard.git
+<span>$</span> cd CodexDashboard
+<span>$</span> swift run CodexDashboard</code></pre>
+            <button type="button" data-copy="git clone git@github.com:chunyang-wen/CodexDashboard.git">COPY CLONE COMMAND</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <a class="brand" href="#top">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>CODEX / DASHBOARD</span>
+      </a>
+      <p>Private metrics for people building with Codex.</p>
+      <div><a href="https://github.com/chunyang-wen/CodexDashboard">GitHub ↗</a><span>© <span id="year"></span></span></div>
+    </footer>
+
+    <script src="script.js"></script>
+  </body>
+</html>

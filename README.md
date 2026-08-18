@@ -3,6 +3,7 @@
   <h1>Codex Dashboard</h1>
   <p>A private, local-first macOS dashboard for understanding how you use Codex.</p>
   <p>Explore activity by project, session, model, time, tokens, tools, skills, and API-equivalent cost—without sending your session data anywhere.</p>
+  <p><a href="https://chunyang-wen.github.io/CodexDashboard/"><strong>View the website →</strong></a></p>
 </div>
 
 ![Codex Dashboard overview](docs/images/overview.png)
