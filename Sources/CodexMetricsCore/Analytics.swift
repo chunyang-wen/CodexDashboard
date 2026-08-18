@@ -151,6 +151,98 @@ public enum Analytics {
         }.sorted { $0.usage.total > $1.usage.total }
     }
 
+    public static func tools(
+        from sessions: [SessionMetric],
+        pricing: PricingHistory = .bundled,
+        since startDate: Date? = nil
+    ) -> [ToolMetric] {
+        struct Bucket {
+            var calls = 0
+            var attributedCalls = 0
+            var sessionIDs = Set<String>()
+            var usage = TokenUsage.zero
+            var cost = Decimal.zero
+        }
+        var buckets: [String: Bucket] = [:]
+        for session in sessions {
+            for event in session.toolCallEvents ?? [] where startDate.map({ event.date >= $0 }) ?? true {
+                var bucket = buckets[event.name, default: Bucket()]
+                bucket.calls += 1
+                bucket.sessionIDs.insert(session.id)
+                bucket.usage = bucket.usage + event.attributedUsage
+                if event.attributedUsage.total > 0 {
+                    bucket.attributedCalls += 1
+                    bucket.cost += pricing.estimate(
+                        usage: event.attributedUsage,
+                        model: event.model ?? session.model,
+                        on: event.date
+                    ) ?? 0
+                }
+                buckets[event.name] = bucket
+            }
+        }
+        return buckets.map { name, bucket in
+            ToolMetric(
+                tool: name,
+                calls: bucket.calls,
+                attributedCalls: bucket.attributedCalls,
+                sessions: bucket.sessionIDs.count,
+                attributedUsage: bucket.usage,
+                estimatedCost: bucket.cost
+            )
+        }.sorted {
+            if $0.calls != $1.calls { return $0.calls > $1.calls }
+            if $0.estimatedCost != $1.estimatedCost { return $0.estimatedCost > $1.estimatedCost }
+            return $0.tool.localizedStandardCompare($1.tool) == .orderedAscending
+        }
+    }
+
+    public static func skills(
+        from sessions: [SessionMetric],
+        pricing: PricingHistory = .bundled,
+        since startDate: Date? = nil
+    ) -> [SkillMetric] {
+        struct Bucket {
+            var calls = 0
+            var attributedCalls = 0
+            var sessionIDs = Set<String>()
+            var usage = TokenUsage.zero
+            var cost = Decimal.zero
+        }
+        var buckets: [String: Bucket] = [:]
+        for session in sessions {
+            for event in session.skillCallEvents ?? [] where startDate.map({ event.date >= $0 }) ?? true {
+                var bucket = buckets[event.name, default: Bucket()]
+                bucket.calls += 1
+                bucket.sessionIDs.insert(session.id)
+                bucket.usage = bucket.usage + event.attributedUsage
+                if event.attributedUsage.total > 0 {
+                    bucket.attributedCalls += 1
+                    bucket.cost += pricing.estimate(
+                        usage: event.attributedUsage,
+                        model: event.model ?? session.model,
+                        on: event.date
+                    ) ?? 0
+                }
+                buckets[event.name] = bucket
+            }
+        }
+        return buckets.map { name, bucket in
+            SkillMetric(
+                skill: name,
+                calls: bucket.calls,
+                attributedCalls: bucket.attributedCalls,
+                sessions: bucket.sessionIDs.count,
+                attributedUsage: bucket.usage,
+                estimatedCost: bucket.cost
+            )
+        }.sorted {
+            if $0.calls != $1.calls { return $0.calls > $1.calls }
+            if $0.estimatedCost != $1.estimatedCost { return $0.estimatedCost > $1.estimatedCost }
+            return $0.skill.localizedStandardCompare($1.skill) == .orderedAscending
+        }
+    }
+
     public static func percentile(_ values: [TimeInterval], _ percentile: Double) -> TimeInterval? {
         guard !values.isEmpty else { return nil }
         let sorted = values.sorted()
@@ -184,4 +276,14 @@ public enum MetricFormatters {
     public static func currency(_ value: Decimal) -> String {
         value.formatted(.currency(code: "USD").precision(.fractionLength(2)))
     }
+
+    public static func preciseCurrency(_ value: Decimal) -> String {
+        let magnitude = abs(value.doubleValue)
+        let digits = magnitude > 0 && magnitude < 0.01 ? 6 : 2
+        return value.formatted(.currency(code: "USD").precision(.fractionLength(2...digits)))
+    }
+}
+
+private extension Decimal {
+    var doubleValue: Double { NSDecimalNumber(decimal: self).doubleValue }
 }

@@ -56,6 +56,97 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(result.turns.first?.timeToFirstToken, 0.5)
         XCTAssertEqual(result.userMessages, 1)
         XCTAssertEqual(result.toolCalls, 1)
+        XCTAssertEqual(result.toolCallEvents.map(\.name), ["test"])
+    }
+
+    func testToolCallsCaptureNamesAndShareFollowingTokenCost() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let lines = [
+            #"{"timestamp":"2026-08-01T10:00:00Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:01Z","type":"response_item","payload":{"type":"function_call","name":"functions.exec","arguments":"{}"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:02Z","type":"response_item","payload":{"type":"custom_tool_call","name":"web.search","input":"query"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":800,"output_tokens":100,"total_tokens":1100}}}}"#
+        ]
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: file)
+
+        let result = RolloutParser.parse(path: file.path)
+        XCTAssertEqual(result.toolCallEvents.map(\.name), ["functions.exec", "web.search"])
+        XCTAssertEqual(result.toolCallEvents.reduce(TokenUsage.zero) { $0 + $1.attributedUsage }, result.usage)
+
+        let session = SessionMetric(
+            id: "tools", rolloutPath: file.path, projectPath: "/tmp/project", title: "",
+            source: "app", provider: "openai", createdAt: .distantPast, updatedAt: .now,
+            model: result.model, reasoningEffort: nil, gitBranch: nil, cliVersion: nil,
+            archived: false, usage: result.usage, usageEvents: result.usageEvents,
+            toolCalls: result.toolCalls, toolCallEvents: result.toolCallEvents,
+            enrichmentAvailable: true
+        )
+        let tools = Analytics.tools(from: [session])
+        XCTAssertEqual(tools.map(\.tool), ["functions.exec", "web.search"])
+        XCTAssertEqual(tools.reduce(TokenUsage.zero) { $0 + $1.attributedUsage }, result.usage)
+        XCTAssertEqual(tools.reduce(Decimal.zero) { $0 + $1.estimatedCost }, Decimal(string: "0.000176"))
+    }
+
+    func testRolloutOriginatorAndNestedExecOperationAreDisplayed() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let lines = [
+            #"{"timestamp":"2026-08-01T10:00:00Z","type":"session_meta","payload":{"originator":"Codex Desktop","source":"vscode"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:02Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"const r = await tools.exec_command({cmd:\"sed -n '1,200p' /Users/test/.codex/skills/frontend-design/SKILL.md\"}); text(r.output)"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:03Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"const a = await tools.web__run({}); const b = await tools.view_image({path:\"x\"});"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:03Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"const patch = \"mentions tools.map(), tools.reduce(), and /fake/not-a-skill/SKILL.md\"; text(await tools.apply_patch(patch));"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":800,"output_tokens":100,"total_tokens":1100}}}}"#
+        ]
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: file)
+
+        let result = RolloutParser.parse(path: file.path)
+        XCTAssertEqual(result.originator, "Codex Desktop")
+        XCTAssertEqual(result.toolCallEvents.map(\.name), [
+            "exec → exec_command",
+            "exec → web__run + view_image",
+            "exec → apply_patch"
+        ])
+        XCTAssertEqual(result.skillCallEvents.map(\.name), ["frontend-design"])
+        XCTAssertEqual(result.skillCallEvents.first?.attributedUsage.total, 1_100)
+
+        let session = SessionMetric(
+            id: "skills", rolloutPath: file.path, projectPath: "/tmp/project", title: "",
+            source: "vscode", originator: result.originator, provider: "openai",
+            createdAt: .distantPast, updatedAt: .now, model: result.model,
+            reasoningEffort: nil, gitBranch: nil, cliVersion: nil, archived: false,
+            usage: result.usage, usageEvents: result.usageEvents,
+            toolCalls: result.toolCalls, toolCallEvents: result.toolCallEvents,
+            skillCallEvents: result.skillCallEvents, enrichmentAvailable: true
+        )
+        let skills = Analytics.skills(from: [session])
+        XCTAssertEqual(skills.map(\.skill), ["frontend-design"])
+        XCTAssertEqual(skills.first?.calls, 1)
+        XCTAssertEqual(skills.first?.estimatedCost, Decimal(string: "0.000176"))
+    }
+
+    func testHistoricalReenrichmentReplacesStaleToolLabels() async throws {
+        let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: userHome) }
+        let date = Date(timeIntervalSince1970: 1_785_542_400)
+        func session(toolName: String) -> SessionMetric {
+            SessionMetric(
+                id: "reparsed", rolloutPath: "/tmp/rollout.jsonl", projectPath: "/tmp/project",
+                title: "", source: "vscode", provider: "openai", createdAt: date,
+                updatedAt: date, model: "gpt-5.6-luna", reasoningEffort: nil,
+                gitBranch: nil, cliVersion: nil, archived: false, usage: .zero,
+                toolCalls: 1,
+                toolCallEvents: [.init(date: date, name: toolName, model: "gpt-5.6-luna")],
+                enrichmentAvailable: true
+            )
+        }
+
+        let store = HistoricalStore(userHome: userHome)
+        try await store.record([session(toolName: "exec")])
+        try await store.record([session(toolName: "exec → exec_command")])
+        let restored = try await store.mergedSessions(with: [])
+        XCTAssertEqual(restored.first?.toolCallEvents?.map(\.name), ["exec → exec_command"])
     }
 
     func testMixedModelSessionPricesEachDeltaWithItsActiveModel() throws {

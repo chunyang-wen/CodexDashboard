@@ -180,6 +180,7 @@ public final class CodexStore: @unchecked Sendable {
                 projectPath: session.projectPath,
                 title: session.title,
                 source: session.source,
+                originator: details.originator ?? session.originator,
                 provider: session.provider,
                 createdAt: session.createdAt,
                 updatedAt: session.updatedAt,
@@ -192,6 +193,8 @@ public final class CodexStore: @unchecked Sendable {
                 usageEvents: details.usageEvents,
                 turns: details.turns,
                 toolCalls: details.toolCalls,
+                toolCallEvents: details.toolCallEvents,
+                skillCallEvents: details.skillCallEvents,
                 userMessages: details.userMessages,
                 abortedTurns: details.abortedTurns,
                 enrichmentAvailable: true

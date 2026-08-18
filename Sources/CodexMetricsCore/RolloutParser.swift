@@ -1,23 +1,30 @@
 import Foundation
 
 struct RolloutEnrichment: Codable, Sendable {
+    var parserVersion: Int?
     var usage: TokenUsage = .zero
     var usageEvents: [UsageEvent] = []
     var turns: [TurnMetric] = []
     var model: String?
     var reasoningEffort: String?
+    var originator: String?
     var toolCalls = 0
+    var toolCallEvents: [ToolCallEvent] = []
+    var skillCallEvents: [SkillCallEvent] = []
     var userMessages = 0
     var abortedTurns = 0
 }
 
 struct CachedRollout: Codable, Sendable {
+    static let currentParserVersion = 9
+
     let fileSize: Int64
     let modifiedAt: Date
     let enrichment: RolloutEnrichment
     let deviceID: UInt64?
     let fileID: UInt64?
     let boundaryHash: UInt64?
+    let parserVersion: Int?
 
     init(
         fileSize: Int64,
@@ -25,7 +32,8 @@ struct CachedRollout: Codable, Sendable {
         enrichment: RolloutEnrichment,
         deviceID: UInt64? = nil,
         fileID: UInt64? = nil,
-        boundaryHash: UInt64? = nil
+        boundaryHash: UInt64? = nil,
+        parserVersion: Int? = CachedRollout.currentParserVersion
     ) {
         self.fileSize = fileSize
         self.modifiedAt = modifiedAt
@@ -33,6 +41,7 @@ struct CachedRollout: Codable, Sendable {
         self.deviceID = deviceID
         self.fileID = fileID
         self.boundaryHash = boundaryHash
+        self.parserVersion = parserVersion
     }
 }
 
@@ -50,9 +59,9 @@ final class RolloutCache {
     init(home: URL) {
         let directory = home.appendingPathComponent("Library/Caches/CodexDashboard", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        // v4 adds the active model to every token delta. Older cache entries only kept
+        // v5 adds tool names and token attribution. Older cache entries only kept
         // the final session model and cannot price sessions that switched models.
-        url = directory.appendingPathComponent("rollouts-v4.json")
+        url = directory.appendingPathComponent("rollouts-v5.json")
         database = try? MetricsDatabase(userHome: home)
         if let data = try? Data(contentsOf: url), let decoded = try? JSONDecoder().decode([String: CachedRollout].self, from: data) {
             entries = decoded
@@ -72,6 +81,7 @@ final class RolloutCache {
               let modified = attributes[.modificationDate] as? Date else { return .miss }
         let cached = database?.rollout(for: path) ?? entries[path]
         guard let cached else { return .miss }
+        guard cached.parserVersion == CachedRollout.currentParserVersion else { return .miss }
         let deviceID = (attributes[.systemNumber] as? NSNumber)?.uint64Value
         let fileID = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value
         let identityChanged = (cached.deviceID != nil && deviceID != nil && cached.deviceID != deviceID)
@@ -99,13 +109,16 @@ final class RolloutCache {
     func store(_ enrichment: RolloutEnrichment, for path: String, parsedBytes: UInt64) {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
               let modified = attributes[.modificationDate] as? Date else { return }
+        var versionedEnrichment = enrichment
+        versionedEnrichment.parserVersion = CachedRollout.currentParserVersion
         entries[path] = CachedRollout(
             fileSize: Int64(clamping: parsedBytes),
             modifiedAt: modified,
-            enrichment: enrichment,
+            enrichment: versionedEnrichment,
             deviceID: (attributes[.systemNumber] as? NSNumber)?.uint64Value,
             fileID: (attributes[.systemFileNumber] as? NSNumber)?.uint64Value,
-            boundaryHash: Self.boundaryHash(path: path, through: Int64(clamping: parsedBytes))
+            boundaryHash: Self.boundaryHash(path: path, through: Int64(clamping: parsedBytes)),
+            parserVersion: CachedRollout.currentParserVersion
         )
         if let cached = entries[path] { try? database?.storeRollout(cached, for: path) }
     }
@@ -145,12 +158,14 @@ final class RolloutCache {
 }
 
 enum RolloutParser {
+    private static let metricHeaderLimit = 262_144
     struct ParseResult: Sendable {
         let enrichment: RolloutEnrichment
         let parsedBytes: UInt64
     }
 
     private static let eventMessageMarker = Data(#""type":"event_msg""#.utf8)
+    private static let sessionMetaMarker = Data(#""type":"session_meta""#.utf8)
     private static let turnContextMarker = Data(#""type":"turn_context""#.utf8)
     private static let responseItemMarker = Data(#""type":"response_item""#.utf8)
     private static let tokenCountMarker = Data(#""type":"token_count""#.utf8)
@@ -186,6 +201,12 @@ enum RolloutParser {
 
         var result = initial
         var previousUsage = initial.usage
+        var pendingToolIndices = result.toolCallEvents.indices.filter {
+            result.toolCallEvents[$0].attributedUsage.total == 0
+        }
+        var pendingSkillIndices = result.skillCallEvents.indices.filter {
+            result.skillCallEvents[$0].attributedUsage.total == 0
+        }
         var carry = Data()
         var searchedThrough = 0
         var discardingLargeResponse = false
@@ -230,6 +251,8 @@ enum RolloutParser {
                             line,
                             result: &result,
                             previousUsage: &previousUsage,
+                            pendingToolIndices: &pendingToolIndices,
+                            pendingSkillIndices: &pendingSkillIndices,
                             fractionalDateFormatter: fractionalDateFormatter,
                             wholeSecondDateFormatter: wholeSecondDateFormatter
                         )
@@ -246,12 +269,14 @@ enum RolloutParser {
                 // Tool results can be hundreds of megabytes on one JSONL line. Once
                 // its type is known, count a tool call if needed and discard the rest
                 // of that line instead of retaining and rescanning it for every chunk.
-                if carry.count >= 4_096,
-                   carry.prefix(4_096).range(of: responseItemMarker) != nil {
+                if carry.count >= metricHeaderLimit,
+                   carry.prefix(metricHeaderLimit).range(of: responseItemMarker) != nil {
                     parseLine(
-                        Data(carry.prefix(4_096)),
+                        Data(carry.prefix(metricHeaderLimit)),
                         result: &result,
                         previousUsage: &previousUsage,
+                        pendingToolIndices: &pendingToolIndices,
+                        pendingSkillIndices: &pendingSkillIndices,
                         fractionalDateFormatter: fractionalDateFormatter,
                         wholeSecondDateFormatter: wholeSecondDateFormatter
                     )
@@ -272,16 +297,34 @@ enum RolloutParser {
         _ data: Data,
         result: inout RolloutEnrichment,
         previousUsage: inout TokenUsage,
+        pendingToolIndices: inout [Int],
+        pendingSkillIndices: inout [Int],
         fractionalDateFormatter: ISO8601DateFormatter,
         wholeSecondDateFormatter: ISO8601DateFormatter
     ) {
         // Rollouts contain large message and tool-result payloads that have no metric
         // value. Reject them as bytes before asking JSONSerialization to allocate a
         // complete Foundation object graph.
-        let header = data.prefix(4_096)
+        let header = data.prefix(metricHeaderLimit)
+        if header.range(of: sessionMetaMarker) != nil {
+            result.originator = extractedString(named: "originator", from: header) ?? result.originator
+            return
+        }
         if header.range(of: responseItemMarker) != nil {
             if header.range(of: functionCallMarker) != nil || header.range(of: customToolCallMarker) != nil {
                 result.toolCalls += 1
+                let timestamp = extractedString(named: "timestamp", from: header).flatMap {
+                    fractionalDateFormatter.date(from: $0) ?? wholeSecondDateFormatter.date(from: $0)
+                } ?? Date()
+                let outerName = extractedString(named: "name", from: header) ?? "Unknown tool"
+                let input = toolInput(from: data)
+                let name = displayToolName(outerName: outerName, input: input)
+                result.toolCallEvents.append(.init(date: timestamp, name: name, model: result.model))
+                pendingToolIndices.append(result.toolCallEvents.index(before: result.toolCallEvents.endIndex))
+                for skill in skillNames(outerName: outerName, input: input) {
+                    result.skillCallEvents.append(.init(date: timestamp, name: skill, model: result.model))
+                    pendingSkillIndices.append(result.skillCallEvents.index(before: result.skillCallEvents.endIndex))
+                }
             }
             return
         }
@@ -323,6 +366,10 @@ enum RolloutParser {
                 ?? result.model
             if delta.total > 0 {
                 result.usageEvents.append(.init(date: timestamp, usage: delta, model: model))
+                attribute(delta, to: pendingToolIndices, model: model, events: &result.toolCallEvents)
+                attributeSkills(delta, to: pendingSkillIndices, model: model, events: &result.skillCallEvents)
+                pendingToolIndices.removeAll(keepingCapacity: true)
+                pendingSkillIndices.removeAll(keepingCapacity: true)
             }
             previousUsage = usage
             result.usage = usage
@@ -365,5 +412,219 @@ enum RolloutParser {
     private static func string(_ value: Any?) -> String? {
         guard let value = value as? String, !value.isEmpty else { return nil }
         return value
+    }
+
+    private static func extractedString(named key: String, from data: Data.SubSequence) -> String? {
+        let bytes = Array(data)
+        let marker = Array("\"\(key)\":\"".utf8)
+        guard let start = bytes.indices.first(where: { index in
+            index + marker.count <= bytes.count && bytes[index..<(index + marker.count)].elementsEqual(marker)
+        }) else { return nil }
+        var index = start + marker.count
+        var value: [UInt8] = []
+        var escaped = false
+        while index < bytes.count {
+            let byte = bytes[index]
+            if escaped {
+                value.append(byte)
+                escaped = false
+            } else if byte == 0x5C {
+                escaped = true
+            } else if byte == 0x22 {
+                return String(bytes: value, encoding: .utf8)
+            } else {
+                value.append(byte)
+            }
+            index += 1
+        }
+        return nil
+    }
+
+    /// `exec` is a JavaScript orchestration envelope. Surface the operations it
+    /// invokes while retaining the outer name so one envelope remains one call.
+    private static func toolInput(from data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = object["payload"] as? [String: Any] else { return nil }
+        return payload["input"] as? String ?? payload["arguments"] as? String
+    }
+
+    private static func displayToolName(outerName: String, input: String?) -> String {
+        guard outerName == "exec" || outerName.hasSuffix(".exec") else { return outerName }
+        guard let input else { return outerName }
+        let nested = nestedToolCalls(from: input).map(\.name).reduce(into: [String]()) { names, name in
+            if !names.contains(name) { names.append(name) }
+        }
+        guard !nested.isEmpty else { return outerName }
+        return "\(outerName) → \(nested.joined(separator: " + "))"
+    }
+
+    private struct NestedToolCall {
+        let name: String
+        let arguments: String
+    }
+
+    private static func nestedToolCalls(from input: String) -> [NestedToolCall] {
+        let bytes = Array(input.utf8)
+        let marker = Array("tools.".utf8)
+        var nested: [NestedToolCall] = []
+        var index = 0
+        var quote: UInt8?
+        var escaped = false
+        var lineComment = false
+        var blockComment = false
+        while index + marker.count < bytes.count {
+            let byte = bytes[index]
+            let next = index + 1 < bytes.count ? bytes[index + 1] : 0
+            if lineComment {
+                if byte == 0x0A { lineComment = false }
+                index += 1
+                continue
+            }
+            if blockComment {
+                if byte == 0x2A, next == 0x2F { blockComment = false; index += 2 } else { index += 1 }
+                continue
+            }
+            if let activeQuote = quote {
+                if escaped { escaped = false }
+                else if byte == 0x5C { escaped = true }
+                else if byte == activeQuote { quote = nil }
+                index += 1
+                continue
+            }
+            if byte == 0x22 || byte == 0x27 || byte == 0x60 { quote = byte; index += 1; continue }
+            if byte == 0x2F, next == 0x2F { lineComment = true; index += 2; continue }
+            if byte == 0x2F, next == 0x2A { blockComment = true; index += 2; continue }
+            guard bytes[index..<(index + marker.count)].elementsEqual(marker) else {
+                index += 1
+                continue
+            }
+            var end = index + marker.count
+            while end < bytes.count {
+                let byte = bytes[end]
+                let isIdentifier = (byte >= 0x30 && byte <= 0x39)
+                    || (byte >= 0x41 && byte <= 0x5A)
+                    || (byte >= 0x61 && byte <= 0x7A)
+                    || byte == 0x5F
+                if !isIdentifier { break }
+                end += 1
+            }
+            var callStart = end
+            while callStart < bytes.count, bytes[callStart] == 0x20 || bytes[callStart] == 0x09 {
+                callStart += 1
+            }
+            if end > index + marker.count,
+               callStart < bytes.count,
+               bytes[callStart] == 0x28,
+               let operation = String(bytes: bytes[(index + marker.count)..<end], encoding: .utf8),
+               operation.contains("_") || operation == "wait" {
+                let argumentEnd = matchingCallEnd(in: bytes, openingAt: callStart)
+                let arguments = String(bytes: bytes[(callStart + 1)..<argumentEnd], encoding: .utf8) ?? ""
+                nested.append(.init(name: operation, arguments: arguments))
+            }
+            index = max(end, index + 1)
+        }
+        return nested
+    }
+
+    private static func matchingCallEnd(in bytes: [UInt8], openingAt start: Int) -> Int {
+        var depth = 1
+        var index = start + 1
+        var quote: UInt8?
+        var escaped = false
+        while index < bytes.count {
+            let byte = bytes[index]
+            if let activeQuote = quote {
+                if escaped { escaped = false }
+                else if byte == 0x5C { escaped = true }
+                else if byte == activeQuote { quote = nil }
+            } else if byte == 0x22 || byte == 0x27 || byte == 0x60 {
+                quote = byte
+            } else if byte == 0x28 {
+                depth += 1
+            } else if byte == 0x29 {
+                depth -= 1
+                if depth == 0 { return index }
+            }
+            index += 1
+        }
+        return bytes.count
+    }
+
+    /// Skill use has no dedicated rollout event. Reading `.../<name>/SKILL.md`
+    /// is the reliable activation signal mandated by the Codex skill workflow.
+    private static func skillNames(outerName: String, input: String?) -> [String] {
+        guard let input else { return [] }
+        let text: String
+        if outerName == "exec" {
+            text = nestedToolCalls(from: input)
+                .filter { $0.name == "exec_command" }
+                .map(\.arguments)
+                .joined(separator: "\n")
+        } else if outerName.hasSuffix(".exec") {
+            text = input
+        } else {
+            return []
+        }
+        let marker = "/SKILL.md"
+        var names: [String] = []
+        var searchStart = text.startIndex
+        while let markerRange = text.range(of: marker, range: searchStart..<text.endIndex) {
+            let prefix = text[..<markerRange.lowerBound]
+            if let slash = prefix.lastIndex(of: "/") {
+                let name = String(prefix[prefix.index(after: slash)...])
+                if !name.isEmpty, !names.contains(name) { names.append(name) }
+            }
+            searchStart = markerRange.upperBound
+        }
+        return names
+    }
+
+    private static func attribute(
+        _ usage: TokenUsage,
+        to indices: [Int],
+        model: String?,
+        events: inout [ToolCallEvent]
+    ) {
+        guard !indices.isEmpty else { return }
+        for (position, index) in indices.enumerated() {
+            events[index] = ToolCallEvent(
+                date: events[index].date,
+                name: events[index].name,
+                model: events[index].model ?? model,
+                attributedUsage: split(usage, count: indices.count, index: position)
+            )
+        }
+    }
+
+    private static func attributeSkills(
+        _ usage: TokenUsage,
+        to indices: [Int],
+        model: String?,
+        events: inout [SkillCallEvent]
+    ) {
+        guard !indices.isEmpty else { return }
+        for (position, index) in indices.enumerated() {
+            events[index] = SkillCallEvent(
+                date: events[index].date,
+                name: events[index].name,
+                model: events[index].model ?? model,
+                attributedUsage: split(usage, count: indices.count, index: position)
+            )
+        }
+    }
+
+    private static func split(_ usage: TokenUsage, count: Int, index: Int) -> TokenUsage {
+        func part(_ value: Int64) -> Int64 {
+            let divisor = Int64(count)
+            return value / divisor + (Int64(index) < value % divisor ? 1 : 0)
+        }
+        return TokenUsage(
+            input: part(usage.input),
+            cachedInput: part(usage.cachedInput),
+            cacheWriteInput: part(usage.cacheWriteInput),
+            output: part(usage.output),
+            reasoningOutput: part(usage.reasoningOutput),
+            total: part(usage.total)
+        )
     }
 }

@@ -37,6 +37,8 @@ The events do not reliably separate model compute, local tool execution, network
 - Project totals: sessions, tokens, runtime, active days, last activity, dominant model
 - Model totals: sessions, token mix, cache hit rate, runtime, estimated cost
 - Portfolio totals: projects, sessions, active days, tokens, tool calls, completion/abort counts
+- Tool totals: tool name, call frequency, sessions, attributed tokens, and attributed API-equivalent token cost
+- Skill totals: skill name, activation frequency, sessions, attributed tokens, and attributed API-equivalent token cost
 
 Period boundaries use the Mac's current calendar and time zone.
 
@@ -56,5 +58,9 @@ Reasoning tokens are not added separately because they are included in output. R
 The app checks models.dev at most once every 24 hours and caches the response with HTTP validators. A validated price change creates a new schedule effective at the successful fetch time; it never mutates an earlier schedule. Invalid, unavailable, or unexpectedly large responses are ignored in favor of the last valid cached catalog or bundled local schedules. The UI always identifies whether pricing came from models.dev, its cache, or the bundled fallback. OpenAI's Models API supplies model identity and availability but does not currently expose token prices, so models.dev is explicitly treated as a third-party metadata source rather than an invoice authority.
 
 The estimate does not include hosted-tool call charges, regional-processing uplifts, long-context multipliers, Batch/Flex discounts, negotiated rates, credits, taxes, or ChatGPT subscription terms. **It is not an invoice.** Actual API spend should come from the OpenAI Organization Costs endpoint and may only be attributable to OpenAI API project IDs, not local filesystem projects.
+
+For tool-level analysis, every token delta is attributed to tool calls since the previous token event. When multiple calls precede one event, the token categories are divided evenly without changing the total. This is an estimate of the model-token work associated with each tool, not the tool vendor's own fee. Calls without a later token event remain visible in frequency totals with zero attributed cost.
+
+Skill activation has no dedicated rollout event, so the dashboard uses an explicit read of `<skill>/SKILL.md` as its auditable activation signal. Following token deltas are divided among skills activated since the previous token event. Skill attribution overlaps tool attribution and must not be added to it or to the total estimate as a separate charge.
 
 **Cost coverage** is the portion of tokens for which the dashboard has both a detailed input/output breakdown and a recognized model price. Always show coverage beside estimates.

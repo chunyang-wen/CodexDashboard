@@ -77,12 +77,43 @@ public struct TurnMetric: Codable, Hashable, Sendable {
     }
 }
 
+public struct ToolCallEvent: Codable, Hashable, Sendable {
+    public let date: Date
+    public let name: String
+    public let model: String?
+    public let attributedUsage: TokenUsage
+
+    public init(date: Date, name: String, model: String?, attributedUsage: TokenUsage = .zero) {
+        self.date = date
+        self.name = name
+        self.model = model
+        self.attributedUsage = attributedUsage
+    }
+}
+
+public struct SkillCallEvent: Codable, Hashable, Sendable {
+    public let date: Date
+    public let name: String
+    public let model: String?
+    public let attributedUsage: TokenUsage
+
+    public init(date: Date, name: String, model: String?, attributedUsage: TokenUsage = .zero) {
+        self.date = date
+        self.name = name
+        self.model = model
+        self.attributedUsage = attributedUsage
+    }
+}
+
 public struct SessionMetric: Identifiable, Codable, Hashable, Sendable {
     public let id: String
     public let rolloutPath: String
     public let projectPath: String
     public let title: String
     public let source: String
+    /// Human-readable client recorded by the rollout, such as "Codex Desktop".
+    /// Optional because the compact Codex thread index and older archives omit it.
+    public let originator: String?
     public let provider: String
     public let createdAt: Date
     public let updatedAt: Date
@@ -95,6 +126,10 @@ public struct SessionMetric: Identifiable, Codable, Hashable, Sendable {
     public let usageEvents: [UsageEvent]
     public let turns: [TurnMetric]
     public let toolCalls: Int
+    /// Optional so historical archives written before tool-level metrics remain decodable.
+    public let toolCallEvents: [ToolCallEvent]?
+    /// Skill activations inferred from explicit reads of a skill's SKILL.md.
+    public let skillCallEvents: [SkillCallEvent]?
     public let userMessages: Int
     public let abortedTurns: Int
     public let enrichmentAvailable: Bool
@@ -105,6 +140,7 @@ public struct SessionMetric: Identifiable, Codable, Hashable, Sendable {
         projectPath: String,
         title: String,
         source: String,
+        originator: String? = nil,
         provider: String,
         createdAt: Date,
         updatedAt: Date,
@@ -117,6 +153,8 @@ public struct SessionMetric: Identifiable, Codable, Hashable, Sendable {
         usageEvents: [UsageEvent] = [],
         turns: [TurnMetric] = [],
         toolCalls: Int = 0,
+        toolCallEvents: [ToolCallEvent]? = [],
+        skillCallEvents: [SkillCallEvent]? = [],
         userMessages: Int = 0,
         abortedTurns: Int = 0,
         enrichmentAvailable: Bool = false
@@ -126,6 +164,7 @@ public struct SessionMetric: Identifiable, Codable, Hashable, Sendable {
         self.projectPath = projectPath
         self.title = title
         self.source = source
+        self.originator = originator
         self.provider = provider
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -138,6 +177,8 @@ public struct SessionMetric: Identifiable, Codable, Hashable, Sendable {
         self.usageEvents = usageEvents
         self.turns = turns
         self.toolCalls = toolCalls
+        self.toolCallEvents = toolCallEvents
+        self.skillCallEvents = skillCallEvents
         self.userMessages = userMessages
         self.abortedTurns = abortedTurns
         self.enrichmentAvailable = enrichmentAvailable
@@ -147,6 +188,7 @@ public struct SessionMetric: Identifiable, Codable, Hashable, Sendable {
         URL(fileURLWithPath: projectPath).lastPathComponent.isEmpty ? projectPath : URL(fileURLWithPath: projectPath).lastPathComponent
     }
     public var displayTitle: String { title.isEmpty ? "Untitled session" : title }
+    public var displaySource: String { originator ?? source }
     public var sessionSpan: TimeInterval { max(0, updatedAt.timeIntervalSince(createdAt)) }
     public var activeRuntime: TimeInterval { turns.reduce(0) { $0 + $1.duration } }
     public var completedTurns: Int { turns.filter(\.completed).count }
@@ -193,4 +235,56 @@ public struct ModelMetric: Identifiable, Hashable, Sendable {
     public let usage: TokenUsage
     public let activeRuntime: TimeInterval
     public let estimatedCost: Decimal
+}
+
+public struct ToolMetric: Identifiable, Hashable, Sendable {
+    public var id: String { tool }
+    public let tool: String
+    public let calls: Int
+    public let attributedCalls: Int
+    public let sessions: Int
+    public let attributedUsage: TokenUsage
+    public let estimatedCost: Decimal
+
+    public init(
+        tool: String,
+        calls: Int,
+        attributedCalls: Int,
+        sessions: Int,
+        attributedUsage: TokenUsage,
+        estimatedCost: Decimal
+    ) {
+        self.tool = tool
+        self.calls = calls
+        self.attributedCalls = attributedCalls
+        self.sessions = sessions
+        self.attributedUsage = attributedUsage
+        self.estimatedCost = estimatedCost
+    }
+}
+
+public struct SkillMetric: Identifiable, Hashable, Sendable {
+    public var id: String { skill }
+    public let skill: String
+    public let calls: Int
+    public let attributedCalls: Int
+    public let sessions: Int
+    public let attributedUsage: TokenUsage
+    public let estimatedCost: Decimal
+
+    public init(
+        skill: String,
+        calls: Int,
+        attributedCalls: Int,
+        sessions: Int,
+        attributedUsage: TokenUsage,
+        estimatedCost: Decimal
+    ) {
+        self.skill = skill
+        self.calls = calls
+        self.attributedCalls = attributedCalls
+        self.sessions = sessions
+        self.attributedUsage = attributedUsage
+        self.estimatedCost = estimatedCost
+    }
 }

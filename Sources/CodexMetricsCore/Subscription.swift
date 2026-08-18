@@ -1,5 +1,47 @@
 import Foundation
 
+public struct CodexAccountSnapshot: Codable, Hashable, Sendable {
+    public let email: String
+    public let name: String?
+    public let planType: String?
+
+    public init(email: String, name: String?, planType: String?) {
+        self.email = email
+        self.name = name
+        self.planType = planType
+    }
+}
+
+public enum CodexAccountReader {
+    /// Reads display-only identity claims from the locally stored ID token. The token
+    /// is never returned, logged, persisted, or sent over the network.
+    public static func read(from codexHome: URL) -> CodexAccountSnapshot? {
+        let authURL = codexHome.appendingPathComponent("auth.json")
+        guard let data = try? Data(contentsOf: authURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tokens = root["tokens"] as? [String: Any],
+              let token = tokens["id_token"] as? String else { return nil }
+        let segments = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard segments.count > 1,
+              let payload = decodeBase64URL(String(segments[1])),
+              let claims = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              let email = claims["email"] as? String, !email.isEmpty else { return nil }
+        let authClaims = claims["https://api.openai.com/auth"] as? [String: Any]
+        return CodexAccountSnapshot(
+            email: email,
+            name: claims["name"] as? String,
+            planType: authClaims?["chatgpt_plan_type"] as? String
+        )
+    }
+
+    private static func decodeBase64URL(_ value: String) -> Data? {
+        var normalized = value.replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        normalized.append(String(repeating: "=", count: (4 - normalized.count % 4) % 4))
+        return Data(base64Encoded: normalized)
+    }
+}
+
 public struct UsageQuotaWindow: Identifiable, Codable, Hashable, Sendable {
     public let usedPercent: Double
     public let windowMinutes: Int

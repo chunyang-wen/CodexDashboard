@@ -51,6 +51,8 @@ private struct DashboardAnalytics: Sendable {
     let costCoverage: Double
     let runtime: TimeInterval
     let models: [ModelMetric]
+    let tools: [ToolMetric]
+    let skills: [SkillMetric]
     let daily: [PeriodMetric]
     let weekly: [PeriodMetric]
     let monthly: [PeriodMetric]
@@ -58,14 +60,15 @@ private struct DashboardAnalytics: Sendable {
     let averageTTFT: TimeInterval?
     let activeDays: Int
     let toolCalls: Int
+    let skillCalls: Int
     let completedTurns: Int
     let abortedTurns: Int
 
     static let empty = DashboardAnalytics(
         filteredSessions: [], allProjects: [], projects: [],
         usage: .zero, estimatedCost: 0, costCoverage: 0, runtime: 0,
-        models: [], daily: [], weekly: [], monthly: [], turnDurations: [],
-        averageTTFT: nil, activeDays: 0, toolCalls: 0, completedTurns: 0,
+        models: [], tools: [], skills: [], daily: [], weekly: [], monthly: [], turnDurations: [],
+        averageTTFT: nil, activeDays: 0, toolCalls: 0, skillCalls: 0, completedTurns: 0,
         abortedTurns: 0
     )
 
@@ -82,13 +85,21 @@ private struct DashboardAnalytics: Sendable {
         var turnDurations: [TimeInterval] = []
         var firstTokenTimes: [TimeInterval] = []
         var toolCalls = 0
+        var skillCalls = 0
         var completedTurns = 0
         var abortedTurns = 0
         turnDurations.reserveCapacity(filtered.count)
         firstTokenTimes.reserveCapacity(filtered.count)
 
         for session in filtered {
-            toolCalls += session.toolCalls
+            if let events = session.toolCallEvents, !events.isEmpty {
+                toolCalls += events.filter { event in startDate.map { event.date >= $0 } ?? true }.count
+            } else {
+                toolCalls += session.toolCalls
+            }
+            skillCalls += (session.skillCallEvents ?? []).filter { event in
+                startDate.map { event.date >= $0 } ?? true
+            }.count
             abortedTurns += session.abortedTurns
             for turn in session.turns where turn.completed {
                 completedTurns += 1
@@ -116,6 +127,8 @@ private struct DashboardAnalytics: Sendable {
             costCoverage: Analytics.costCoverage(filtered, pricing: pricing, since: startDate),
             runtime: runtime,
             models: Analytics.models(from: filtered, pricing: pricing, since: startDate),
+            tools: Analytics.tools(from: filtered, pricing: pricing, since: startDate),
+            skills: Analytics.skills(from: filtered, pricing: pricing, since: startDate),
             daily: Analytics.periods(from: filtered, granularity: .day, pricing: pricing, calendar: calendar, since: startDate),
             weekly: Analytics.periods(from: filtered, granularity: .week, pricing: pricing, calendar: calendar, since: startDate),
             monthly: Analytics.periods(from: filtered, granularity: .month, pricing: pricing, calendar: calendar, since: startDate),
@@ -123,6 +136,7 @@ private struct DashboardAnalytics: Sendable {
             averageTTFT: averageTTFT,
             activeDays: Set(filtered.map { calendar.startOfDay(for: $0.updatedAt) }).count,
             toolCalls: toolCalls,
+            skillCalls: skillCalls,
             completedTurns: completedTurns,
             abortedTurns: abortedTurns
         )
@@ -159,6 +173,7 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var enrichedSessions = 0
     @Published private(set) var enrichmentTotal = 0
     @Published private(set) var subscription: SubscriptionSnapshot?
+    @Published private(set) var account: CodexAccountSnapshot?
     @Published private(set) var pricing: PricingHistory = .bundled
     @Published private(set) var pricingSource = "Bundled fallback"
     @Published private(set) var pricingUpdatedAt: Date?
@@ -167,6 +182,8 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var historyMessage: String?
     @Published private(set) var errorMessage: String?
     @Published private(set) var range: Range = .thirtyDays
+    @Published private(set) var codexHome: URL
+    @Published private(set) var refreshInterval: TimeInterval
     private var loadTask: Task<Void, Never>?
     private var enrichmentTask: Task<Void, Never>?
     private var pricingTask: Task<Void, Never>?
@@ -179,6 +196,15 @@ final class DashboardStore: ObservableObject {
     private let historicalStore = HistoricalStore()
     private let dynamicPricingLoader = DynamicPricingLoader()
     private var analytics = DashboardAnalytics.empty
+    private var todayAnalytics = DashboardAnalytics.empty
+
+    init(defaults: UserDefaults = .standard) {
+        let savedPath = defaults.string(forKey: "codexDataPath")
+        codexHome = savedPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
+        let savedInterval = defaults.object(forKey: "metricsRefreshInterval") as? Double
+        refreshInterval = savedInterval ?? 60
+    }
 
     var isBusy: Bool { isLoading || isEnriching }
     var enrichmentFraction: Double {
@@ -188,6 +214,10 @@ final class DashboardStore: ObservableObject {
         "Parsing \(enrichedSessions.formatted()) of \(enrichmentTotal.formatted()) sessions"
     }
     var analyticsUpdateLabel: String { "Updating \(range.rawValue)…" }
+    var codexHomeDisplayPath: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return codexHome.path.replacingOccurrences(of: home, with: "~", options: [.anchored])
+    }
 
     var filteredSessions: [SessionMetric] { analytics.filteredSessions }
     /// The project/session hierarchy is structural and must not disappear when an
@@ -199,6 +229,8 @@ final class DashboardStore: ObservableObject {
     var costCoverage: Double { analytics.costCoverage }
     var runtime: TimeInterval { analytics.runtime }
     var models: [ModelMetric] { analytics.models }
+    var tools: [ToolMetric] { analytics.tools }
+    var skills: [SkillMetric] { analytics.skills }
     var daily: [PeriodMetric] { analytics.daily }
     var weekly: [PeriodMetric] { analytics.weekly }
     var monthly: [PeriodMetric] { analytics.monthly }
@@ -209,12 +241,19 @@ final class DashboardStore: ObservableObject {
     var averageTTFT: TimeInterval? { analytics.averageTTFT }
     var activeDays: Int { analytics.activeDays }
     var toolCalls: Int { analytics.toolCalls }
+    var skillCalls: Int { analytics.skillCalls }
     var completedTurns: Int { analytics.completedTurns }
     var abortedTurns: Int { analytics.abortedTurns }
+    var todayUsage: TokenUsage { todayAnalytics.usage }
+    var todayEstimatedCost: Decimal { todayAnalytics.estimatedCost }
+    var todayToolCalls: Int { todayAnalytics.toolCalls }
+    var todaySkillCalls: Int { todayAnalytics.skillCalls }
 
     func load() {
         loadTask?.cancel()
         enrichmentTask?.cancel()
+        backgroundRefreshTask?.cancel()
+        backgroundRefreshTask = nil
         let requestID = UUID()
         loadID = requestID
         enrichmentID = UUID()
@@ -225,8 +264,9 @@ final class DashboardStore: ObservableObject {
         errorMessage = nil
         loadTask = Task {
             do {
+                let codexHome = self.codexHome
                 let indexed = try await Task.detached(priority: .userInitiated) {
-                    try CodexStore().loadIndexedSessions()
+                    try CodexStore(codexHome: codexHome).loadIndexedSessions()
                 }.value
                 guard !Task.isCancelled, loadID == requestID else { return }
                 do {
@@ -246,6 +286,9 @@ final class DashboardStore: ObservableObject {
                 }.value
                 guard !Task.isCancelled, loadID == requestID else { return }
                 subscription = latestSubscription
+                account = await Task.detached(priority: .utility) {
+                    CodexAccountReader.read(from: codexHome)
+                }.value
                 startBackgroundRefreshIfNeeded()
             } catch {
                 guard loadID == requestID else { return }
@@ -259,10 +302,10 @@ final class DashboardStore: ObservableObject {
     /// Watches only small file metadata and performs quiet, in-process enrichment.
     /// No helper executable or dedicated OS thread is created.
     private func startBackgroundRefreshIfNeeded() {
-        guard backgroundRefreshTask == nil else { return }
+        guard backgroundRefreshTask == nil, refreshInterval > 0 else { return }
         backgroundRefreshTask = Task(priority: .background) { [weak self] in
             guard let self else { return }
-            let codexHome = CodexStore().codexHome
+            let codexHome = self.codexHome
             let initialPaths = self.sessions.map(\.rolloutPath)
             var fingerprint = await Task.detached(priority: .background) {
                 MetricsSourceFingerprint.capture(paths: initialPaths, codexHome: codexHome)
@@ -270,8 +313,10 @@ final class DashboardStore: ObservableObject {
             var failures = 0
 
             while !Task.isCancelled {
-                let baseDelay = min(300, 20 * (1 << min(failures, 4)))
-                let jitter = Int.random(in: 0...min(10, baseDelay / 4))
+                let configuredDelay = Int(self.refreshInterval)
+                guard configuredDelay > 0 else { return }
+                let baseDelay = min(300, configuredDelay * (1 << min(failures, 3)))
+                let jitter = Int.random(in: 0...min(10, max(1, baseDelay / 8)))
                 try? await Task.sleep(for: .seconds(baseDelay + jitter))
                 guard !Task.isCancelled else { return }
                 let process = ProcessInfo.processInfo
@@ -309,8 +354,9 @@ final class DashboardStore: ObservableObject {
             let previousIDs = Set(sessions.map(\.id))
             if indexChanged {
                 let existingByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
+                let codexHome = self.codexHome
                 let indexed = try await Task.detached(priority: .background) {
-                    try CodexStore().loadIndexedSessions()
+                    try CodexStore(codexHome: codexHome).loadIndexedSessions()
                 }.value
                 let merged = try await historicalStore.mergedSessions(with: indexed)
                 sessions = merged.map { session in
@@ -330,7 +376,7 @@ final class DashboardStore: ObservableObject {
 
             var enriched: [SessionMetric] = []
             enriched.reserveCapacity(candidates.count)
-            for await progress in CodexStore().enrichmentStream(candidates) {
+            for await progress in CodexStore(codexHome: codexHome).enrichmentStream(candidates) {
                 guard !Task.isCancelled else { return true }
                 enriched.append(progress.session)
             }
@@ -368,7 +414,7 @@ final class DashboardStore: ObservableObject {
         isEnriching = true
         let indexByID = Dictionary(uniqueKeysWithValues: sessions.enumerated().map { ($0.element.id, $0.offset) })
         enrichmentTask = Task {
-            let stream = CodexStore().enrichmentStream(candidates)
+            let stream = CodexStore(codexHome: codexHome).enrichmentStream(candidates)
             var pending: [(index: Int, session: SessionMetric)] = []
             pending.reserveCapacity(50)
             for await progress in stream {
@@ -449,11 +495,17 @@ final class DashboardStore: ObservableObject {
             try? await Task.sleep(for: .milliseconds(40))
             guard !Task.isCancelled else { return }
             let refreshed = await Task.detached(priority: .userInitiated) {
-                DashboardAnalytics.calculate(
+                let selected = DashboardAnalytics.calculate(
                     sessions: sessions,
                     startDate: startDate,
                     pricing: pricing
                 )
+                let today = DashboardAnalytics.calculate(
+                    sessions: sessions,
+                    startDate: Calendar.current.startOfDay(for: .now),
+                    pricing: pricing
+                )
+                return (selected, today)
             }.value
             let minimumFeedback = Duration.milliseconds(180)
             let elapsed = feedbackStartedAt.duration(to: .now)
@@ -461,9 +513,31 @@ final class DashboardStore: ObservableObject {
                 try? await Task.sleep(for: minimumFeedback - elapsed)
             }
             guard !Task.isCancelled, analyticsID == requestID else { return }
-            analytics = refreshed
+            analytics = refreshed.0
+            todayAnalytics = refreshed.1
             isUpdatingAnalytics = false
         }
+    }
+
+    func updateCodexHome(_ url: URL) {
+        let standardized = url.standardizedFileURL
+        guard standardized != codexHome else { return }
+        codexHome = standardized
+        UserDefaults.standard.set(standardized.path, forKey: "codexDataPath")
+        load()
+    }
+
+    func resetCodexHome() {
+        updateCodexHome(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true))
+    }
+
+    func updateRefreshInterval(_ interval: TimeInterval) {
+        guard interval != refreshInterval else { return }
+        refreshInterval = interval
+        UserDefaults.standard.set(interval, forKey: "metricsRefreshInterval")
+        backgroundRefreshTask?.cancel()
+        backgroundRefreshTask = nil
+        startBackgroundRefreshIfNeeded()
     }
 
     func exportHistory() {

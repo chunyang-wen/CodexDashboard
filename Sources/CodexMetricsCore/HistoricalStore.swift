@@ -69,13 +69,16 @@ final class MetricsDatabase: @unchecked Sendable {
                 enrichment: enrichment,
                 deviceID: optionalUInt64(statement, 0),
                 fileID: optionalUInt64(statement, 1),
-                boundaryHash: optionalUInt64(statement, 4)
+                boundaryHash: optionalUInt64(statement, 4),
+                parserVersion: enrichment.parserVersion
             )
         }
     }
 
     func storeRollout(_ rollout: CachedRollout, for path: String) throws {
-        let encoded = try JSONEncoder().encode(rollout.enrichment)
+        var enrichment = rollout.enrichment
+        enrichment.parserVersion = rollout.parserVersion
+        let encoded = try JSONEncoder().encode(enrichment)
         try lockedThrowing {
             guard let statement = prepare("""
                 INSERT INTO rollout_checkpoint(path, device_id, file_id, committed_offset, modified_at, boundary_hash, enrichment)
@@ -458,12 +461,24 @@ public actor HistoricalStore {
         let turns = Array(Set(older.turns + newer.turns)).sorted { $0.completedAt < $1.completedAt }
         let eventUsage = events.reduce(TokenUsage.zero) { $0 + $1.usage }
         let usage = eventUsage.total > 0 ? eventUsage : preferred.usage
+        let toolCallEvents: [ToolCallEvent]?
+        let skillCallEvents: [SkillCallEvent]?
+        if enrichmentAvailable, newer.enrichmentAvailable {
+            // A full parser pass is authoritative. Replacing detail prevents stale
+            // parser labels (such as bare `exec`) from surviving cache upgrades.
+            toolCallEvents = newer.toolCallEvents
+            skillCallEvents = newer.skillCallEvents
+        } else {
+            toolCallEvents = Array(Set((older.toolCallEvents ?? []) + (newer.toolCallEvents ?? []))).sorted { $0.date < $1.date }
+            skillCallEvents = Array(Set((older.skillCallEvents ?? []) + (newer.skillCallEvents ?? []))).sorted { $0.date < $1.date }
+        }
         return SessionMetric(
             id: preferred.id,
             rolloutPath: preferred.rolloutPath.isEmpty ? fallback.rolloutPath : preferred.rolloutPath,
             projectPath: preferred.projectPath,
             title: preferred.title,
             source: preferred.source,
+            originator: preferred.originator ?? fallback.originator,
             provider: preferred.provider,
             createdAt: min(older.createdAt, newer.createdAt),
             updatedAt: max(older.updatedAt, newer.updatedAt),
@@ -476,6 +491,8 @@ public actor HistoricalStore {
             usageEvents: events,
             turns: turns,
             toolCalls: max(older.toolCalls, newer.toolCalls),
+            toolCallEvents: toolCallEvents,
+            skillCallEvents: skillCallEvents,
             userMessages: max(older.userMessages, newer.userMessages),
             abortedTurns: max(older.abortedTurns, newer.abortedTurns),
             enrichmentAvailable: enrichmentAvailable

@@ -7,7 +7,6 @@ enum DashboardPage: String, CaseIterable, Identifiable {
     case projects = "Projects"
     case models = "Models"
     case billing = "Usage & Billing"
-    case definitions = "Metric Guide"
     var id: String { rawValue }
     var icon: String {
         switch self {
@@ -15,7 +14,6 @@ enum DashboardPage: String, CaseIterable, Identifiable {
         case .projects: "folder"
         case .models: "cpu"
         case .billing: "dollarsign.circle"
-        case .definitions: "book.closed"
         }
     }
 }
@@ -81,7 +79,7 @@ struct ContentView: View {
             .safeAreaInset(edge: .bottom) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("LOCAL DATA").font(.caption2.weight(.bold)).tracking(0.8).foregroundStyle(.secondary)
-                    Text("~/.codex").font(.caption.monospaced()).foregroundStyle(.secondary)
+                    Text(store.codexHomeDisplayPath).font(.caption.monospaced()).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding()
@@ -121,9 +119,11 @@ struct ContentView: View {
                     .onChange(of: selectedRange) { _, newRange in
                         store.updateRange(newRange)
                     }
-                    Button { store.load() } label: { Image(systemName: "arrow.clockwise") }
-                        .help("Refresh metrics")
-                        .disabled(store.isBusy)
+                    Button { store.load() } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .help(store.isBusy ? "Restart metrics refresh now" : "Refresh metrics now")
+                    .accessibilityLabel(store.isBusy ? "Restart metrics refresh" : "Refresh metrics")
                     if store.isEnriching && !store.isUpdatingAnalytics {
                         MetricProgressBar(value: store.enrichmentFraction)
                             .frame(width: 76)
@@ -144,7 +144,6 @@ struct ContentView: View {
         case .projects: ProjectsView()
         case .models: ModelsView()
         case .billing: BillingView()
-        case .definitions: MetricGuideView()
         }
     }
 }
@@ -191,19 +190,22 @@ struct OverviewView: View {
                 SectionHeader(title: "Codex activity", subtitle: "A local, read-only view of projects, usage, responsiveness, and estimated spend.")
                 LazyVGrid(columns: columns, spacing: 12) {
                     MetricCard(title: "Projects", value: store.projects.count.formatted(), detail: "\(store.filteredSessions.count) sessions", icon: "folder.fill", tint: .blue)
-                    MetricCard(title: "Tokens", value: MetricFormatters.compactNumber(store.usage.total), detail: "\((store.usage.cacheHitRate * 100).formatted(.number.precision(.fractionLength(1))))% cache hit", icon: "text.word.spacing", tint: .purple)
-                    MetricCard(title: "Agent runtime", value: MetricFormatters.duration(store.runtime), detail: "Completed turn wall time", icon: "clock.fill", tint: .orange)
-                    MetricCard(title: "Equivalent cost", value: store.costCoverage > 0 ? MetricFormatters.currency(store.estimatedCost) : "—", detail: "\((store.costCoverage * 100).formatted(.number.precision(.fractionLength(0))))% token coverage", icon: "dollarsign", tint: .green)
-                    MetricCard(title: "Median turn", value: Analytics.percentile(store.turnDurations, 0.5).map(MetricFormatters.duration) ?? "—", detail: "P95 \(Analytics.percentile(store.turnDurations, 0.95).map(MetricFormatters.duration) ?? "—")", icon: "gauge.with.dots.needle.50percent", tint: .pink)
-                    MetricCard(title: "First token", value: store.averageTTFT.map(MetricFormatters.duration) ?? "—", detail: "Average response startup", icon: "bolt.fill", tint: .yellow)
-                    MetricCard(title: "Active days", value: store.activeDays.formatted(), detail: "Distinct calendar days", icon: "calendar.badge.clock", tint: .teal)
-                    MetricCard(title: "Tool calls", value: store.toolCalls.formatted(.number.notation(.compactName)), detail: "\(store.completedTurns) completed · \(store.abortedTurns) aborted", icon: "hammer.fill", tint: .indigo)
+                    MetricCard(title: "Tokens", value: MetricFormatters.compactNumber(store.usage.total), detail: "\((store.usage.cacheHitRate * 100).formatted(.number.precision(.fractionLength(1))))% cache hit", icon: "text.word.spacing", tint: .purple, definition: .totalTokens)
+                    MetricCard(title: "Agent runtime", value: MetricFormatters.duration(store.runtime), detail: "Completed turn wall time", icon: "clock.fill", tint: .orange, definition: .agentRuntime)
+                    MetricCard(title: "Equivalent cost", value: store.costCoverage > 0 ? MetricFormatters.currency(store.estimatedCost) : "—", detail: "\((store.costCoverage * 100).formatted(.number.precision(.fractionLength(0))))% token coverage", icon: "dollarsign", tint: .green, definition: .estimatedCost)
+                    MetricCard(title: "Median turn", value: Analytics.percentile(store.turnDurations, 0.5).map(MetricFormatters.duration) ?? "—", detail: "P95 \(Analytics.percentile(store.turnDurations, 0.95).map(MetricFormatters.duration) ?? "—")", icon: "gauge.with.dots.needle.50percent", tint: .pink, definition: .turnPercentiles)
+                    MetricCard(title: "First token", value: store.averageTTFT.map(MetricFormatters.duration) ?? "—", detail: "Average response startup", icon: "bolt.fill", tint: .yellow, definition: .firstTokenLatency)
+                    MetricCard(title: "Active days", value: store.activeDays.formatted(), detail: "Distinct calendar days", icon: "calendar.badge.clock", tint: .teal, definition: .activeDays)
+                    ToolCallsMetricCard(calls: store.toolCalls, tools: store.tools, detail: "\(store.tools.count) tools · click for cost")
+                    SkillCallsMetricCard(calls: store.skillCalls, skills: store.skills, detail: "\(store.skills.count) skills · click for cost")
                 }
                 ActivityChart(daily: store.daily, weekly: store.weekly, monthly: store.monthly)
                 HStack(alignment: .top, spacing: 16) {
                     TopProjectsView(projects: Array(store.projects.prefix(7)))
                     ModelMixView(models: Array(store.models.prefix(7)))
                 }
+                ToolOverviewView(tools: Array(store.tools.prefix(10)), totalCalls: store.toolCalls)
+                SkillOverviewView(skills: Array(store.skills.prefix(10)), totalCalls: store.skillCalls)
             }
             .padding(.vertical, 28)
             .padding(.horizontal, 8)
@@ -232,7 +234,7 @@ struct ActivityChart: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                SectionHeader(title: "Activity trend", subtitle: "Detailed token events and completed turns only; indexed totals are excluded until enriched.")
+                SectionHeader(title: "Activity trend", subtitle: "Detailed token events and completed turns only; indexed totals are excluded until enriched.", definition: .periodUsage)
                 VStack(alignment: .trailing, spacing: 8) {
                     Picker("Period", selection: $granularity) {
                         Text("Day").tag(PeriodGranularity.day)
@@ -240,9 +242,9 @@ struct ActivityChart: View {
                         Text("Month").tag(PeriodGranularity.month)
                     }.pickerStyle(.segmented).frame(width: 230)
                     Picker("Metric", selection: $metric) {
-                        Text("Tokens").tag("Tokens")
-                        Text("Runtime").tag("Runtime")
-                        Text("Cost").tag("Cost")
+                        Text("Tokens").tag("Tokens").help(MetricDefinition.totalTokens.helpText)
+                        Text("Runtime").tag("Runtime").help(MetricDefinition.agentRuntime.helpText)
+                        Text("Cost").tag("Cost").help(MetricDefinition.estimatedCost.helpText)
                     }.pickerStyle(.segmented).frame(width: 230)
                 }
             }
@@ -447,6 +449,88 @@ struct ModelMixView: View {
     }
 }
 
+struct ToolOverviewView: View {
+    let tools: [ToolMetric]
+    let totalCalls: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionHeader(
+                title: "Tool economics",
+                subtitle: "Most-used tools with frequency and attributed model-token cost.",
+                definition: .toolAttribution
+            )
+            if tools.isEmpty {
+                Text(totalCalls > 0 ? "Tool names will appear as sessions are re-enriched." : "No tool calls in this range.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 80, alignment: .center)
+            } else {
+                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
+                    GridRow {
+                        Text("TOOL")
+                        Text("CALLS").gridColumnAlignment(.trailing)
+                        Text("FREQUENCY").gridColumnAlignment(.leading)
+                        Text("ATTRIBUTED COST").gridColumnAlignment(.trailing)
+                    }
+                    .font(.caption2.weight(.bold)).tracking(0.6).foregroundStyle(.secondary)
+                    ForEach(tools) { tool in
+                        GridRow {
+                            Text(tool.tool).font(.subheadline.monospaced()).lineLimit(1)
+                            Text(tool.calls.formatted()).monospacedDigit()
+                            MetricProgressBar(value: Double(tool.calls), total: Double(max(1, totalCalls)))
+                                .frame(minWidth: 120)
+                            Text(MetricFormatters.preciseCurrency(tool.estimatedCost)).monospacedDigit()
+                        }
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
+struct SkillOverviewView: View {
+    let skills: [SkillMetric]
+    let totalCalls: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionHeader(
+                title: "Skill economics",
+                subtitle: "Explicit skill activations with frequency and attributed model-token cost.",
+                definition: .skillAttribution
+            )
+            if skills.isEmpty {
+                Text("No explicit SKILL.md reads were detected in this range.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 80, alignment: .center)
+            } else {
+                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
+                    GridRow {
+                        Text("SKILL")
+                        Text("ACTIVATIONS").gridColumnAlignment(.trailing)
+                        Text("FREQUENCY").gridColumnAlignment(.leading)
+                        Text("ATTRIBUTED COST").gridColumnAlignment(.trailing)
+                    }
+                    .font(.caption2.weight(.bold)).tracking(0.6).foregroundStyle(.secondary)
+                    ForEach(skills) { skill in
+                        GridRow {
+                            Text(skill.skill).font(.subheadline.monospaced()).lineLimit(1)
+                            Text(skill.calls.formatted()).monospacedDigit()
+                            MetricProgressBar(value: Double(skill.calls), total: Double(max(1, totalCalls)))
+                                .frame(minWidth: 120)
+                            Text(MetricFormatters.preciseCurrency(skill.estimatedCost)).monospacedDigit()
+                        }
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
 private enum ProjectTreeSelection: Hashable {
     case project(String)
     case session(String)
@@ -538,7 +622,7 @@ struct ProjectsView: View {
             } else { selectionPlaceholder }
         case .session(let id):
             if let session = store.sessions.first(where: { $0.id == id }) {
-                SessionDetailView(session: session)
+                SessionDetailView(session: session, pricing: store.pricing)
             } else { selectionPlaceholder }
         case nil:
             selectionPlaceholder
@@ -616,6 +700,25 @@ private struct ProjectDetailView: View {
     private var daily: [PeriodMetric] { Analytics.periods(from: rangedSessions, granularity: .day, pricing: pricing, since: rangeStart) }
     private var weekly: [PeriodMetric] { Analytics.periods(from: rangedSessions, granularity: .week, pricing: pricing, since: rangeStart) }
     private var monthly: [PeriodMetric] { Analytics.periods(from: rangedSessions, granularity: .month, pricing: pricing, since: rangeStart) }
+    private var tools: [ToolMetric] { Analytics.tools(from: rangedSessions, pricing: pricing, since: rangeStart) }
+    private var skills: [SkillMetric] { Analytics.skills(from: rangedSessions, pricing: pricing, since: rangeStart) }
+    private var toolCalls: Int {
+        rangedSessions.reduce(0) { total, session in
+            if let events = session.toolCallEvents, !events.isEmpty {
+                return total + events.filter { event in
+                    rangeStart.map { event.date >= $0 } ?? true
+                }.count
+            }
+            return total + session.toolCalls
+        }
+    }
+    private var skillCalls: Int {
+        rangedSessions.reduce(0) { total, session in
+            total + (session.skillCallEvents ?? []).filter { event in
+                rangeStart.map { event.date >= $0 } ?? true
+            }.count
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -626,9 +729,11 @@ private struct ProjectDetailView: View {
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), spacing: 12)], spacing: 12) {
                     MetricCard(title: "Sessions", value: project.sessionCount.formatted(), detail: "\(rangedSessions.count) in \(rangeLabel)", icon: "bubble.left.and.text.bubble.right.fill", tint: .blue)
-                    MetricCard(title: "Tokens", value: MetricFormatters.compactNumber(rangedUsage.total), detail: "\((rangedUsage.cacheHitRate * 100).formatted(.number.precision(.fractionLength(1))))% cached · \(rangeLabel)", icon: "text.word.spacing", tint: .purple)
-                    MetricCard(title: "Agent runtime", value: MetricFormatters.duration(rangedRuntime), detail: "Completed turns · \(rangeLabel)", icon: "clock.fill", tint: .orange)
-                    MetricCard(title: "Equivalent cost", value: coverage > 0 ? MetricFormatters.currency(cost) : "—", detail: "\((coverage * 100).formatted(.number.precision(.fractionLength(0))))% coverage · \(rangeLabel)", icon: "dollarsign", tint: .green)
+                    MetricCard(title: "Tokens", value: MetricFormatters.compactNumber(rangedUsage.total), detail: "\((rangedUsage.cacheHitRate * 100).formatted(.number.precision(.fractionLength(1))))% cached · \(rangeLabel)", icon: "text.word.spacing", tint: .purple, definition: .totalTokens)
+                    MetricCard(title: "Agent runtime", value: MetricFormatters.duration(rangedRuntime), detail: "Completed turns · \(rangeLabel)", icon: "clock.fill", tint: .orange, definition: .agentRuntime)
+                    MetricCard(title: "Equivalent cost", value: coverage > 0 ? MetricFormatters.currency(cost) : "—", detail: "\((coverage * 100).formatted(.number.precision(.fractionLength(0))))% coverage · \(rangeLabel)", icon: "dollarsign", tint: .green, definition: .estimatedCost)
+                    ToolCallsMetricCard(calls: toolCalls, tools: tools, detail: "\(tools.count) tools · \(rangeLabel)")
+                    SkillCallsMetricCard(calls: skillCalls, skills: skills, detail: "\(skills.count) skills · \(rangeLabel)")
                 }
                 ActivityChart(daily: daily, weekly: weekly, monthly: monthly)
                 VStack(alignment: .leading, spacing: 12) {
@@ -642,7 +747,13 @@ private struct ProjectDetailView: View {
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Text(MetricFormatters.compactNumber(session.usage.total)).monospacedDigit().foregroundStyle(.secondary)
+                                VStack(alignment: .trailing, spacing: 2) {
+                                    Text(MetricFormatters.compactNumber(session.usage.total)).monospacedDigit()
+                                    let sessionCost = Analytics.totalEstimatedCost([session], pricing: pricing)
+                                    let sessionCoverage = Analytics.costCoverage([session], pricing: pricing)
+                                    Text(sessionCoverage > 0 ? MetricFormatters.preciseCurrency(sessionCost) : "Cost —")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
                                 Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
                             }
                             .padding(11).contentShape(Rectangle())
@@ -659,6 +770,11 @@ private struct ProjectDetailView: View {
 
 private struct SessionDetailView: View {
     let session: SessionMetric
+    let pricing: PricingHistory
+    private var cost: Decimal { Analytics.totalEstimatedCost([session], pricing: pricing) }
+    private var coverage: Double { Analytics.costCoverage([session], pricing: pricing) }
+    private var tools: [ToolMetric] { Analytics.tools(from: [session], pricing: pricing) }
+    private var skills: [SkillMetric] { Analytics.skills(from: [session], pricing: pricing) }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
@@ -669,13 +785,16 @@ private struct SessionDetailView: View {
                     Text(session.projectPath).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), spacing: 12)], spacing: 12) {
-                    MetricCard(title: "Tokens", value: MetricFormatters.compactNumber(session.usage.total), detail: "\(MetricFormatters.compactNumber(session.usage.output)) output", icon: "text.word.spacing", tint: .purple)
-                    MetricCard(title: "Agent runtime", value: MetricFormatters.duration(session.activeRuntime), detail: "\(session.completedTurns) completed turns", icon: "clock.fill", tint: .orange)
-                    MetricCard(title: "Session span", value: MetricFormatters.duration(session.sessionSpan), detail: "Includes idle gaps", icon: "calendar.badge.clock", tint: .blue)
-                    MetricCard(title: "First token", value: session.averageTTFT.map(MetricFormatters.duration) ?? "—", detail: "Average startup latency", icon: "bolt.fill", tint: .yellow)
+                    MetricCard(title: "Tokens", value: MetricFormatters.compactNumber(session.usage.total), detail: "\(MetricFormatters.compactNumber(session.usage.output)) output", icon: "text.word.spacing", tint: .purple, definition: .totalTokens)
+                    MetricCard(title: "Agent runtime", value: MetricFormatters.duration(session.activeRuntime), detail: "\(session.completedTurns) completed turns", icon: "clock.fill", tint: .orange, definition: .agentRuntime)
+                    MetricCard(title: "Session span", value: MetricFormatters.duration(session.sessionSpan), detail: "Includes idle gaps", icon: "calendar.badge.clock", tint: .blue, definition: .sessionSpan)
+                    MetricCard(title: "First token", value: session.averageTTFT.map(MetricFormatters.duration) ?? "—", detail: "Average startup latency", icon: "bolt.fill", tint: .yellow, definition: .firstTokenLatency)
+                    MetricCard(title: "Equivalent cost", value: coverage > 0 ? MetricFormatters.preciseCurrency(cost) : "—", detail: "\((coverage * 100).formatted(.number.precision(.fractionLength(0))))% token coverage", icon: "dollarsign", tint: .green, definition: .estimatedCost)
+                    ToolCallsMetricCard(calls: session.toolCalls, tools: tools, detail: "\(tools.count) tools · click for cost")
+                    SkillCallsMetricCard(calls: session.skillCallEvents?.count ?? 0, skills: skills, detail: "\(skills.count) skills · click for cost")
                 }
                 VStack(alignment: .leading, spacing: 14) {
-                    SectionHeader(title: "Token composition", subtitle: "Cached and reasoning values are subsets of input and output.")
+                    SectionHeader(title: "Token composition", subtitle: "Cached and reasoning values are subsets of input and output.", definition: .tokenComposition)
                     Chart {
                         BarMark(x: .value("Tokens", session.usage.uncachedInput), y: .value("Type", "Uncached input")).foregroundStyle(.blue)
                         BarMark(x: .value("Tokens", session.usage.cachedInput), y: .value("Type", "Cached input")).foregroundStyle(.cyan)
@@ -688,9 +807,8 @@ private struct SessionDetailView: View {
                 Grid(alignment: .leading, horizontalSpacing: 22, verticalSpacing: 11) {
                     metadata("Model", session.model ?? "Unknown")
                     metadata("Reasoning effort", session.reasoningEffort ?? "Unknown")
-                    metadata("Source", session.source)
+                    metadata("Source", session.displaySource)
                     metadata("Git branch", session.gitBranch ?? "—")
-                    metadata("Tool calls", session.toolCalls.formatted())
                     metadata("Aborted turns", session.abortedTurns.formatted())
                     metadata("Created", session.createdAt.formatted(date: .abbreviated, time: .shortened))
                     metadata("Updated", session.updatedAt.formatted(date: .abbreviated, time: .shortened))
@@ -720,7 +838,14 @@ struct ModelsView: View {
                         .annotation(position: .trailing) { Text(MetricFormatters.compactNumber(model.usage.total)).font(.caption).foregroundStyle(.secondary) }
                 }.frame(height: 420)
                 Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 12) {
-                    GridRow { Text("Model"); Text("Sessions"); Text("Cache hit"); Text("Runtime"); Text("Est. cost") }.font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    GridRow {
+                        Text("Model")
+                        Text("Sessions")
+                        MetricHelpLabel(title: "Cache hit", definition: .cacheHitRate)
+                        MetricHelpLabel(title: "Runtime", definition: .agentRuntime)
+                        MetricHelpLabel(title: "Est. cost", definition: .estimatedCost)
+                    }
+                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     Divider().gridCellColumns(5)
                     ForEach(store.models) { model in
                         GridRow {
@@ -912,10 +1037,10 @@ struct BillingView: View {
             VStack(alignment: .leading, spacing: 22) {
                 SubscriptionUsageView(snapshot: store.subscription)
                 Divider()
-                SectionHeader(title: "Estimated billing", subtitle: "Monthly API-equivalent token cost, separated from actual subscription billing.")
+                SectionHeader(title: "Estimated billing", subtitle: "Monthly API-equivalent token cost, separated from actual subscription billing.", definition: .estimatedCost)
                 HStack(spacing: 12) {
-                    MetricCard(title: "Selected range", value: MetricFormatters.currency(store.estimatedCost), detail: "API-equivalent estimate", icon: "dollarsign.circle.fill", tint: .green)
-                    MetricCard(title: "Coverage", value: (store.costCoverage * 100).formatted(.number.precision(.fractionLength(1))) + "%", detail: "Tokens with model + breakdown", icon: "checkmark.seal.fill", tint: .blue)
+                    MetricCard(title: "Selected range", value: MetricFormatters.currency(store.estimatedCost), detail: "API-equivalent estimate", icon: "dollarsign.circle.fill", tint: .green, definition: .estimatedCost)
+                    MetricCard(title: "Coverage", value: (store.costCoverage * 100).formatted(.number.precision(.fractionLength(1))) + "%", detail: "Tokens with model + breakdown", icon: "checkmark.seal.fill", tint: .blue, definition: .costCoverage)
                     MetricCard(title: "Latest rate card", value: store.pricingEffectiveDate, detail: store.pricingSource, icon: "calendar", tint: .purple)
                 }
                 VStack(alignment: .leading, spacing: 8) {
@@ -966,7 +1091,14 @@ struct BillingView: View {
                 }
                 .frame(height: 280)
                 Grid(alignment: .leading, horizontalSpacing: 36, verticalSpacing: 12) {
-                    GridRow { Text("Month"); Text("Sessions"); Text("Tokens"); Text("Agent runtime"); Text("Estimated cost") }.font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    GridRow {
+                        Text("Month")
+                        Text("Sessions")
+                        MetricHelpLabel(title: "Tokens", definition: .totalTokens)
+                        MetricHelpLabel(title: "Agent runtime", definition: .agentRuntime)
+                        MetricHelpLabel(title: "Estimated cost", definition: .estimatedCost)
+                    }
+                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     Divider().gridCellColumns(5)
                     ForEach(store.monthly.reversed()) { period in
                         GridRow {
@@ -988,7 +1120,7 @@ private struct SubscriptionUsageView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            SectionHeader(title: "Subscription usage", subtitle: "Latest quota snapshot reported by Codex; no token-to-quota conversion is inferred locally.")
+            SectionHeader(title: "Subscription usage", subtitle: "Latest quota snapshot reported by Codex; no token-to-quota conversion is inferred locally.", definition: .subscriptionQuota)
             if let snapshot {
                 HStack(spacing: 12) {
                     MetricCard(
@@ -1083,39 +1215,5 @@ private struct QuotaWindowCard: View {
         case 70...: .orange
         default: .blue
         }
-    }
-}
-
-struct MetricGuideView: View {
-    private let metrics: [(String, String, String)] = [
-        ("Total tokens", "Final cumulative tokens reported by Codex for each session.", "Exact when a token_count event or indexed total exists."),
-        ("Input / cached input", "Prompt tokens processed; cached input is a subset served from prompt cache.", "Cached tokens are not added again to input."),
-        ("Output / reasoning", "Generated tokens; reasoning output is a subset of output, not an additional total.", "Useful for model-effort comparisons."),
-        ("Agent runtime", "Sum of duration_ms from completed turns.", "Includes tool execution and model waiting inside a turn; excludes time between turns."),
-        ("Session span", "Last session update minus session creation.", "Includes idle gaps. Never treat this as working time."),
-        ("First-token latency", "Mean time_to_first_token_ms for completed turns.", "Measures startup responsiveness, not total completion speed."),
-        ("Median / P95 turn", "50th and 95th percentile completed-turn runtimes.", "P95 surfaces slow-tail sessions hidden by averages."),
-        ("Cache hit rate", "Cached input divided by total input.", "A high rate usually lowers API-equivalent input cost."),
-        ("Estimated cost", "Uncached input × input rate + cached input × cached rate + output × output rate.", "API-equivalent estimate only; excludes tool-call fees and subscription terms."),
-        ("Subscription quota", "Latest plan, usage windows, credits, and reset timestamps reported by Codex.", "Quota percentage is account-provided; it is not inferred from local token totals."),
-        ("Weekly / monthly usage", "Token deltas grouped by token event timestamp; runtime grouped by turn completion.", "Sessions without detailed events are assigned to last-update date."),
-        ("Active days", "Distinct local calendar days with project session activity.", "A cadence metric, not a productivity score."),
-        ("Cost coverage", "Share of total tokens with both detailed breakdown and a recognized model price.", "Low coverage means the estimate is incomplete.")
-    ]
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                SectionHeader(title: "Metric guide", subtitle: "Definitions, calculation boundaries, and interpretation notes.")
-                ForEach(metrics, id: \.0) { metric in
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(metric.0).font(.headline)
-                        Text(metric.1).font(.subheadline)
-                        Text(metric.2).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Divider()
-                }
-            }.padding(28).frame(maxWidth: 760, alignment: .leading)
-        }.navigationTitle("Metric Guide")
     }
 }

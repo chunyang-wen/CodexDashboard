@@ -1,60 +1,126 @@
-# Codex Dashboard
+<div align="center">
+  <img src="Design/AppIcon/CodexDashboard-AppIcon-Generated.png" width="144" alt="Codex Dashboard app icon">
+  <h1>Codex Dashboard</h1>
+  <p>A private, local-first macOS dashboard for understanding how you use Codex.</p>
+  <p>Explore activity by project, session, model, time, tokens, tools, skills, and API-equivalent cost—without sending your session data anywhere.</p>
+</div>
 
-A local-first macOS dashboard and CLI for understanding Codex activity by project, session, model, time, tokens, and API-equivalent cost.
+![Codex Dashboard overview](docs/images/overview.png)
 
-The importer opens `~/.codex/state_5.sqlite` read-only and enriches indexed sessions from rollout JSONL files. It never reads authentication files and never uploads session content. The only routine network request is an anonymous pricing-catalog download from `https://models.dev/api.json`; it contains no local metrics or identifiers.
+## What you can see
 
-## Run
+- **At-a-glance activity:** projects, sessions, tokens, cache hit rate, agent runtime, turn latency, tool calls, skill activations, and estimated spend.
+- **Projects and sessions:** move from a portfolio view into a project and then an individual session, with token composition and activity trends at each level.
+- **Model portfolio:** compare usage volume, runtime, cache behavior, session count, and API-equivalent cost across models.
+- **Subscription usage:** see the latest plan, quota windows, reset times, credits, and limit status reported by Codex.
+- **Historical analysis:** switch between 7 days, 30 days, 90 days, one year, or all history, with daily, weekly, and monthly charts.
+- **Menu-bar status:** check remaining quota and today's tokens, tool calls, skill activations, and estimated cost without opening the main window.
+- **Command-line access:** query the same local data from scripts and export session metrics as JSON.
+
+## A closer look
+
+<table>
+  <tr>
+    <td width="34%" valign="top">
+      <img src="docs/images/menubar.png" alt="Codex Dashboard menu-bar popover">
+      <br><strong>Menu bar</strong><br>
+      Quota and today's key metrics, always close at hand.
+    </td>
+    <td width="66%" valign="top">
+      <img src="docs/images/projects.png" alt="Codex Dashboard projects view">
+      <br><strong>Projects</strong><br>
+      Compare workspaces, expand their sessions, and inspect activity over time.
+    </td>
+  </tr>
+</table>
+
+<details>
+  <summary><strong>More screenshots</strong></summary>
+  <br>
+
+  ### Session detail
+
+  Inspect tokens, runtime, session span, first-token latency, tools, skills, and token composition for a single task.
+
+  ![Codex Dashboard session detail](docs/images/project-session.png)
+
+  ### Models
+
+  Compare the models in your local history by volume, sessions, cache hit rate, runtime, and estimated cost.
+
+  ![Codex Dashboard model portfolio](docs/images/model.png)
+
+  ### Usage & Billing
+
+  Keep subscription quota separate from API-equivalent cost estimates, and preserve or transfer your historical metrics.
+
+  ![Codex Dashboard usage and billing view](docs/images/usage-billing.png)
+</details>
+
+## Local by design
+
+Codex Dashboard opens `~/.codex/state_5.sqlite` read-only and enriches indexed sessions from local rollout JSONL files. It never reads authentication files, modifies `~/.codex`, uploads session content, or stores conversation text.
+
+Parsed metrics, session metadata, effective-dated price schedules, and byte checkpoints are stored in:
+
+```text
+~/Library/Application Support/CodexDashboard/metrics-v1.sqlite
+```
+
+The only routine network request is an anonymous pricing-catalog download from `https://models.dev/api.json`. It contains no local metrics or identifiers. A validated response is cached locally; bundled prices remain available offline.
+
+While the app is open, a low-priority task checks the Codex index and known rollout files for changes. It pauses in Low Power Mode or under serious thermal pressure, backs off after failures, and stops when the app quits. Append-only logs resume from the last complete newline instead of being scanned again from the beginning.
+
+## Run from source
+
+Requirements:
+
+- macOS 14 or later
+- A Swift 6.1-compatible Xcode toolchain
+- Local Codex activity in `~/.codex`, or another folder selected in Settings
+
+Clone the repository and run the native SwiftUI app:
 
 ```bash
 swift run CodexDashboard
-swift run codex-metrics summary
-swift run codex-metrics periods --by month --enrich
-swift run codex-metrics sessions --project storyviz --enrich
 ```
 
-For Xcode development, open `CodexDashboard.xcodeproj`, choose the shared **CodexDashboard** scheme, and press Run. The project also includes the **CodexMetricsCLI** scheme and the `CodexMetricsCoreTests` test target. The Xcode project and `Package.swift` reference the same source files.
+Or open `CodexDashboard.xcodeproj`, choose the shared **CodexDashboard** scheme, and press Run. The Xcode project also includes the **CodexMetricsCLI** scheme and the `CodexMetricsCoreTests` test target. `Package.swift` and the Xcode project reference the same sources.
 
-The dashboard presents indexed metrics immediately, then enriches timing and token breakdown for the selected date range with determinate progress. Range changes update the display independently without cancelling an active scan; after that scan settles, enrichment extends to any newly in-scope rollouts. This keeps the range control responsive while the default 30-day view still avoids parsing the full archive. Parsed metrics and byte checkpoints—not conversation text—are transactionally persisted in `~/Library/Application Support/CodexDashboard/metrics-v1.sqlite` using WAL mode. Growing append-only rollouts resume after the last complete newline instead of being rescanned from the beginning; an actively written partial JSON record is never checkpointed, and oversized tool-result lines are discarded as a stream once identified. Durable session history lives in the same database, so source-log removal and parser-cache invalidation do not erase historical metrics. Existing `rollouts-v4.json` and `history-v1.json` data is migrated automatically. Later launches only parse appended bytes or reparse files that were replaced.
+On first launch, indexed metrics appear immediately while detailed timings and token breakdowns are enriched for the selected date range. Use **Usage & Billing → Scan All History** once if you want to preserve every rollout currently available.
 
-While the dashboard remains open, one low-priority in-process task checks the Codex index/WAL and known rollout file metadata roughly every 20 seconds with jitter. It quietly enriches only new or changed sessions, pauses in Low Power Mode or under serious thermal pressure, and uses exponential retry backoff after failures. It does not launch a helper process or run after the app quits. The CLI stays index-only unless `--enrich` is passed.
+## CLI
 
-Use **Usage & Billing → Scan All History** once to preserve every rollout currently available. Export and import on the same screen create or restore a portable JSON archive containing metric events, session metadata, and effective-dated price schedules—never conversation content or credentials.
+The bundled `codex-metrics` executable supports summaries, projects, sessions, models, time periods, subscription state, and JSON export:
 
-## Product plan
+```bash
+swift run codex-metrics summary
+swift run codex-metrics periods --by month --enrich
+swift run codex-metrics sessions --project CodexDashboard --enrich
+swift run codex-metrics export --output codex-metrics.json
+```
 
-### Implemented MVP
+Useful options include `--codex-home PATH`, `--project TEXT`, `--limit NUMBER`, `--by day|week|month`, and `--enrich`. The CLI is index-only by default; pass `--enrich` when you need rollout-derived timings and token breakdowns.
 
-- Read-only project and session discovery from the Codex SQLite index
-- Resilient fallback extraction from rollout JSONL
-- Input, cached input, cache-write, output, reasoning, and total tokens
-- Session span, completed-turn agent runtime, average first-token latency, median/P95 turn time
-- Tool-call, message, abort, active-day, project, source, branch, and model dimensions
-- Daily, weekly, and monthly token/runtime/cost aggregation
-- Live local subscription snapshot with plan, quota windows, reset times, credits, and limit status
-- Pointer-hover chart inspection with exact token, runtime, cost, and session values
-- API-equivalent cost estimates with explicit coverage and invoice caveats
-- Native SwiftUI views for overview, hierarchical projects → sessions, models, billing, and metric definitions
-- CLI summary, table output, filtering, time periods, and JSON export
-- Durable metric history with effective-dated pricing and portable JSON import/export
-- Daily dynamic pricing refresh from models.dev with validated local caching and bundled offline fallback
-- Current per-model rate cards and locally persisted price-change charts
+## Understanding the numbers
 
-### Next iterations
+Three distinctions matter most:
 
-1. Add an opt-in OpenAI Organization Costs provider using a Keychain-held admin key; keep actual API costs separate from local-folder attribution.
-2. Add a signed first-party pricing source if OpenAI exposes one, plus user pricing overrides.
-3. Add CSV export, budget thresholds, anomaly detection, and optional menu-bar weekly summaries.
-4. Add a signed, sandbox-aware Xcode distribution target with user-selected Codex-directory access.
+- **Agent runtime** is the sum of completed Codex turn durations. **Session span** runs from creation to the last update and includes idle gaps.
+- **Cached input** is already part of input tokens, and **reasoning output** is already part of output tokens; neither is added again to the total.
+- **Estimated cost** answers “what would this workload cost at API list price?” It is not a ChatGPT subscription charge or an OpenAI invoice. Coverage is shown beside the estimate because a price requires both a detailed token breakdown and a recognized model.
 
-## Metric semantics
+See [METRICS.md](METRICS.md) for calculations, attribution rules, pricing limitations, and period semantics.
 
-See [METRICS.md](METRICS.md). The most important distinction is:
+## Historical data
 
-- **Agent runtime** is the sum of completed Codex turn durations.
-- **Session span** is creation-to-last-update and includes idle gaps.
-- **Estimated cost** is an API list-price equivalent, not a ChatGPT subscription invoice.
+The durable history database survives source-log removal and parser-cache invalidation. Export and import from **Usage & Billing** create a portable JSON archive containing aggregate metric events, session metadata, and effective-dated price schedules—never conversation content or credentials.
 
-## Privacy and compatibility
+Existing `rollouts-v4.json` and `history-v1.json` data is migrated automatically. Pricing changes create new schedules rather than rewriting earlier estimates.
 
-Codex storage is an implementation detail and may evolve. The reader checks available SQLite columns and uses the rollout parser for missing details. The app is strictly read-only with respect to `~/.codex`; it writes only its own parser cache and durable metric history. Exported history contains session metadata and aggregate token events, but never conversation content or authentication data.
+## Roadmap
+
+- Opt-in OpenAI Organization Costs integration, keeping actual API spend separate from local-folder attribution
+- User pricing overrides and a signed first-party pricing source if OpenAI exposes one
+- CSV export, budgets, anomaly detection, and menu-bar weekly summaries
+- Signed, sandbox-aware distribution with user-selected Codex-directory access
