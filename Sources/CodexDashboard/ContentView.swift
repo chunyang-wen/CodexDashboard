@@ -771,6 +771,7 @@ private struct ProjectDetailView: View {
 private struct SessionDetailView: View {
     let session: SessionMetric
     let pricing: PricingHistory
+    @Environment(\.openWindow) private var openWindow
     private var cost: Decimal { Analytics.totalEstimatedCost([session], pricing: pricing) }
     private var coverage: Double { Analytics.costCoverage([session], pricing: pricing) }
     private var tools: [ToolMetric] { Analytics.tools(from: [session], pricing: pricing) }
@@ -778,11 +779,26 @@ private struct SessionDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Label(session.displayTitle, systemImage: "bubble.left.and.text.bubble.right.fill")
-                        .font(.title.weight(.semibold)).lineLimit(2)
-                    Label(session.projectName, systemImage: "folder.fill").font(.subheadline.weight(.medium)).foregroundStyle(.blue)
-                    Text(session.projectPath).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                HStack(alignment: .top, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(session.displayTitle, systemImage: "bubble.left.and.text.bubble.right.fill")
+                            .font(.title.weight(.semibold)).lineLimit(2)
+                        Label(session.projectName, systemImage: "folder.fill").font(.subheadline.weight(.medium)).foregroundStyle(.blue)
+                        Text(session.projectPath).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                    Spacer()
+                    Button {
+                        openWindow(value: ConversationWindowRequest(
+                            rolloutPath: session.rolloutPath,
+                            sessionTitle: session.displayTitle,
+                            projectName: session.projectName
+                        ))
+                    } label: {
+                        Label("Debug Conversation", systemImage: "waveform.path.ecg.text")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Open sent and received conversation events in a separate window")
+                    .disabled(session.rolloutPath.isEmpty)
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), spacing: 12)], spacing: 12) {
                     MetricCard(title: "Tokens", value: MetricFormatters.compactNumber(session.usage.total), detail: "\(MetricFormatters.compactNumber(session.usage.output)) output", icon: "text.word.spacing", tint: .purple, definition: .totalTokens)

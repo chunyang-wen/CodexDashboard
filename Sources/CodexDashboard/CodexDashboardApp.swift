@@ -33,7 +33,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
 @MainActor
 private enum AppActivationPolicy {
-    static let managedWindowIdentifiers: Set<NSUserInterfaceItemIdentifier> = [.dashboard, .settings]
+    static let managedWindowIdentifiers: Set<NSUserInterfaceItemIdentifier> = [.dashboard, .conversation, .settings]
 
     static func showDockIcon() {
         NSApp.setActivationPolicy(.regular)
@@ -136,6 +136,7 @@ private final class WindowIdentifyingNSView: NSView {
 
 private extension NSUserInterfaceItemIdentifier {
     static let dashboard = Self("CodexDashboard.dashboard")
+    static let conversation = Self("CodexDashboard.conversation")
     static let settings = Self("CodexDashboard.settings")
 }
 
@@ -161,6 +162,18 @@ struct CodexDashboardApp: App {
                     .keyboardShortcut("r", modifiers: .command)
             }
         }
+
+        WindowGroup("Conversation Debugger", for: ConversationWindowRequest.self) { $request in
+            if let request {
+                ConversationDebuggerWindow(request: request)
+                    .background(AppWindowIdentifier(identifier: .conversation))
+            } else {
+                ContentUnavailableView("No conversation selected", systemImage: "text.bubble")
+                    .background(AppWindowIdentifier(identifier: .conversation))
+            }
+        }
+        .defaultSize(width: 980, height: 760)
+        .windowResizability(.contentMinSize)
 
         MenuBarExtra("Codex Dashboard", systemImage: "chart.bar.xaxis", isInserted: $showMenuBarIcon) {
             MenuBarDashboardView()

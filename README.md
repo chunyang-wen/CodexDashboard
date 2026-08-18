@@ -12,6 +12,7 @@
 
 - **At-a-glance activity:** projects, sessions, tokens, cache hit rate, agent runtime, turn latency, tool calls, skill activations, and estimated spend.
 - **Projects and sessions:** move from a portfolio view into a project and then an individual session, with token composition and activity trends at each level.
+- **Conversation debugger:** explicitly load a selected session's local rollout to compare sent and received messages, tool calls, tool results, and raw JSON events with redacted copying.
 - **Model portfolio:** compare usage volume, runtime, cache behavior, session count, and API-equivalent cost across models.
 - **Subscription usage:** see the latest plan, quota windows, reset times, credits, and limit status reported by Codex.
 - **Historical analysis:** switch between 7 days, 30 days, 90 days, one year, or all history, with daily, weekly, and monthly charts.
@@ -60,7 +61,7 @@
 
 ## Local by design
 
-Codex Dashboard opens `~/.codex/state_5.sqlite` read-only and enriches indexed sessions from local rollout JSONL files. It never reads authentication files, modifies `~/.codex`, uploads session content, or stores conversation text.
+Codex Dashboard opens `~/.codex/state_5.sqlite` read-only and enriches indexed sessions from local rollout JSONL files. It never reads authentication files, modifies `~/.codex`, uploads session content, or stores conversation text. Conversation payloads are read only when you open a selected session's **Debug Conversation** window and are kept in memory for that window.
 
 Parsed metrics, session metadata, effective-dated price schedules, and byte checkpoints are stored in:
 

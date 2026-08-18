@@ -59,6 +59,59 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(result.toolCallEvents.map(\.name), ["test"])
     }
 
+    func testConversationParserBuildsSentReceivedTimelineWithoutEventDuplicates() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let lines = [
+            #"{"timestamp":"2026-08-01T10:00:00Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"Be concise"}]}}"#,
+            #"{"timestamp":"2026-08-01T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello"}]}}"#,
+            #"{"timestamp":"2026-08-01T10:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"Hello"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}}"#,
+            #"{"timestamp":"2026-08-01T10:00:03Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"cmd\":\"pwd\"}","call_id":"call-1"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:04Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"/tmp"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:05Z","type":"response_item","payload":{"type":"reasoning","encrypted_content":"opaque","summary":[]}}"#
+        ]
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: file)
+
+        let transcript = try ConversationParser.load(path: file.path)
+        XCTAssertEqual(transcript.items.count, 6)
+        XCTAssertEqual(transcript.items.map(\.direction), [.sent, .sent, .received, .received, .sent, .received])
+        XCTAssertEqual(transcript.items.map(\.kind), [.instruction, .userMessage, .assistantMessage, .toolCall, .toolResult, .reasoning])
+        XCTAssertEqual(transcript.items[1].body, "Hello")
+        XCTAssertEqual(transcript.items[3].callID, "call-1")
+        XCTAssertTrue(transcript.items[3].body.contains("\"cmd\" : \"pwd\""))
+        XCTAssertEqual(transcript.items[5].title, "Reasoning context")
+        XCTAssertEqual(
+            transcript.items[5].body,
+            "Codex retained encrypted reasoning state for conversation continuity. This rollout does not include a readable summary."
+        )
+        XCTAssertEqual(transcript.items[5].rawJSON, lines[6])
+    }
+
+    func testConversationTimelineUsesPlaintextReasoningWithoutChangingRawEvent() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let line = #"{"timestamp":"2026-08-01T10:00:00Z","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"Short summary"}],"content":[{"type":"reasoning_text","text":"Readable reasoning details"}],"encrypted_content":"opaque"}}"#
+        try Data((line + "\n").utf8).write(to: file)
+
+        let item = try XCTUnwrap(ConversationParser.load(path: file.path).items.first)
+        XCTAssertEqual(item.title, "Reasoning details")
+        XCTAssertEqual(item.body, "Readable reasoning details")
+        XCTAssertEqual(item.rawJSON, line)
+    }
+
+    func testConversationCopyRedactsCommonSecrets() {
+        let item = ConversationItem(
+            id: 0, date: nil, direction: .sent, kind: .toolCall, title: "Tool",
+            body: #"{"api_key":"sk-exampleSecretValue123456","Authorization":"Bearer abc.def.secret"}"#,
+            rawJSON: #"{"api_key":"sk-exampleSecretValue123456"}"#
+        )
+        XCTAssertFalse(item.redactedBody.contains("exampleSecretValue"))
+        XCTAssertFalse(item.redactedBody.contains("abc.def.secret"))
+        XCTAssertTrue(item.redactedBody.contains("REDACTED"))
+        XCTAssertFalse(item.redactedRawJSON.contains("exampleSecretValue"))
+    }
+
     func testToolCallsCaptureNamesAndShareFollowingTokenCost() throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: file) }
