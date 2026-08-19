@@ -311,8 +311,8 @@ private struct MenuBarQuotaIcon: View {
     private func drawDroplet() {
         let left = dropletChamber(left: true)
         let right = dropletChamber(left: false)
-        drawLiquid(in: left, bounds: NSRect(x: 1.7, y: 2, width: 6.65, height: 14), window: primaryWindow)
-        drawLiquid(in: right, bounds: NSRect(x: 9.65, y: 2, width: 6.65, height: 14), window: weeklyWindow)
+        drawLiquid(in: left, bounds: NSRect(x: 1.7, y: 2, width: 6.65, height: 14), window: weeklyWindow)
+        drawLiquid(in: right, bounds: NSRect(x: 9.65, y: 2, width: 6.65, height: 14), window: primaryWindow)
     }
 
     private func dropletChamber(left: Bool) -> NSBezierPath {
@@ -346,8 +346,8 @@ private struct MenuBarQuotaIcon: View {
     }
 
     private func drawCapsules() {
-        drawCapsule(in: NSRect(x: 1.5, y: 9, width: 15, height: 6), window: primaryWindow)
-        drawCapsule(in: NSRect(x: 1.5, y: 3, width: 15, height: 4), window: weeklyWindow)
+        drawCapsule(in: NSRect(x: 1.5, y: 9, width: 15, height: 6), window: weeklyWindow)
+        drawCapsule(in: NSRect(x: 1.5, y: 3, width: 15, height: 4), window: primaryWindow)
     }
 
     private func drawCapsule(in rect: NSRect, window: UsageQuotaWindow?) {
