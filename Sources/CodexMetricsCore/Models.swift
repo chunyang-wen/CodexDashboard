@@ -219,7 +219,7 @@ public struct ProjectMetric: Identifiable, Hashable, Sendable {
     }
 }
 
-public struct PeriodMetric: Identifiable, Hashable, Sendable {
+public struct PeriodMetric: Identifiable, Codable, Hashable, Sendable {
     public var id: Date { start }
     public let start: Date
     public let usage: TokenUsage
@@ -228,7 +228,7 @@ public struct PeriodMetric: Identifiable, Hashable, Sendable {
     public let estimatedCost: Decimal
 }
 
-public struct ModelMetric: Identifiable, Hashable, Sendable {
+public struct ModelMetric: Identifiable, Codable, Hashable, Sendable {
     public var id: String { model }
     public let model: String
     public let sessions: Int
@@ -237,7 +237,7 @@ public struct ModelMetric: Identifiable, Hashable, Sendable {
     public let estimatedCost: Decimal
 }
 
-public struct ToolMetric: Identifiable, Hashable, Sendable {
+public struct ToolMetric: Identifiable, Codable, Hashable, Sendable {
     public var id: String { tool }
     public let tool: String
     public let calls: Int
@@ -263,7 +263,7 @@ public struct ToolMetric: Identifiable, Hashable, Sendable {
     }
 }
 
-public struct SkillMetric: Identifiable, Hashable, Sendable {
+public struct SkillMetric: Identifiable, Codable, Hashable, Sendable {
     public var id: String { skill }
     public let skill: String
     public let calls: Int

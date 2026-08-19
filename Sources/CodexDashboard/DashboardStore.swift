@@ -76,71 +76,61 @@ private struct DashboardAnalytics: Sendable {
     static func calculate(
         sessions: [SessionMetric],
         startDate: Date?,
-        pricing: PricingHistory
+        index: MetricsIndexSnapshot
     ) -> DashboardAnalytics {
         let filtered = sessions.filter { session in
             startDate.map { session.updatedAt >= $0 } ?? true
         }
 
-        var runtime: TimeInterval = 0
-        var turnDurations: [TimeInterval] = []
-        var firstTokenTimes: [TimeInterval] = []
-        var toolCalls = 0
-        var skillCalls = 0
-        var completedTurns = 0
-        var abortedTurns = 0
-        turnDurations.reserveCapacity(filtered.count)
-        firstTokenTimes.reserveCapacity(filtered.count)
-
-        for session in filtered {
-            if let events = session.toolCallEvents, !events.isEmpty {
-                toolCalls += events.filter { event in startDate.map { event.date >= $0 } ?? true }.count
-            } else {
-                toolCalls += session.toolCalls
-            }
-            skillCalls += (session.skillCallEvents ?? []).filter { event in
-                startDate.map { event.date >= $0 } ?? true
-            }.count
-            abortedTurns += session.abortedTurns
-            for turn in session.turns where turn.completed {
-                completedTurns += 1
-                turnDurations.append(turn.duration)
-                if let timeToFirstToken = turn.timeToFirstToken {
-                    firstTokenTimes.append(timeToFirstToken)
-                }
-                if startDate.map({ turn.completedAt >= $0 }) ?? true {
-                    runtime += turn.duration
-                }
-            }
-        }
-
-        let averageTTFT = firstTokenTimes.isEmpty
+        let summary = index.aggregate(since: startDate)
+        let averageTTFT = summary.firstTokenTimes.isEmpty
             ? nil
-            : firstTokenTimes.reduce(0, +) / Double(firstTokenTimes.count)
+            : summary.firstTokenTimes.reduce(0, +) / Double(summary.firstTokenTimes.count)
         let calendar = Calendar.current
 
         return DashboardAnalytics(
             filteredSessions: filtered,
             allProjects: Analytics.projects(from: sessions),
             projects: Analytics.projects(from: filtered),
-            usage: Analytics.totalUsage(filtered, since: startDate),
-            estimatedCost: Analytics.totalEstimatedCost(filtered, pricing: pricing, since: startDate),
-            costCoverage: Analytics.costCoverage(filtered, pricing: pricing, since: startDate),
-            runtime: runtime,
-            models: Analytics.models(from: filtered, pricing: pricing, since: startDate),
-            tools: Analytics.tools(from: filtered, pricing: pricing, since: startDate),
-            skills: Analytics.skills(from: filtered, pricing: pricing, since: startDate),
-            daily: Analytics.periods(from: filtered, granularity: .day, pricing: pricing, calendar: calendar, since: startDate),
-            weekly: Analytics.periods(from: filtered, granularity: .week, pricing: pricing, calendar: calendar, since: startDate),
-            monthly: Analytics.periods(from: filtered, granularity: .month, pricing: pricing, calendar: calendar, since: startDate),
-            yearly: Analytics.periods(from: filtered, granularity: .year, pricing: pricing, calendar: calendar, since: startDate),
-            turnDurations: turnDurations,
+            usage: summary.usage,
+            estimatedCost: summary.estimatedCost,
+            costCoverage: summary.costCoverage,
+            runtime: summary.activeRuntime,
+            models: summary.models,
+            tools: summary.tools,
+            skills: summary.skills,
+            daily: index.periods(granularity: .day, since: startDate, calendar: calendar),
+            weekly: index.periods(granularity: .week, since: startDate, calendar: calendar),
+            monthly: index.periods(granularity: .month, since: startDate, calendar: calendar),
+            yearly: index.periods(granularity: .year, since: startDate, calendar: calendar),
+            turnDurations: summary.turnDurations,
             averageTTFT: averageTTFT,
-            activeDays: Set(filtered.map { calendar.startOfDay(for: $0.updatedAt) }).count,
-            toolCalls: toolCalls,
-            skillCalls: skillCalls,
-            completedTurns: completedTurns,
-            abortedTurns: abortedTurns
+            activeDays: summary.activeDays,
+            toolCalls: summary.toolCalls,
+            skillCalls: summary.skillCalls,
+            completedTurns: summary.completedTurns,
+            abortedTurns: summary.abortedTurns
+        )
+    }
+
+    /// The menu bar only consumes today's usage, cost, tool calls, and skill calls.
+    /// Avoid rebuilding every project/model/period breakdown a second time for it.
+    static func calculateToday(
+        startDate: Date,
+        index: MetricsIndexSnapshot
+    ) -> DashboardAnalytics {
+        let summary = index.aggregate(since: startDate)
+
+        return DashboardAnalytics(
+            filteredSessions: [], allProjects: [], projects: [],
+            usage: summary.usage,
+            estimatedCost: summary.estimatedCost,
+            costCoverage: 0,
+            runtime: 0,
+            models: [], tools: [], skills: [], daily: [], weekly: [], monthly: [], yearly: [],
+            turnDurations: [], averageTTFT: nil, activeDays: 0,
+            toolCalls: summary.toolCalls, skillCalls: summary.skillCalls,
+            completedTurns: 0, abortedTurns: 0
         )
     }
 }
@@ -195,6 +185,7 @@ final class DashboardStore: ObservableObject {
     private let dynamicPricingLoader = DynamicPricingLoader()
     private var analytics = DashboardAnalytics.empty
     private var todayAnalytics = DashboardAnalytics.empty
+    private var metricsIndex = MetricsIndexSnapshot.empty
 
     init(defaults: UserDefaults = .standard) {
         let savedPath = defaults.string(forKey: "codexDataPath")
@@ -254,6 +245,15 @@ final class DashboardStore: ObservableObject {
     var todayEstimatedCost: Decimal { todayAnalytics.estimatedCost }
     var todayToolCalls: Int { todayAnalytics.toolCalls }
     var todaySkillCalls: Int { todayAnalytics.skillCalls }
+    func projectAggregate(path: String, since startDate: Date? = nil) -> MetricsIndexAggregate {
+        metricsIndex.aggregate(projectPath: path, since: startDate)
+    }
+    func projectPeriods(path: String, granularity: PeriodGranularity, since startDate: Date? = nil) -> [PeriodMetric] {
+        metricsIndex.periods(granularity: granularity, projectPath: path, since: startDate)
+    }
+    func indexedSession(_ id: String) -> IndexedSessionMetrics? {
+        metricsIndex.sessions.first { $0.sessionID == id }
+    }
 
     func load() {
         loadTask?.cancel()
@@ -269,6 +269,13 @@ final class DashboardStore: ObservableObject {
         enrichmentTotal = 0
         errorMessage = nil
         loadTask = Task {
+            // A window lifecycle change or a manual restart can cancel this task.
+            // Always release the loading screen when the active request stops.
+            defer {
+                if loadID == requestID {
+                    isLoading = false
+                }
+            }
             do {
                 let codexHome = self.codexHome
                 let indexed = try await Task.detached(priority: .userInitiated) {
@@ -482,40 +489,72 @@ final class DashboardStore: ObservableObject {
     }
 
     private func scheduleAnalyticsRefresh() {
-        analyticsTask?.cancel()
-        analyticsID = UUID()
         isUpdatingAnalytics = true
-        let feedbackStartedAt = ContinuousClock.now
-        let requestID = UUID()
-        analyticsID = requestID
-        let sessions = sessions
-        let pricing = pricing
+        analyticsID = UUID()
+
+        // Keep a single calculator alive and let it consume the newest snapshot.
+        // Cancelling a task that is awaiting Task.detached does not cancel that
+        // detached calculation, which previously allowed one CPU-heavy calculator
+        // per enrichment batch to pile up in the background.
+        guard analyticsTask == nil else { return }
 
         analyticsTask = Task {
-            // Coalesce a quick succession of parser publications.
-            try? await Task.sleep(for: .milliseconds(40))
-            guard !Task.isCancelled else { return }
-            let refreshed = await Task.detached(priority: .userInitiated) {
-                let selected = DashboardAnalytics.calculate(
-                    sessions: sessions,
-                    startDate: nil,
-                    pricing: pricing
-                )
-                let today = DashboardAnalytics.calculate(
-                    sessions: sessions,
-                    startDate: Calendar.current.startOfDay(for: .now),
-                    pricing: pricing
-                )
-                return (selected, today)
-            }.value
-            let minimumFeedback = Duration.milliseconds(180)
-            let elapsed = feedbackStartedAt.duration(to: .now)
-            if elapsed < minimumFeedback {
-                try? await Task.sleep(for: minimumFeedback - elapsed)
+            while !Task.isCancelled {
+                let requestID = analyticsID
+
+                // Wait for a quiet moment. If another batch arrives during this
+                // window, discard this request before doing any expensive work.
+                try? await Task.sleep(for: .milliseconds(40))
+                guard !Task.isCancelled else { break }
+                guard analyticsID == requestID else { continue }
+
+                let feedbackStartedAt = ContinuousClock.now
+                let sessions = sessions
+                let pricing = pricing
+                let index: MetricsIndexSnapshot
+                do {
+                    index = try await historicalStore.metricsIndex(for: sessions, pricing: pricing)
+                } catch {
+                    historyMessage = "Metric index could not be saved: \(error.localizedDescription)"
+                    let records = await Task.detached(priority: .userInitiated) {
+                        sessions.map { MetricsIndexBuilder.build(session: $0, pricing: pricing) }
+                    }.value
+                    index = MetricsIndexSnapshot(
+                        sessions: records.map(\.session),
+                        days: records.flatMap(\.days)
+                    )
+                }
+                let refreshed = await Task.detached(priority: .userInitiated) {
+                    let selected = DashboardAnalytics.calculate(
+                        sessions: sessions,
+                        startDate: nil,
+                        index: index
+                    )
+                    let today = DashboardAnalytics.calculateToday(
+                        startDate: Calendar.current.startOfDay(for: .now),
+                        index: index
+                    )
+                    return (selected, today)
+                }.value
+
+                // A newer snapshot supersedes this result. Loop once and calculate
+                // only the latest state instead of starting another worker beside it.
+                guard analyticsID == requestID else { continue }
+
+                let minimumFeedback = Duration.milliseconds(180)
+                let elapsed = feedbackStartedAt.duration(to: .now)
+                if elapsed < minimumFeedback {
+                    try? await Task.sleep(for: minimumFeedback - elapsed)
+                }
+                guard !Task.isCancelled, analyticsID == requestID else { continue }
+                analytics = refreshed.0
+                todayAnalytics = refreshed.1
+                metricsIndex = index
+                isUpdatingAnalytics = false
+                analyticsTask = nil
+                return
             }
-            guard !Task.isCancelled, analyticsID == requestID else { return }
-            analytics = refreshed.0
-            todayAnalytics = refreshed.1
+            analyticsTask = nil
             isUpdatingAnalytics = false
         }
     }

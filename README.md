@@ -126,6 +126,7 @@ Three distinctions matter most:
 - **Agent runtime** is the sum of completed Codex turn durations. **Session span** runs from creation to the last update and includes idle gaps.
 - **Cached input** is already part of input tokens, and **reasoning output** is already part of output tokens; neither is added again to the total.
 - **Estimated cost** answers “what would this workload cost at API list price?” It is not a ChatGPT subscription charge or an OpenAI invoice. Coverage is shown beside the estimate because a price requires both a detailed token breakdown and a recognized model.
+- In **Usage & Billing**, Day, Week, Month, and Year show the estimate for the current calendar period to date. The history chart and table use the same daily, weekly, monthly, or yearly grouping across retained usage.
 
 See [METRICS.md](METRICS.md) for calculations, attribution rules, pricing limitations, and period semantics.
 

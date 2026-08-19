@@ -203,6 +203,41 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(restored.first?.toolCallEvents?.map(\.name), ["exec → exec_command"])
     }
 
+    func testHistoricalMergeReusesEnrichmentUntilIndexAdvances() async throws {
+        let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: userHome) }
+        let date = Date(timeIntervalSince1970: 1_785_542_400)
+        let event = UsageEvent(
+            date: date,
+            usage: TokenUsage(input: 1_000, output: 100),
+            model: "gpt-5.6-luna"
+        )
+        let historical = SessionMetric(
+            id: "cached", rolloutPath: "/tmp/rollout.jsonl", projectPath: "/tmp/project",
+            title: "Cached", source: "app", provider: "openai", createdAt: date,
+            updatedAt: date, model: "gpt-5.6-luna", reasoningEffort: nil,
+            gitBranch: nil, cliVersion: nil, archived: false, usage: event.usage,
+            usageEvents: [event], enrichmentAvailable: true
+        )
+        func indexed(updatedAt: Date) -> SessionMetric {
+            SessionMetric(
+                id: "cached", rolloutPath: "/tmp/rollout.jsonl", projectPath: "/tmp/project",
+                title: "Cached", source: "app", provider: "openai", createdAt: date,
+                updatedAt: updatedAt, model: "gpt-5.6-luna", reasoningEffort: nil,
+                gitBranch: nil, cliVersion: nil, archived: false, usage: event.usage
+            )
+        }
+
+        let store = HistoricalStore(userHome: userHome)
+        try await store.record([historical])
+
+        let unchanged = try await store.mergedSessions(with: [indexed(updatedAt: date)])
+        let advanced = try await store.mergedSessions(with: [indexed(updatedAt: date.addingTimeInterval(1))])
+
+        XCTAssertTrue(try XCTUnwrap(unchanged.first).enrichmentAvailable)
+        XCTAssertFalse(try XCTUnwrap(advanced.first).enrichmentAvailable)
+    }
+
     func testMixedModelSessionPricesEachDeltaWithItsActiveModel() throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: file) }
@@ -224,7 +259,10 @@ final class AnalyticsTests: XCTestCase {
 
         XCTAssertEqual(result.usageEvents.map(\.model), ["gpt-5.6-luna", "gpt-5.6-sol"])
         XCTAssertEqual(Analytics.totalEstimatedCost([session]), Decimal(string: "0.004576"))
-        XCTAssertEqual(Set(Analytics.models(from: [session]).map(\.model)), ["gpt-5.6-luna", "gpt-5.6-sol"])
+        let models = Analytics.models(from: [session])
+        XCTAssertEqual(Set(models.map(\.model)), ["gpt-5.6-luna", "gpt-5.6-sol"])
+        XCTAssertEqual(models.reduce(Decimal.zero) { $0 + $1.estimatedCost }, Analytics.totalEstimatedCost([session]))
+        XCTAssertEqual(models.reduce(TokenUsage.zero) { $0 + $1.usage }, Analytics.totalUsage([session]))
     }
 
     func testHistoricalPricingUsesTheRateEffectiveOnEventDate() {
@@ -346,9 +384,80 @@ final class AnalyticsTests: XCTestCase {
         )
 
         let periods = Analytics.periods(from: [session], granularity: .year, calendar: calendar)
+        let combined = Analytics.periodBreakdowns(from: [session], calendar: calendar)[.year]
 
         XCTAssertEqual(periods.map { calendar.component(.year, from: $0.start) }, [2025, 2026])
         XCTAssertEqual(periods.map(\.usage.total), [1_000, 2_000])
+        XCTAssertEqual(combined, periods)
+    }
+
+    func testDailyIndexRollsUpIntoWeekMonthAndYearWithoutRepricingEvents() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let firstDate = Date(timeIntervalSince1970: 1_785_542_400)
+        let secondDate = firstDate.addingTimeInterval(2 * 86_400)
+        let events = [
+            UsageEvent(date: firstDate, usage: TokenUsage(input: 1_000, output: 100), model: "gpt-5.6-luna"),
+            UsageEvent(date: secondDate, usage: TokenUsage(input: 2_000, output: 200), model: "gpt-5.6-luna")
+        ]
+        let session = SessionMetric(
+            id: "indexed", rolloutPath: "/tmp/indexed.jsonl", projectPath: "/tmp/project-a",
+            title: "", source: "app", provider: "openai", createdAt: firstDate,
+            updatedAt: secondDate, model: "gpt-5.6-luna", reasoningEffort: nil,
+            gitBranch: nil, cliVersion: nil, archived: false,
+            usage: events.reduce(.zero) { $0 + $1.usage }, usageEvents: events,
+            turns: [TurnMetric(completedAt: secondDate, duration: 4, timeToFirstToken: 0.5, completed: true)],
+            enrichmentAvailable: true
+        )
+        let built = MetricsIndexBuilder.build(session: session, calendar: calendar)
+        let index = MetricsIndexSnapshot(sessions: [built.session], days: built.days)
+
+        XCTAssertEqual(index.periods(granularity: .day, calendar: calendar), Analytics.periods(from: [session], granularity: .day, calendar: calendar))
+        XCTAssertEqual(index.periods(granularity: .week, calendar: calendar), Analytics.periods(from: [session], granularity: .week, calendar: calendar))
+        XCTAssertEqual(index.periods(granularity: .month, calendar: calendar), Analytics.periods(from: [session], granularity: .month, calendar: calendar))
+        XCTAssertEqual(index.periods(granularity: .year, calendar: calendar), Analytics.periods(from: [session], granularity: .year, calendar: calendar))
+        XCTAssertEqual(index.aggregate().usage, Analytics.totalUsage([session]))
+        XCTAssertEqual(index.aggregate().estimatedCost, Analytics.totalEstimatedCost([session]))
+    }
+
+    func testDurableMetricIndexUpdatesOnlyChangedSessionContribution() async throws {
+        let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: userHome) }
+        let date = Date(timeIntervalSince1970: 1_785_542_400)
+        func session(id: String, project: String, tool: String) -> SessionMetric {
+            let usage = TokenUsage(input: 1_000, output: 100)
+            return SessionMetric(
+                id: id, rolloutPath: "/tmp/\(id).jsonl", projectPath: project,
+                title: "", source: "app", provider: "openai", createdAt: date,
+                updatedAt: date, model: "gpt-5.6-luna", reasoningEffort: nil,
+                gitBranch: nil, cliVersion: nil, archived: false, usage: usage,
+                usageEvents: [UsageEvent(date: date, usage: usage, model: "gpt-5.6-luna")],
+                toolCalls: 1,
+                toolCallEvents: [ToolCallEvent(date: date, name: tool, model: "gpt-5.6-luna", attributedUsage: usage)],
+                enrichmentAvailable: true
+            )
+        }
+
+        let originalA = session(id: "a", project: "/tmp/a", tool: "old-label")
+        let originalB = session(id: "b", project: "/tmp/b", tool: "unchanged")
+        let store = HistoricalStore(userHome: userHome)
+        let first = try await store.metricsIndex(for: [originalA, originalB])
+        XCTAssertEqual(first.sessions.count, 2)
+        XCTAssertEqual(first.aggregate(projectPath: "/tmp/a").tools.map(\.tool), ["old-label"])
+
+        // Same timestamp and event count, but a parser-produced label changed.
+        let renamedA = session(id: "a", project: "/tmp/a", tool: "new-label")
+        let updated = try await store.metricsIndex(for: [renamedA, originalB])
+        XCTAssertEqual(updated.aggregate(projectPath: "/tmp/a").tools.map(\.tool), ["new-label"])
+        XCTAssertEqual(updated.aggregate(projectPath: "/tmp/b").tools.map(\.tool), ["unchanged"])
+
+        // A new actor proves the index was stored in SQLite rather than retained only in memory.
+        let reopened = HistoricalStore(userHome: userHome)
+        let restored = try await reopened.metricsIndex(for: [renamedA, originalB])
+        XCTAssertEqual(restored.sessions.count, 2)
+        XCTAssertEqual(restored.days.count, 2)
+        XCTAssertEqual(restored.aggregate(projectPath: "/tmp/a").usage, renamedA.usage)
+        XCTAssertEqual(restored.aggregate(projectPath: "/tmp/b").usage, originalB.usage)
     }
 
     func testIndexedTotalIsNotInventedAsAUsageTrend() {
@@ -547,8 +656,8 @@ final class AnalyticsTests: XCTestCase {
         let snapshot = SubscriptionReader.latest(in: file.path)
 
         XCTAssertEqual(snapshot?.displayPlan, "Plus")
-        XCTAssertEqual(snapshot?.windows.map(\.displayName), ["5-hour quota", "1-day quota", "Weekly quota"])
-        XCTAssertEqual(snapshot?.windows.map(\.usedPercent), [7, 15, 33])
+        XCTAssertEqual(snapshot?.windows.map(\.displayName), ["1-day quota", "Weekly quota"])
+        XCTAssertEqual(snapshot?.windows.map(\.usedPercent), [15, 33])
         XCTAssertEqual(snapshot?.credits?.balance, "12.5")
         XCTAssertEqual(try XCTUnwrap(snapshot).observedAt.timeIntervalSince1970, 1_786_854_937.995, accuracy: 0.001)
     }

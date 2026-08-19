@@ -497,7 +497,7 @@ private struct MenuBarDashboardView: View {
             HStack {
                 Text(window.displayName).font(.subheadline.weight(.medium))
                 Spacer()
-                Text("\(window.remainingPercent.formatted(.number.precision(.fractionLength(0))))% left")
+                Text("\(window.remainingPercent.formatted(.number.precision(.fractionLength(0))))% remaining")
                     .font(.caption.monospacedDigit().weight(.medium))
                     .foregroundStyle(.secondary)
             }

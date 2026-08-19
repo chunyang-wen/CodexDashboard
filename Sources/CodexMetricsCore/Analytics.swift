@@ -1,6 +1,6 @@
 import Foundation
 
-public enum PeriodGranularity: String, CaseIterable, Sendable {
+public enum PeriodGranularity: String, CaseIterable, Hashable, Sendable {
     case day, week, month, year
 }
 
@@ -44,9 +44,10 @@ public enum Analytics {
     public static func costCoverage(
         _ sessions: [SessionMetric],
         pricing: PricingHistory = .bundled,
-        since startDate: Date? = nil
+        since startDate: Date? = nil,
+        totalTokens knownTotal: Int64? = nil
     ) -> Double {
-        let total = totalUsage(sessions, since: startDate).total
+        let total = knownTotal ?? totalUsage(sessions, since: startDate).total
         guard total > 0 else { return 0 }
         let covered = sessions.reduce(Int64.zero) { subtotal, session in
             if session.enrichmentAvailable {
@@ -106,6 +107,73 @@ public enum Analytics {
         }
         return buckets.map { PeriodMetric(start: $0.key, usage: $0.value.usage, sessions: $0.value.sessionIDs.count, activeRuntime: $0.value.runtime, estimatedCost: $0.value.cost) }
             .sorted { $0.start < $1.start }
+    }
+
+    /// Builds every calendar breakdown in one traversal. Dashboard refreshes need
+    /// all four series, so each event is priced once instead of four times.
+    public static func periodBreakdowns(
+        from sessions: [SessionMetric],
+        pricing: PricingHistory = .bundled,
+        calendar: Calendar = .current,
+        since startDate: Date? = nil
+    ) -> [PeriodGranularity: [PeriodMetric]] {
+        struct Bucket {
+            var usage = TokenUsage.zero
+            var sessionIDs = Set<String>()
+            var runtime: TimeInterval = 0
+            var cost = Decimal.zero
+        }
+        var allBuckets = Dictionary(
+            uniqueKeysWithValues: PeriodGranularity.allCases.map { ($0, [Date: Bucket]()) }
+        )
+
+        for session in sessions {
+            for event in session.usageEvents {
+                guard startDate.map({ event.date >= $0 }) ?? true else { continue }
+                let cost = pricing.estimate(
+                    usage: event.usage,
+                    model: event.model ?? session.model,
+                    on: event.date
+                ) ?? 0
+                for granularity in PeriodGranularity.allCases {
+                    let start = periodStart(event.date, granularity: granularity, calendar: calendar)
+                    var bucket = allBuckets[granularity]![start, default: Bucket()]
+                    bucket.usage = bucket.usage + event.usage
+                    bucket.sessionIDs.insert(session.id)
+                    bucket.cost += cost
+                    allBuckets[granularity]![start] = bucket
+                }
+            }
+            for turn in session.turns where turn.completed {
+                guard startDate.map({ turn.completedAt >= $0 }) ?? true else { continue }
+                for granularity in PeriodGranularity.allCases {
+                    let start = periodStart(turn.completedAt, granularity: granularity, calendar: calendar)
+                    var bucket = allBuckets[granularity]![start, default: Bucket()]
+                    bucket.runtime += turn.duration
+                    bucket.sessionIDs.insert(session.id)
+                    allBuckets[granularity]![start] = bucket
+                }
+            }
+            if session.turns.isEmpty {
+                for granularity in PeriodGranularity.allCases {
+                    let start = periodStart(session.updatedAt, granularity: granularity, calendar: calendar)
+                    allBuckets[granularity]![start, default: Bucket()].sessionIDs.insert(session.id)
+                }
+            }
+        }
+
+        return allBuckets.mapValues { buckets in
+            buckets.map {
+                PeriodMetric(
+                    start: $0.key,
+                    usage: $0.value.usage,
+                    sessions: $0.value.sessionIDs.count,
+                    activeRuntime: $0.value.runtime,
+                    estimatedCost: $0.value.cost
+                )
+            }
+            .sorted { $0.start < $1.start }
+        }
     }
 
     public static func models(

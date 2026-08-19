@@ -52,10 +52,11 @@ public struct PricingRegistry: Sendable {
     public func estimate(usage: TokenUsage, model: String?) -> Decimal? {
         guard let price = price(for: model), usage.input > 0 || usage.output > 0 else { return nil }
         let million = Decimal(1_000_000)
-        return Decimal(usage.uncachedInput) / million * price.inputPerMillion
-            + Decimal(usage.cachedInput) / million * price.cachedInputPerMillion
-            + Decimal(usage.cacheWriteInput) / million * price.inputPerMillion * price.cacheWriteMultiplier
-            + Decimal(usage.output) / million * price.outputPerMillion
+        let unscaled = Decimal(usage.uncachedInput) * price.inputPerMillion
+            + Decimal(usage.cachedInput) * price.cachedInputPerMillion
+            + Decimal(usage.cacheWriteInput) * price.inputPerMillion * price.cacheWriteMultiplier
+            + Decimal(usage.output) * price.outputPerMillion
+        return unscaled / million
     }
 }
 
@@ -105,10 +106,11 @@ public struct PricingHistory: Codable, Hashable, Sendable {
     public func estimate(usage: TokenUsage, model: String?, on date: Date) -> Decimal? {
         guard let price = price(for: model, on: date), usage.input > 0 || usage.output > 0 else { return nil }
         let million = Decimal(1_000_000)
-        return Decimal(usage.uncachedInput) / million * price.inputPerMillion
-            + Decimal(usage.cachedInput) / million * price.cachedInputPerMillion
-            + Decimal(usage.cacheWriteInput) / million * price.inputPerMillion * price.cacheWriteMultiplier
-            + Decimal(usage.output) / million * price.outputPerMillion
+        let unscaled = Decimal(usage.uncachedInput) * price.inputPerMillion
+            + Decimal(usage.cachedInput) * price.cachedInputPerMillion
+            + Decimal(usage.cacheWriteInput) * price.inputPerMillion * price.cacheWriteMultiplier
+            + Decimal(usage.output) * price.outputPerMillion
+        return unscaled / million
     }
 
     public var latestEffectiveDate: Date? { schedules.last?.effectiveAt }

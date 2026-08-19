@@ -148,7 +148,9 @@ public enum SubscriptionReader {
                   let minutes = integer(window["window_minutes"]),
                   let reset = number(window["resets_at"]) else { return nil }
             return UsageQuotaWindow(usedPercent: used, windowMinutes: minutes, resetsAt: Date(timeIntervalSince1970: reset))
-        }.sorted { $0.windowMinutes < $1.windowMinutes }
+        }
+        .filter { $0.windowMinutes != 300 }
+        .sorted { $0.windowMinutes < $1.windowMinutes }
 
         let credits = (value["credits"] as? [String: Any]).map {
             SubscriptionCredits(
