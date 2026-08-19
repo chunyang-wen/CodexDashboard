@@ -1,7 +1,7 @@
 import Foundation
 
 public enum PeriodGranularity: String, CaseIterable, Sendable {
-    case day, week, month
+    case day, week, month, year
 }
 
 public enum Analytics {
@@ -255,6 +255,7 @@ public enum Analytics {
         case .day: return calendar.startOfDay(for: date)
         case .week: return calendar.dateInterval(of: .weekOfYear, for: date)?.start ?? calendar.startOfDay(for: date)
         case .month: return calendar.dateInterval(of: .month, for: date)?.start ?? calendar.startOfDay(for: date)
+        case .year: return calendar.dateInterval(of: .year, for: date)?.start ?? calendar.startOfDay(for: date)
         }
     }
 }

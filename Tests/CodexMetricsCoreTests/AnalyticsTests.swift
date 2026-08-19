@@ -329,6 +329,28 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(Analytics.periods(from: [session], granularity: .day, since: cutoff).reduce(0) { $0 + $1.usage.total }, 2_200)
     }
 
+    func testYearGranularityAggregatesEventsByCalendarYear() {
+        let calendar = Calendar(identifier: .gregorian)
+        let first = calendar.date(from: DateComponents(year: 2025, month: 12, day: 31))!
+        let second = calendar.date(from: DateComponents(year: 2026, month: 1, day: 1))!
+        let session = SessionMetric(
+            id: "yearly", rolloutPath: "", projectPath: "/tmp/project", title: "",
+            source: "app", provider: "openai", createdAt: first, updatedAt: second,
+            model: "gpt-5.6-sol", reasoningEffort: nil, gitBranch: nil, cliVersion: nil,
+            archived: false, usage: TokenUsage(input: 3_000),
+            usageEvents: [
+                UsageEvent(date: first, usage: TokenUsage(input: 1_000), model: "gpt-5.6-sol"),
+                UsageEvent(date: second, usage: TokenUsage(input: 2_000), model: "gpt-5.6-sol")
+            ],
+            enrichmentAvailable: true
+        )
+
+        let periods = Analytics.periods(from: [session], granularity: .year, calendar: calendar)
+
+        XCTAssertEqual(periods.map { calendar.component(.year, from: $0.start) }, [2025, 2026])
+        XCTAssertEqual(periods.map(\.usage.total), [1_000, 2_000])
+    }
+
     func testIndexedTotalIsNotInventedAsAUsageTrend() {
         let session = SessionMetric(
             id: "session",

@@ -56,6 +56,7 @@ private struct DashboardAnalytics: Sendable {
     let daily: [PeriodMetric]
     let weekly: [PeriodMetric]
     let monthly: [PeriodMetric]
+    let yearly: [PeriodMetric]
     let turnDurations: [TimeInterval]
     let averageTTFT: TimeInterval?
     let activeDays: Int
@@ -67,7 +68,7 @@ private struct DashboardAnalytics: Sendable {
     static let empty = DashboardAnalytics(
         filteredSessions: [], allProjects: [], projects: [],
         usage: .zero, estimatedCost: 0, costCoverage: 0, runtime: 0,
-        models: [], tools: [], skills: [], daily: [], weekly: [], monthly: [], turnDurations: [],
+        models: [], tools: [], skills: [], daily: [], weekly: [], monthly: [], yearly: [], turnDurations: [],
         averageTTFT: nil, activeDays: 0, toolCalls: 0, skillCalls: 0, completedTurns: 0,
         abortedTurns: 0
     )
@@ -132,6 +133,7 @@ private struct DashboardAnalytics: Sendable {
             daily: Analytics.periods(from: filtered, granularity: .day, pricing: pricing, calendar: calendar, since: startDate),
             weekly: Analytics.periods(from: filtered, granularity: .week, pricing: pricing, calendar: calendar, since: startDate),
             monthly: Analytics.periods(from: filtered, granularity: .month, pricing: pricing, calendar: calendar, since: startDate),
+            yearly: Analytics.periods(from: filtered, granularity: .year, pricing: pricing, calendar: calendar, since: startDate),
             turnDurations: turnDurations,
             averageTTFT: averageTTFT,
             activeDays: Set(filtered.map { calendar.startOfDay(for: $0.updatedAt) }).count,
@@ -146,23 +148,19 @@ private struct DashboardAnalytics: Sendable {
 @MainActor
 final class DashboardStore: ObservableObject {
     enum Range: String, CaseIterable, Identifiable {
-        case sevenDays = "7D"
-        case thirtyDays = "30D"
-        case ninetyDays = "90D"
-        case year = "1Y"
-        case all = "All"
+        case day = "Day"
+        case week = "Week"
+        case month = "Month"
+        case year = "Year"
         var id: String { rawValue }
 
-        var startDate: Date? {
-            let days: Int?
+        var granularity: PeriodGranularity {
             switch self {
-            case .sevenDays: days = 7
-            case .thirtyDays: days = 30
-            case .ninetyDays: days = 90
-            case .year: days = 365
-            case .all: days = nil
+            case .day: .day
+            case .week: .week
+            case .month: .month
+            case .year: .year
             }
-            return days.flatMap { Calendar.current.date(byAdding: .day, value: -$0, to: Date()) }
         }
     }
 
@@ -181,7 +179,7 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var historySessionCount = 0
     @Published private(set) var historyMessage: String?
     @Published private(set) var errorMessage: String?
-    @Published private(set) var range: Range = .thirtyDays
+    @Published private(set) var range: Range = .month
     @Published private(set) var codexHome: URL
     @Published private(set) var refreshInterval: TimeInterval
     private var loadTask: Task<Void, Never>?
@@ -213,15 +211,14 @@ final class DashboardStore: ObservableObject {
     var enrichmentLabel: String {
         "Parsing \(enrichedSessions.formatted()) of \(enrichmentTotal.formatted()) sessions"
     }
-    var analyticsUpdateLabel: String { "Updating \(range.rawValue)…" }
+    var analyticsUpdateLabel: String { "Updating metrics…" }
     var codexHomeDisplayPath: String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return codexHome.path.replacingOccurrences(of: home, with: "~", options: [.anchored])
     }
 
     var filteredSessions: [SessionMetric] { analytics.filteredSessions }
-    /// The project/session hierarchy is structural and must not disappear when an
-    /// analytics date range changes.
+    /// The project/session hierarchy is structural and independent of chart aggregation.
     var allProjects: [ProjectMetric] { analytics.allProjects }
     var projects: [ProjectMetric] { analytics.projects }
     var usage: TokenUsage { analytics.usage }
@@ -234,6 +231,15 @@ final class DashboardStore: ObservableObject {
     var daily: [PeriodMetric] { analytics.daily }
     var weekly: [PeriodMetric] { analytics.weekly }
     var monthly: [PeriodMetric] { analytics.monthly }
+    var yearly: [PeriodMetric] { analytics.yearly }
+    var trendPeriods: [PeriodMetric] {
+        switch range {
+        case .day: daily
+        case .week: weekly
+        case .month: monthly
+        case .year: yearly
+        }
+    }
     var pricingEffectiveDate: String {
         pricing.latestEffectiveDate?.formatted(.iso8601.year().month().day()) ?? "—"
     }
@@ -279,7 +285,7 @@ final class DashboardStore: ObservableObject {
                 }
                 scheduleAnalyticsRefresh()
                 isLoading = false
-                startEnrichmentForSelectedRange()
+                startEnrichmentForAvailableHistory()
                 refreshPricing()
                 let latestSubscription = await Task.detached(priority: .utility) {
                     SubscriptionReader.latest(from: indexed)
@@ -333,7 +339,10 @@ final class DashboardStore: ObservableObject {
                 })
                 let indexChanged = fingerprint.index != next.index
                 fingerprint = next
-                guard indexChanged || !changedPaths.isEmpty else { continue }
+                guard indexChanged || !changedPaths.isEmpty else {
+                    failures = 0
+                    continue
+                }
 
                 if await self.refreshInBackground(changedPaths: changedPaths, indexChanged: indexChanged) {
                     failures = 0
@@ -366,8 +375,7 @@ final class DashboardStore: ObservableObject {
                 }
             }
             let candidates = sessions.filter { session in
-                (changedPaths.contains(session.rolloutPath) || !previousIDs.contains(session.id))
-                    && (range.startDate.map { session.updatedAt >= $0 } ?? true)
+                changedPaths.contains(session.rolloutPath) || !previousIDs.contains(session.id)
             }
             guard !candidates.isEmpty else {
                 if indexChanged { scheduleAnalyticsRefresh() }
@@ -397,12 +405,12 @@ final class DashboardStore: ObservableObject {
         }
     }
 
-    private func startEnrichmentForSelectedRange() {
+    private func startEnrichmentForAvailableHistory() {
         guard !isEnriching else { return }
         let requestID = UUID()
         enrichmentID = requestID
         let candidates = sessions.filter { session in
-            !session.enrichmentAvailable && (range.startDate.map { session.updatedAt >= $0 } ?? true)
+            !session.enrichmentAvailable
         }
         enrichedSessions = 0
         enrichmentTotal = candidates.count
@@ -453,9 +461,8 @@ final class DashboardStore: ObservableObject {
             }
             guard !Task.isCancelled, enrichmentID == requestID else { return }
             isEnriching = false
-            // The selected range may have expanded while this scan was running.
-            // Pick up only the newly in-scope sessions after the current work settles.
-            startEnrichmentForSelectedRange()
+            // Pick up sessions added while the current scan was running.
+            startEnrichmentForAvailableHistory()
         }
     }
 
@@ -471,23 +478,17 @@ final class DashboardStore: ObservableObject {
             guard let self, !Task.isCancelled else { return }
             guard self.range != newRange else { return }
             self.range = newRange
-            self.scheduleAnalyticsRefresh()
-            // Filtering is independent of rollout parsing. Keep an active scan alive
-            // instead of cancelling and restarting it every time the range changes.
-            if !self.sessions.isEmpty, !self.isEnriching {
-                self.startEnrichmentForSelectedRange()
-            }
         }
     }
 
     private func scheduleAnalyticsRefresh() {
         analyticsTask?.cancel()
+        analyticsID = UUID()
         isUpdatingAnalytics = true
         let feedbackStartedAt = ContinuousClock.now
         let requestID = UUID()
         analyticsID = requestID
         let sessions = sessions
-        let startDate = range.startDate
         let pricing = pricing
 
         analyticsTask = Task {
@@ -497,7 +498,7 @@ final class DashboardStore: ObservableObject {
             let refreshed = await Task.detached(priority: .userInitiated) {
                 let selected = DashboardAnalytics.calculate(
                     sessions: sessions,
-                    startDate: startDate,
+                    startDate: nil,
                     pricing: pricing
                 )
                 let today = DashboardAnalytics.calculate(
@@ -558,11 +559,7 @@ final class DashboardStore: ObservableObject {
 
     func preserveAllHistory() {
         historyMessage = "Scanning all available rollouts; parsed metrics will be added to durable history."
-        if range == .all {
-            startEnrichmentForSelectedRange()
-        } else {
-            updateRange(.all)
-        }
+        startEnrichmentForAvailableHistory()
     }
 
     func refreshPricing(force: Bool = false) {

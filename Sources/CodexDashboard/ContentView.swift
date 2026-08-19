@@ -68,7 +68,7 @@ struct ContentView: View {
     @EnvironmentObject private var store: DashboardStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection: DashboardPage? = .overview
-    @State private var selectedRange: DashboardStore.Range = .thirtyDays
+    @State private var selectedRange: DashboardStore.Range = .month
 
     var body: some View {
         NavigationSplitView {
@@ -118,7 +118,7 @@ struct ContentView: View {
             }
             .toolbar {
                 ToolbarItemGroup {
-                    Picker("Range", selection: $selectedRange) {
+                    Picker("Aggregation", selection: $selectedRange) {
                         ForEach(DashboardStore.Range.allCases) { Text($0.rawValue).tag($0) }
                     }
                     .pickerStyle(.segmented)
@@ -206,7 +206,7 @@ struct OverviewView: View {
                     ToolCallsMetricCard(calls: store.toolCalls, tools: store.tools, detail: "\(store.tools.count) tools · click for cost")
                     SkillCallsMetricCard(calls: store.skillCalls, skills: store.skills, detail: "\(store.skills.count) skills · click for cost")
                 }
-                ActivityChart(daily: store.daily, weekly: store.weekly, monthly: store.monthly)
+                ActivityChart(periods: store.trendPeriods, granularity: store.range.granularity)
                 HStack(alignment: .top, spacing: 16) {
                     TopProjectsView(projects: Array(store.projects.prefix(7)))
                     ModelMixView(models: Array(store.models.prefix(7)))
@@ -222,92 +222,101 @@ struct OverviewView: View {
 }
 
 struct ActivityChart: View {
-    let daily: [PeriodMetric]
-    let weekly: [PeriodMetric]
-    let monthly: [PeriodMetric]
+    private enum ScrollEdge {
+        case older
+        case newer
+    }
+
+    let periods: [PeriodMetric]
+    let granularity: PeriodGranularity
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var metric = "Tokens"
-    @State private var granularity = PeriodGranularity.day
     @State private var hoveredPeriod: PeriodMetric?
-    private var periods: [PeriodMetric] {
-        switch granularity {
-        case .day: daily
-        case .week: weekly
-        case .month: monthly
-        }
+    @State private var hoveredScrollEdge: ScrollEdge?
+    @State private var scrollPosition = 0.0
+    @State private var dragStartScrollPosition: Double?
+
+    private var visiblePeriodCount: Double { Double(min(30, max(1, periods.count))) }
+    private var latestScrollPosition: Double { max(0, Double(periods.count) - visiblePeriodCount) }
+    private var canScroll: Bool { Double(periods.count) > visiblePeriodCount }
+    private var axisPositions: [Double] {
+        let step = max(1, Int(ceil(visiblePeriodCount / 8)))
+        return stride(from: 0, to: periods.count, by: step).map { Double($0) + 0.5 }
     }
-    private var displayedPeriods: [PeriodMetric] { Array(periods.suffix(90)) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                SectionHeader(title: "Activity trend", subtitle: "Detailed token events and completed turns only; indexed totals are excluded until enriched.", definition: .periodUsage)
-                VStack(alignment: .trailing, spacing: 8) {
-                    Picker("Period", selection: $granularity) {
-                        Text("Day").tag(PeriodGranularity.day)
-                        Text("Week").tag(PeriodGranularity.week)
-                        Text("Month").tag(PeriodGranularity.month)
-                    }.pickerStyle(.segmented).frame(width: 230)
-                    Picker("Metric", selection: $metric) {
-                        Text("Tokens").tag("Tokens").help(MetricDefinition.totalTokens.helpText)
-                        Text("Runtime").tag("Runtime").help(MetricDefinition.agentRuntime.helpText)
-                        Text("Cost").tag("Cost").help(MetricDefinition.estimatedCost.helpText)
-                    }.pickerStyle(.segmented).frame(width: 230)
+                SectionHeader(
+                    title: "Activity trend",
+                    subtitle: "\(granularityLabel) totals across available history. Drag, swipe, or use the edge arrows to move through time.",
+                    definition: .periodUsage
+                )
+                Picker("Chart metric", selection: $metric) {
+                    Label("Tokens", systemImage: "text.word.spacing")
+                        .labelStyle(.iconOnly)
+                        .tag("Tokens")
+                        .help(MetricDefinition.totalTokens.helpText)
+                    Label("Runtime", systemImage: "clock.fill")
+                        .labelStyle(.iconOnly)
+                        .tag("Runtime")
+                        .help(MetricDefinition.agentRuntime.helpText)
+                    Label("Cost", systemImage: "dollarsign")
+                        .labelStyle(.iconOnly)
+                        .tag("Cost")
+                        .help(MetricDefinition.estimatedCost.helpText)
                 }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 138)
+                .accessibilityLabel("Chart metric")
             }
-            Chart(displayedPeriods) { period in
-                if metric == "Tokens" {
-                    AreaMark(x: .value("Date", period.start), y: .value("Tokens", period.usage.total))
-                        .interpolationMethod(.catmullRom)
-                        .foregroundStyle(LinearGradient(colors: [.blue.opacity(0.28), .blue.opacity(0.02)], startPoint: .top, endPoint: .bottom))
-                    LineMark(x: .value("Date", period.start), y: .value("Tokens", period.usage.total))
-                        .interpolationMethod(.catmullRom)
-                        .lineStyle(.init(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-                        .foregroundStyle(.blue)
-                    PointMark(x: .value("Date", period.start), y: .value("Tokens", period.usage.total))
-                        .symbolSize(18).foregroundStyle(.blue)
-                } else if metric == "Runtime" {
-                    AreaMark(x: .value("Date", period.start), y: .value("Hours", period.activeRuntime / 3600))
-                        .interpolationMethod(.catmullRom)
-                        .foregroundStyle(LinearGradient(colors: [.orange.opacity(0.28), .orange.opacity(0.02)], startPoint: .top, endPoint: .bottom))
-                    LineMark(x: .value("Date", period.start), y: .value("Hours", period.activeRuntime / 3600))
-                        .interpolationMethod(.catmullRom)
-                        .lineStyle(.init(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-                        .foregroundStyle(.orange)
-                    PointMark(x: .value("Date", period.start), y: .value("Hours", period.activeRuntime / 3600))
-                        .symbolSize(18).foregroundStyle(.orange)
-                } else {
-                    AreaMark(x: .value("Date", period.start), y: .value("USD", period.estimatedCost.doubleValue))
-                        .interpolationMethod(.catmullRom)
-                        .foregroundStyle(LinearGradient(colors: [.green.opacity(0.28), .green.opacity(0.02)], startPoint: .top, endPoint: .bottom))
-                    LineMark(x: .value("Date", period.start), y: .value("USD", period.estimatedCost.doubleValue))
-                        .interpolationMethod(.catmullRom)
-                        .lineStyle(.init(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-                        .foregroundStyle(.green)
-                    PointMark(x: .value("Date", period.start), y: .value("USD", period.estimatedCost.doubleValue))
-                        .symbolSize(18).foregroundStyle(.green)
-                }
-                if hoveredPeriod?.id == period.id {
-                    RuleMark(x: .value("Selected date", period.start))
+            Chart(Array(periods.enumerated()), id: \.offset) { item in
+                RectangleMark(
+                    xStart: .value("Period start", Double(item.offset) + 0.06),
+                    xEnd: .value("Period end", Double(item.offset) + 0.94),
+                    yStart: .value("Baseline", 0),
+                    yEnd: .value(metric, metricValue(item.element))
+                )
+                .foregroundStyle(metricColor.gradient)
+                .cornerRadius(3)
+                if hoveredPeriod?.id == item.element.id {
+                    RuleMark(x: .value("Selected period", Double(item.offset) + 0.5))
                         .lineStyle(.init(lineWidth: 1, dash: [4, 4]))
                         .foregroundStyle(.secondary.opacity(0.7))
-                    PointMark(x: .value("Selected date", period.start), y: .value("Selected value", metricValue(period)))
+                    PointMark(x: .value("Selected period", Double(item.offset) + 0.5), y: .value("Selected value", metricValue(item.element)))
                         .symbolSize(70)
                         .foregroundStyle(metricColor)
-                    PointMark(x: .value("Selected date", period.start), y: .value("Selected value", metricValue(period)))
+                    PointMark(x: .value("Selected period", Double(item.offset) + 0.5), y: .value("Selected value", metricValue(item.element)))
                         .symbolSize(22)
                         .foregroundStyle(.background)
                         .annotation(
                             position: .top,
+                            alignment: annotationAlignment(for: item.offset),
                             spacing: 10,
                             overflowResolution: .init(
                                 x: .fit(to: .chart),
                                 y: .fit(to: .chart)
                             )
-                        ) { hoverCard(period) }
+                        ) { hoverCard(item.element) }
                 }
             }
-            .chartXAxis { AxisMarks(values: .automatic(desiredCount: 8)) }
+            .chartScrollableAxes(.horizontal)
+            .chartXVisibleDomain(length: visiblePeriodCount)
+            .chartScrollPosition(x: $scrollPosition)
+            .chartXAxis {
+                AxisMarks(values: axisPositions) { value in
+                    AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+                    AxisValueLabel {
+                        if let position = value.as(Double.self) {
+                            let index = Int(floor(position))
+                            if periods.indices.contains(index) {
+                                Text(axisPeriodLabel(periods[index].start))
+                            }
+                        }
+                    }
+                }
+            }
             .chartYAxis {
                 AxisMarks(position: .leading) { value in
                     AxisGridLine().foregroundStyle(.secondary.opacity(0.2))
@@ -319,7 +328,6 @@ struct ActivityChart: View {
                 }
             }
             .animation(reduceMotion ? nil : .snappy(duration: 0.35), value: metric)
-            .animation(reduceMotion ? nil : .snappy(duration: 0.35), value: granularity)
             .chartOverlay { proxy in
                 GeometryReader { geometry in
                     Rectangle()
@@ -332,24 +340,119 @@ struct ActivityChart: View {
                                 let frame = geometry[plotFrame]
                                 let x = location.x - frame.minX
                                 guard x >= 0, x <= frame.width,
-                                      let date: Date = proxy.value(atX: x) else {
+                                      let rawIndex: Double = proxy.value(atX: x) else {
                                     hoveredPeriod = nil
                                     return
                                 }
-                                let nearest = displayedPeriods.min {
-                                    abs($0.start.timeIntervalSince(date)) < abs($1.start.timeIntervalSince(date))
-                                }
+                                let index = Int(floor(rawIndex))
+                                let nearest = periods.indices.contains(index) ? periods[index] : nil
                                 if hoveredPeriod?.id != nearest?.id { hoveredPeriod = nearest }
                             case .ended:
                                 hoveredPeriod = nil
                             }
                         }
+                        .simultaneousGesture(
+                            DragGesture(minimumDistance: 2)
+                                .onChanged { value in
+                                    guard canScroll, let plotFrame = proxy.plotFrame else { return }
+                                    let frame = geometry[plotFrame]
+                                    guard frame.width > 0 else { return }
+                                    if dragStartScrollPosition == nil {
+                                        dragStartScrollPosition = scrollPosition
+                                    }
+                                    let translatedPeriods = Double(value.translation.width / frame.width) * visiblePeriodCount
+                                    let proposed = (dragStartScrollPosition ?? scrollPosition) - translatedPeriods
+                                    scrollPosition = min(latestScrollPosition, max(0, proposed))
+                                    hoveredPeriod = nil
+                                }
+                                .onEnded { _ in
+                                    dragStartScrollPosition = nil
+                                }
+                        )
                 }
             }
             .frame(height: 220)
+            .overlay {
+                if canScroll {
+                    HStack(spacing: 0) {
+                        edgeScrollControl(.older)
+                        Spacer(minLength: 0)
+                        edgeScrollControl(.newer)
+                    }
+                }
+            }
+            .onAppear { scrollPosition = latestScrollPosition }
+            .onChange(of: periods.map(\.id)) { _, _ in
+                hoveredPeriod = nil
+                scrollPosition = latestScrollPosition
+            }
         }
         .padding(20)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private func scroll(by amount: Double) {
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) {
+            scrollPosition = min(latestScrollPosition, max(0, scrollPosition + amount))
+        }
+    }
+
+    private func edgeScrollControl(_ edge: ScrollEdge) -> some View {
+        let canMove = edge == .older
+            ? scrollPosition > 0
+            : scrollPosition < latestScrollPosition
+
+        return ZStack {
+            Color.clear
+                .contentShape(Rectangle())
+
+            if canMove {
+                Button { scroll(by: edge == .older ? -15 : 15) } label: {
+                    Image(systemName: edge == .older ? "chevron.left" : "chevron.right")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.primary)
+                        .frame(width: 34, height: 54)
+                        .background(.regularMaterial, in: Capsule())
+                        .overlay {
+                            Capsule().stroke(.separator.opacity(0.6), lineWidth: 0.5)
+                        }
+                        .shadow(color: .black.opacity(0.2), radius: 7, y: 3)
+                }
+                .buttonStyle(.plain)
+                .help(edge == .older ? "Show older activity" : "Show newer activity")
+                .accessibilityLabel(edge == .older ? "Show older activity" : "Show newer activity")
+                .opacity(hoveredScrollEdge == edge ? 1 : 0.48)
+                .scaleEffect(hoveredScrollEdge == edge ? 1 : 0.9)
+                .offset(x: hoveredScrollEdge == edge ? 0 : (edge == .older ? -14 : 14))
+            }
+        }
+        .frame(width: 64)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: hoveredScrollEdge)
+        .onHover { isHovering in
+            withAnimation(reduceMotion ? nil : .snappy(duration: 0.18)) {
+                if isHovering {
+                    hoveredScrollEdge = edge
+                } else if hoveredScrollEdge == edge {
+                    hoveredScrollEdge = nil
+                }
+            }
+        }
+    }
+
+    private var granularityLabel: String {
+        switch granularity {
+        case .day: "Daily"
+        case .week: "Weekly"
+        case .month: "Monthly"
+        case .year: "Yearly"
+        }
+    }
+
+    private func annotationAlignment(for index: Int) -> Alignment {
+        let positionInViewport = Double(index) - scrollPosition
+        if positionInViewport < 3 { return .leading }
+        if positionInViewport > visiblePeriodCount - 4 { return .trailing }
+        return .center
     }
 
     private func axisLabel(_ value: Double) -> String {
@@ -400,6 +503,15 @@ struct ActivityChart: View {
         case .day: date.formatted(date: .abbreviated, time: .omitted)
         case .week: "Week of \(date.formatted(date: .abbreviated, time: .omitted))"
         case .month: date.formatted(.dateTime.year().month(.wide))
+        case .year: date.formatted(.dateTime.year())
+        }
+    }
+
+    private func axisPeriodLabel(_ date: Date) -> String {
+        switch granularity {
+        case .day, .week: date.formatted(.dateTime.month(.abbreviated).day())
+        case .month: date.formatted(.dateTime.year().month(.abbreviated))
+        case .year: date.formatted(.dateTime.year())
         }
     }
 
@@ -622,7 +734,14 @@ struct ProjectsView: View {
         case .project(let path):
             if let project = store.allProjects.first(where: { $0.path == path }) {
                 let rangedSessions = store.filteredSessions.filter { $0.projectPath == path }
-                ProjectDetailView(project: project, rangedSessions: rangedSessions, rangeLabel: store.range.rawValue, rangeStart: store.range.startDate, pricing: store.pricing) { session in
+                ProjectDetailView(
+                    project: project,
+                    rangedSessions: rangedSessions,
+                    rangeLabel: "All time",
+                    rangeStart: nil,
+                    granularity: store.range.granularity,
+                    pricing: store.pricing
+                ) { session in
                     expandedProjects.insert(project.id)
                     selection = .session(session.id)
                 }
@@ -694,6 +813,7 @@ private struct ProjectDetailView: View {
     let rangedSessions: [SessionMetric]
     let rangeLabel: String
     let rangeStart: Date?
+    let granularity: PeriodGranularity
     let pricing: PricingHistory
     let onSelectSession: (SessionMetric) -> Void
     private var rangedUsage: TokenUsage { Analytics.totalUsage(rangedSessions, since: rangeStart) }
@@ -704,9 +824,9 @@ private struct ProjectDetailView: View {
     }
     private var cost: Decimal { Analytics.totalEstimatedCost(rangedSessions, pricing: pricing, since: rangeStart) }
     private var coverage: Double { Analytics.costCoverage(rangedSessions, pricing: pricing, since: rangeStart) }
-    private var daily: [PeriodMetric] { Analytics.periods(from: rangedSessions, granularity: .day, pricing: pricing, since: rangeStart) }
-    private var weekly: [PeriodMetric] { Analytics.periods(from: rangedSessions, granularity: .week, pricing: pricing, since: rangeStart) }
-    private var monthly: [PeriodMetric] { Analytics.periods(from: rangedSessions, granularity: .month, pricing: pricing, since: rangeStart) }
+    private var periods: [PeriodMetric] {
+        Analytics.periods(from: rangedSessions, granularity: granularity, pricing: pricing, since: rangeStart)
+    }
     private var tools: [ToolMetric] { Analytics.tools(from: rangedSessions, pricing: pricing, since: rangeStart) }
     private var skills: [SkillMetric] { Analytics.skills(from: rangedSessions, pricing: pricing, since: rangeStart) }
     private var toolCalls: Int {
@@ -742,7 +862,7 @@ private struct ProjectDetailView: View {
                     ToolCallsMetricCard(calls: toolCalls, tools: tools, detail: "\(tools.count) tools · \(rangeLabel)")
                     SkillCallsMetricCard(calls: skillCalls, skills: skills, detail: "\(skills.count) skills · \(rangeLabel)")
                 }
-                ActivityChart(daily: daily, weekly: weekly, monthly: monthly)
+                ActivityChart(periods: periods, granularity: granularity)
                 VStack(alignment: .leading, spacing: 12) {
                     SectionHeader(title: "Recent sessions", subtitle: "Sessions stay scoped to this project.")
                     ForEach(project.sessions.sorted { $0.updatedAt > $1.updatedAt }.prefix(8)) { session in

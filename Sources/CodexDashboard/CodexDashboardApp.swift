@@ -391,65 +391,79 @@ private struct MenuBarDashboardView: View {
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
+        ZStack {
+            Rectangle().fill(.ultraThinMaterial)
+            LinearGradient(
+                colors: [Color.teal.opacity(0.08), .clear, Color.mint.opacity(0.035)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
 
-            if let windows = store.subscription?.windows, !windows.isEmpty {
-                Divider()
-                VStack(spacing: 14) {
-                    ForEach(windows) { quotaRow($0) }
+            VStack(spacing: 0) {
+                header
+
+                if let windows = store.subscription?.windows, !windows.isEmpty {
+                    sectionDivider
+                    VStack(spacing: 16) {
+                        ForEach(windows) { quotaRow($0) }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 15)
                 }
-                .padding(16)
-            }
 
-            Divider()
-            todayMetrics.padding(16)
+                sectionDivider
+                todayMetrics.padding(16)
 
-            Divider()
-            HStack(spacing: 8) {
-                Button("Open Dashboard") {
-                    AppActivationPolicy.dismissMenuBarExtra()
-                    AppActivationPolicy.showDockIcon()
-                    openWindow(id: "dashboard")
-                    AppActivationPolicy.bringWindowToFront(identifier: .dashboard)
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button { store.load() } label: { Image(systemName: "arrow.clockwise") }
-                    .help("Refresh now")
-                    .disabled(store.isBusy)
-
-                Spacer()
-
-                Menu {
-                    Button("Settings…") {
+                sectionDivider
+                HStack(spacing: 12) {
+                    Spacer()
+                    MenuBarActionButton(
+                        title: "Open Dashboard",
+                        systemImage: "rectangle.grid.2x2.fill",
+                        tint: .teal
+                    ) {
+                        AppActivationPolicy.dismissMenuBarExtra()
+                        AppActivationPolicy.showDockIcon()
+                        openWindow(id: "dashboard")
+                        AppActivationPolicy.bringWindowToFront(identifier: .dashboard)
+                    }
+                    MenuBarActionButton(
+                        title: "Settings",
+                        systemImage: "gearshape.fill"
+                    ) {
                         AppActivationPolicy.dismissMenuBarExtra()
                         AppActivationPolicy.showDockIcon()
                         openSettings()
                         AppActivationPolicy.bringWindowToFront(identifier: .settings)
                     }
                     .keyboardShortcut(",", modifiers: .command)
-                    Divider()
-                    Button("Quit Codex Dashboard") { NSApp.terminate(nil) }
-                        .keyboardShortcut("q", modifiers: .command)
-                } label: {
-                    Image(systemName: "ellipsis.circle")
+                    MenuBarActionButton(
+                        title: "Quit Codex Dashboard",
+                        systemImage: "power",
+                        tint: .red
+                    ) {
+                        NSApp.terminate(nil)
+                    }
+                    .keyboardShortcut("q", modifiers: .command)
+                    Spacer()
                 }
-                .menuStyle(.borderlessButton)
-                .frame(width: 28)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color.primary.opacity(0.035))
             }
-            .padding(12)
         }
         .frame(width: 350)
     }
 
+    private var sectionDivider: some View {
+        Rectangle()
+            .fill(.separator.opacity(0.5))
+            .frame(height: 0.5)
+    }
+
     private var header: some View {
         HStack(spacing: 12) {
-            Image(systemName: "chart.bar.xaxis")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(.tint)
-                .frame(width: 36, height: 36)
-                .background(.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            MenuBarAppIcon(statusColor: headerQuotaColor)
             VStack(alignment: .leading, spacing: 3) {
                 Text(store.account?.email ?? "Codex Dashboard")
                     .font(.headline)
@@ -463,6 +477,13 @@ private struct MenuBarDashboardView: View {
             if store.isBusy { ProgressView().controlSize(.small) }
         }
         .padding(16)
+    }
+
+    private var headerQuotaColor: Color? {
+        store.subscription?.windows
+            .map(\.remainingPercent)
+            .min()
+            .map { quotaColor(for: $0) }
     }
 
     private var planLabel: String {
@@ -480,8 +501,7 @@ private struct MenuBarDashboardView: View {
                     .font(.caption.monospacedDigit().weight(.medium))
                     .foregroundStyle(.secondary)
             }
-            ProgressView(value: min(100, max(0, window.usedPercent)), total: 100)
-                .tint(window.usedPercent >= 90 ? .orange : .accentColor)
+            QuotaRemainingBar(remainingPercent: window.remainingPercent)
             Text("Resets \(window.resetsAt, style: .relative)")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
@@ -518,6 +538,110 @@ private struct MenuBarDashboardView: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct QuotaRemainingBar: View {
+    let remainingPercent: Double
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var fraction: Double {
+        min(1, max(0, remainingPercent / 100))
+    }
+
+    private var color: Color { quotaColor(for: remainingPercent) }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.primary.opacity(0.09))
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [color.opacity(0.72), color],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: proxy.size.width * fraction)
+                    .shadow(color: color.opacity(0.2), radius: 3)
+            }
+        }
+        .frame(height: 6)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: fraction)
+        .accessibilityElement()
+        .accessibilityLabel("Quota remaining")
+        .accessibilityValue(remainingPercent.formatted(.percent.scale(1).precision(.fractionLength(0))))
+    }
+}
+
+private func quotaColor(for remainingPercent: Double) -> Color {
+    switch remainingPercent {
+    case ...10: .red
+    case ...25: .orange
+    default: .teal
+    }
+}
+
+private struct MenuBarAppIcon: View {
+    let statusColor: Color?
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 40, height: 40)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .shadow(color: .black.opacity(0.22), radius: 3, y: 1.5)
+
+            if let statusColor {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 10, height: 10)
+                    .overlay {
+                        Circle().stroke(Color.black.opacity(0.22), lineWidth: 0.5)
+                    }
+                    .padding(2)
+                    .background(.ultraThickMaterial, in: Circle())
+                    .offset(x: 2, y: 2)
+            }
+        }
+        .frame(width: 40, height: 40)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct MenuBarActionButton: View {
+    let title: String
+    let systemImage: String
+    var tint: Color = .secondary
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 14, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(isHovering ? tint : Color.secondary)
+                .frame(width: 36, height: 30)
+                .background(
+                    isHovering ? tint.opacity(0.13) : Color.primary.opacity(0.055),
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(Color.primary.opacity(isHovering ? 0.11 : 0.07), lineWidth: 0.5)
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .help(title)
+        .accessibilityLabel(title)
     }
 }
 
