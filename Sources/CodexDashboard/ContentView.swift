@@ -92,7 +92,14 @@ struct ContentView: View {
                         Text("Indexing Codex history…")
                     }
                 } else if let error = store.errorMessage, store.sessions.isEmpty {
-                    ContentUnavailableView("Couldn’t load metrics", systemImage: "exclamationmark.triangle", description: Text(error))
+                    ContentUnavailableView {
+                        Label("Couldn’t load metrics", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(error)
+                    } actions: {
+                        Button("Try Again") { store.load() }
+                            .buttonStyle(.borderedProminent)
+                    }
                 } else {
                     page
                 }

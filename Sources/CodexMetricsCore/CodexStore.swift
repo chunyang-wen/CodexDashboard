@@ -34,17 +34,20 @@ public final class CodexStore: @unchecked Sendable {
 
     /// Loads the compact Codex index without scanning rollout JSONL files.
     public func loadIndexedSessions() throws -> [SessionMetric] {
-        let databaseURL = try locateDatabase()
+        let databaseURLs = try locateDatabases()
         var lastFailure: DatabaseReadFailure?
-        for attempt in 0..<4 {
-            do {
-                return try readIndexedSessions(from: databaseURL)
-            } catch let failure as DatabaseReadFailure {
-                lastFailure = failure
-                guard failure.isTransient, attempt < 3 else { throw failure.publicError }
-                // Codex may checkpoint and remove the WAL between sqlite3_open_v2 and the
-                // first read. Reopening gives SQLite a coherent view of the new file set.
-                Thread.sleep(forTimeInterval: 0.025 * pow(2, Double(attempt)))
+        for (candidateIndex, databaseURL) in databaseURLs.enumerated() {
+            let attemptCount = candidateIndex == 0 ? 6 : 2
+            for attempt in 0..<attemptCount {
+                do {
+                    return try readIndexedSessions(from: databaseURL)
+                } catch let failure as DatabaseReadFailure {
+                    lastFailure = failure
+                    guard failure.isTransient, attempt < attemptCount - 1 else { break }
+                    // Codex replaces and checkpoints its live database atomically. Give
+                    // that replacement time to settle, then reopen from a fresh handle.
+                    Thread.sleep(forTimeInterval: 0.05 * pow(2, Double(attempt)))
+                }
             }
         }
         throw lastFailure?.publicError ?? CodexStoreError.openFailed("Unknown error")
@@ -211,12 +214,13 @@ public final class CodexStore: @unchecked Sendable {
         withUnsafeCurrentTask { $0?.isCancelled ?? false }
     }
 
-    private func locateDatabase() throws -> URL {
+    private func locateDatabases() throws -> [URL] {
         let candidates = [
             codexHome.appendingPathComponent("state_5.sqlite"),
             codexHome.appendingPathComponent("sqlite/state_5.sqlite")
         ]
-        guard let existing = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) else {
+        let existing = candidates.filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !existing.isEmpty else {
             throw CodexStoreError.databaseNotFound
         }
         return existing

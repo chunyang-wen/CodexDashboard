@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import CodexMetricsCore
 
 final class AnalyticsTests: XCTestCase {
@@ -528,5 +529,34 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(snapshot?.windows.map(\.usedPercent), [7, 15, 33])
         XCTAssertEqual(snapshot?.credits?.balance, "12.5")
         XCTAssertEqual(try XCTUnwrap(snapshot).observedAt.timeIntervalSince1970, 1_786_854_937.995, accuracy: 0.001)
+    }
+
+    func testCodexStoreFallsBackToSecondaryDatabaseLocation() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexHome = home.appendingPathComponent(".codex", isDirectory: true)
+        let secondaryDirectory = codexHome.appendingPathComponent("sqlite", isDirectory: true)
+        try FileManager.default.createDirectory(at: secondaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        // A present but invalid primary database must not prevent reading the valid
+        // secondary location used by some Codex versions.
+        try Data("not a sqlite database".utf8).write(to: codexHome.appendingPathComponent("state_5.sqlite"))
+        let secondary = secondaryDirectory.appendingPathComponent("state_5.sqlite")
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(secondary.path, &database), SQLITE_OK)
+        defer { if let database { sqlite3_close(database) } }
+        XCTAssertEqual(
+            sqlite3_exec(
+                database,
+                "CREATE TABLE threads (id TEXT, updated_at INTEGER); INSERT INTO threads VALUES ('fallback-session', 123);",
+                nil,
+                nil,
+                nil
+            ),
+            SQLITE_OK
+        )
+
+        let sessions = try CodexStore(codexHome: codexHome, userHome: home).loadIndexedSessions()
+        XCTAssertEqual(sessions.map(\.id), ["fallback-session"])
     }
 }

@@ -140,11 +140,27 @@ private extension NSUserInterfaceItemIdentifier {
     static let settings = Self("CodexDashboard.settings")
 }
 
+private enum MenuBarQuotaIconStyle: String, CaseIterable, Identifiable {
+    case rings
+    case droplet
+    case capsules
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .rings: "Concentric rings"
+        case .droplet: "Split droplet"
+        case .capsules: "Two capsules"
+        }
+    }
+}
+
 @main
 struct CodexDashboardApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = DashboardStore()
     @AppStorage("showMenuBarIcon") private var showMenuBarIcon = true
+    @AppStorage("menuBarQuotaIconStyle") private var menuBarQuotaIconStyle = MenuBarQuotaIconStyle.rings.rawValue
 
     var body: some Scene {
         Window("Codex Dashboard", id: "dashboard") {
@@ -175,9 +191,11 @@ struct CodexDashboardApp: App {
         .defaultSize(width: 980, height: 760)
         .windowResizability(.contentMinSize)
 
-        MenuBarExtra("Codex Dashboard", systemImage: "chart.bar.xaxis", isInserted: $showMenuBarIcon) {
+        MenuBarExtra(isInserted: $showMenuBarIcon) {
             MenuBarDashboardView()
                 .environmentObject(store)
+        } label: {
+            MenuBarQuotaIcon(windows: menuBarQuotaWindows, style: resolvedMenuBarQuotaIconStyle)
         }
         .menuBarExtraStyle(.window)
 
@@ -187,6 +205,183 @@ struct CodexDashboardApp: App {
                 .background(AppWindowIdentifier(identifier: .settings))
         }
         .defaultSize(width: 520, height: 420)
+    }
+
+    private var menuBarQuotaWindows: [UsageQuotaWindow] {
+        store.subscription?.windows.sorted { $0.windowMinutes < $1.windowMinutes } ?? []
+    }
+
+    private var resolvedMenuBarQuotaIconStyle: MenuBarQuotaIconStyle {
+        MenuBarQuotaIconStyle(rawValue: menuBarQuotaIconStyle) ?? .rings
+    }
+}
+
+private struct MenuBarQuotaIcon: View {
+    let windows: [UsageQuotaWindow]
+    let style: MenuBarQuotaIconStyle
+
+    var body: some View {
+        Image(nsImage: statusImage)
+            .renderingMode(.template)
+            .interpolation(.none)
+            .frame(width: 18, height: 18)
+            .accessibilityLabel("Codex quota")
+            .accessibilityValue(accessibilityValue)
+            .help(accessibilityValue)
+    }
+
+    private var statusImage: NSImage {
+        let size = NSSize(width: 18, height: 18)
+        let image = NSImage(size: size)
+        guard let representation = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 36,
+            pixelsHigh: 36,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            image.isTemplate = true
+            return image
+        }
+        representation.size = size
+        image.addRepresentation(representation)
+
+        NSGraphicsContext.saveGraphicsState()
+        if let context = NSGraphicsContext(bitmapImageRep: representation) {
+            NSGraphicsContext.current = context
+            context.cgContext.setShouldAntialias(true)
+            switch style {
+            case .rings: drawRings()
+            case .droplet: drawDroplet()
+            case .capsules: drawCapsules()
+            }
+        }
+        NSGraphicsContext.restoreGraphicsState()
+
+        image.isTemplate = true
+        return image
+    }
+
+    private var primaryWindow: UsageQuotaWindow? {
+        windows.first(where: { $0.windowMinutes == 300 })
+    }
+
+    private var weeklyWindow: UsageQuotaWindow? {
+        windows.first(where: { $0.windowMinutes == 10_080 })
+    }
+
+    private func drawRings() {
+        drawRing(radius: 6.8, lineWidth: 2.4, window: weeklyWindow)
+        drawRing(radius: 3.2, lineWidth: 1.8, window: primaryWindow)
+    }
+
+    private func drawRing(radius: CGFloat, lineWidth: CGFloat, window: UsageQuotaWindow?) {
+        let center = NSPoint(x: 9, y: 9)
+        let rect = NSRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+        let track = NSBezierPath(ovalIn: rect)
+        track.lineWidth = lineWidth
+        NSColor.black.withAlphaComponent(window == nil ? 0.12 : 0.2).setStroke()
+        track.stroke()
+
+        guard let fraction = remainingFraction(for: window), fraction > 0 else { return }
+        let progress: NSBezierPath
+        if fraction >= 0.999 {
+            progress = NSBezierPath(ovalIn: rect)
+        } else {
+            progress = NSBezierPath()
+            progress.appendArc(
+                withCenter: center,
+                radius: radius,
+                startAngle: 90,
+                endAngle: 90 - 360 * fraction,
+                clockwise: true
+            )
+        }
+        progress.lineWidth = lineWidth
+        progress.lineCapStyle = .butt
+        NSColor.black.setStroke()
+        progress.stroke()
+    }
+
+    private func drawDroplet() {
+        let left = dropletChamber(left: true)
+        let right = dropletChamber(left: false)
+        drawLiquid(in: left, bounds: NSRect(x: 1.7, y: 2, width: 6.65, height: 14), window: primaryWindow)
+        drawLiquid(in: right, bounds: NSRect(x: 9.65, y: 2, width: 6.65, height: 14), window: weeklyWindow)
+    }
+
+    private func dropletChamber(left: Bool) -> NSBezierPath {
+        let path = NSBezierPath()
+        if left {
+            path.move(to: NSPoint(x: 8.35, y: 16))
+            path.curve(to: NSPoint(x: 1.7, y: 7), controlPoint1: NSPoint(x: 6.2, y: 13.8), controlPoint2: NSPoint(x: 1.7, y: 10.2))
+            path.curve(to: NSPoint(x: 8.35, y: 2), controlPoint1: NSPoint(x: 1.7, y: 3.2), controlPoint2: NSPoint(x: 4.8, y: 2))
+        } else {
+            path.move(to: NSPoint(x: 9.65, y: 16))
+            path.curve(to: NSPoint(x: 16.3, y: 7), controlPoint1: NSPoint(x: 11.8, y: 13.8), controlPoint2: NSPoint(x: 16.3, y: 10.2))
+            path.curve(to: NSPoint(x: 9.65, y: 2), controlPoint1: NSPoint(x: 16.3, y: 3.2), controlPoint2: NSPoint(x: 13.2, y: 2))
+        }
+        path.close()
+        return path
+    }
+
+    private func drawLiquid(in chamber: NSBezierPath, bounds: NSRect, window: UsageQuotaWindow?) {
+        NSColor.black.withAlphaComponent(0.1).setFill()
+        chamber.fill()
+        if let fraction = remainingFraction(for: window), fraction > 0 {
+            NSGraphicsContext.current?.cgContext.saveGState()
+            chamber.addClip()
+            NSColor.black.setFill()
+            NSBezierPath(rect: NSRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: bounds.height * fraction)).fill()
+            NSGraphicsContext.current?.cgContext.restoreGState()
+        }
+        chamber.lineWidth = 1
+        NSColor.black.withAlphaComponent(window == nil ? 0.3 : 0.72).setStroke()
+        chamber.stroke()
+    }
+
+    private func drawCapsules() {
+        drawCapsule(in: NSRect(x: 1.5, y: 9, width: 15, height: 6), window: primaryWindow)
+        drawCapsule(in: NSRect(x: 1.5, y: 3, width: 15, height: 4), window: weeklyWindow)
+    }
+
+    private func drawCapsule(in rect: NSRect, window: UsageQuotaWindow?) {
+        let radius = rect.height / 2
+        let track = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+        NSColor.black.withAlphaComponent(0.16).setFill()
+        track.fill()
+        if let fraction = remainingFraction(for: window), fraction > 0 {
+            NSGraphicsContext.current?.cgContext.saveGState()
+            track.addClip()
+            NSColor.black.setFill()
+            NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY, width: rect.width * fraction, height: rect.height)).fill()
+            NSGraphicsContext.current?.cgContext.restoreGState()
+        }
+        let stroke = NSBezierPath(
+            roundedRect: rect.insetBy(dx: 0.5, dy: 0.5),
+            xRadius: max(0, radius - 0.5),
+            yRadius: max(0, radius - 0.5)
+        )
+        stroke.lineWidth = 1
+        NSColor.black.withAlphaComponent(window == nil ? 0.3 : 0.48).setStroke()
+        stroke.stroke()
+    }
+
+    private func remainingFraction(for window: UsageQuotaWindow?) -> CGFloat? {
+        window.map { CGFloat(min(100, max(0, $0.remainingPercent)) / 100) }
+    }
+
+    private var accessibilityValue: String {
+        let displayedWindows = [primaryWindow, weeklyWindow].compactMap { $0 }
+        guard !displayedWindows.isEmpty else { return "Quota unavailable" }
+        return displayedWindows.map { window in
+            "\(window.displayName): \(window.remainingPercent.formatted(.number.precision(.fractionLength(0))))% remaining"
+        }.joined(separator: ", ")
     }
 }
 
@@ -329,6 +524,7 @@ private struct MenuBarDashboardView: View {
 private struct DashboardSettingsView: View {
     @EnvironmentObject private var store: DashboardStore
     @AppStorage("showMenuBarIcon") private var showMenuBarIcon = true
+    @AppStorage("menuBarQuotaIconStyle") private var menuBarQuotaIconStyle = MenuBarQuotaIconStyle.rings.rawValue
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchAtLoginError: String?
 
@@ -345,6 +541,21 @@ private struct DashboardSettingsView: View {
                         .foregroundStyle(.red)
                 }
                 Toggle("Show menu bar icon", isOn: $showMenuBarIcon)
+                LabeledContent("Quota icon") {
+                    Picker("Quota icon", selection: $menuBarQuotaIconStyle) {
+                        ForEach(MenuBarQuotaIconStyle.allCases) { style in
+                            HStack(spacing: 8) {
+                                MenuBarQuotaIcon(windows: quotaIconPreviewWindows, style: style)
+                                    .accessibilityHidden(true)
+                                Text(style.label)
+                            }
+                            .tag(style.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 190)
+                }
+                .disabled(!showMenuBarIcon)
                 LabeledContent("Refresh metrics") {
                     Picker("Refresh metrics", selection: refreshBinding) {
                         Text("Manually").tag(TimeInterval(0))
@@ -380,6 +591,10 @@ private struct DashboardSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(4)
+    }
+
+    private var quotaIconPreviewWindows: [UsageQuotaWindow] {
+        store.subscription?.windows.sorted { $0.windowMinutes < $1.windowMinutes } ?? []
     }
 
     private var refreshBinding: Binding<TimeInterval> {
