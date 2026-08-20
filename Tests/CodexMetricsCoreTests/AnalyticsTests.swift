@@ -22,6 +22,42 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(cost, Decimal(string: "0.176"))
     }
 
+    func testExactQuotaWindowTotalsExcludeResetBoundary() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let end = start.addingTimeInterval(7 * 24 * 60 * 60)
+        let includedUsage = TokenUsage(input: 1_000_000, cachedInput: 800_000, output: 100_000)
+        let excludedUsage = TokenUsage(input: 50_000, output: 5_000)
+        let session = SessionMetric(
+            id: "quota-week",
+            rolloutPath: "/tmp/quota-week.jsonl",
+            projectPath: "/tmp",
+            title: "Quota week",
+            source: "test",
+            provider: "openai",
+            createdAt: start.addingTimeInterval(-1),
+            updatedAt: end,
+            model: "gpt-5.6-luna",
+            reasoningEffort: nil,
+            gitBranch: nil,
+            cliVersion: nil,
+            archived: false,
+            usage: includedUsage + excludedUsage + excludedUsage,
+            usageEvents: [
+                UsageEvent(date: start.addingTimeInterval(-1), usage: excludedUsage, model: "gpt-5.6-luna"),
+                UsageEvent(date: start, usage: includedUsage, model: "gpt-5.6-luna"),
+                UsageEvent(date: end, usage: excludedUsage, model: "gpt-5.6-luna")
+            ],
+            enrichmentAvailable: true
+        )
+        let interval = DateInterval(start: start, end: end)
+
+        XCTAssertEqual(Analytics.totalUsage([session], in: interval), includedUsage)
+        XCTAssertEqual(
+            Analytics.totalEstimatedCost([session], pricing: .bundled, in: interval),
+            PricingHistory.bundled.estimate(usage: includedUsage, model: "gpt-5.6-luna", on: start)
+        )
+    }
+
     func testPercentiles() {
         XCTAssertEqual(Analytics.percentile([1, 2, 3, 4, 100], 0.5), 3)
         XCTAssertEqual(Analytics.percentile([1, 2, 3, 4, 100], 0.95), 100)

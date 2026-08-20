@@ -23,6 +23,21 @@ public enum Analytics {
         }
     }
 
+    /// Totals usage inside an exact, half-open time window. The end is excluded so
+    /// an event recorded at a quota reset belongs to the next quota window.
+    public static func totalUsage(_ sessions: [SessionMetric], in interval: DateInterval) -> TokenUsage {
+        sessions.reduce(.zero) { total, session in
+            if session.enrichmentAvailable {
+                return total + session.usageEvents.lazy
+                    .filter { $0.date >= interval.start && $0.date < interval.end }
+                    .reduce(.zero) { $0 + $1.usage }
+            }
+            return session.updatedAt >= interval.start && session.updatedAt < interval.end
+                ? total + session.usage
+                : total
+        }
+    }
+
     public static func totalEstimatedCost(
         _ sessions: [SessionMetric],
         pricing: PricingHistory = .bundled,
@@ -38,6 +53,33 @@ public enum Analytics {
             }
             guard startDate.map({ session.updatedAt >= $0 }) ?? true else { return total }
             return total + (pricing.estimate(usage: session.usage, model: session.model, on: session.updatedAt) ?? 0)
+        }
+    }
+
+    /// Estimates cost inside the same exact, half-open interval used for quota usage.
+    public static func totalEstimatedCost(
+        _ sessions: [SessionMetric],
+        pricing: PricingHistory = .bundled,
+        in interval: DateInterval
+    ) -> Decimal {
+        sessions.reduce(Decimal.zero) { total, session in
+            if session.enrichmentAvailable {
+                return total + session.usageEvents.lazy
+                    .filter { $0.date >= interval.start && $0.date < interval.end }
+                    .reduce(Decimal.zero) { subtotal, event in
+                        subtotal + (pricing.estimate(
+                            usage: event.usage,
+                            model: event.model ?? session.model,
+                            on: event.date
+                        ) ?? 0)
+                    }
+            }
+            guard session.updatedAt >= interval.start, session.updatedAt < interval.end else { return total }
+            return total + (pricing.estimate(
+                usage: session.usage,
+                model: session.model,
+                on: session.updatedAt
+            ) ?? 0)
         }
     }
 

@@ -135,6 +135,31 @@ private struct DashboardAnalytics: Sendable {
     }
 }
 
+private struct QuotaWeekAnalytics: Sendable {
+    let interval: DateInterval?
+    let usage: TokenUsage
+    let estimatedCost: Decimal
+
+    static let empty = QuotaWeekAnalytics(interval: nil, usage: .zero, estimatedCost: 0)
+
+    static func calculate(
+        sessions: [SessionMetric],
+        pricing: PricingHistory,
+        window: UsageQuotaWindow?
+    ) -> QuotaWeekAnalytics {
+        guard let window else { return .empty }
+        let interval = DateInterval(
+            start: window.resetsAt.addingTimeInterval(-TimeInterval(window.windowMinutes * 60)),
+            end: window.resetsAt
+        )
+        return QuotaWeekAnalytics(
+            interval: interval,
+            usage: Analytics.totalUsage(sessions, in: interval),
+            estimatedCost: Analytics.totalEstimatedCost(sessions, pricing: pricing, in: interval)
+        )
+    }
+}
+
 @MainActor
 final class DashboardStore: ObservableObject {
     enum Range: String, CaseIterable, Identifiable {
@@ -185,6 +210,7 @@ final class DashboardStore: ObservableObject {
     private let dynamicPricingLoader = DynamicPricingLoader()
     private var analytics = DashboardAnalytics.empty
     private var todayAnalytics = DashboardAnalytics.empty
+    private var quotaWeekAnalytics = QuotaWeekAnalytics.empty
     private var metricsIndex = MetricsIndexSnapshot.empty
 
     init(defaults: UserDefaults = .standard) {
@@ -245,6 +271,9 @@ final class DashboardStore: ObservableObject {
     var todayEstimatedCost: Decimal { todayAnalytics.estimatedCost }
     var todayToolCalls: Int { todayAnalytics.toolCalls }
     var todaySkillCalls: Int { todayAnalytics.skillCalls }
+    var quotaWeekInterval: DateInterval? { quotaWeekAnalytics.interval }
+    var quotaWeekUsage: TokenUsage { quotaWeekAnalytics.usage }
+    var quotaWeekEstimatedCost: Decimal { quotaWeekAnalytics.estimatedCost }
     func projectAggregate(path: String, since startDate: Date? = nil) -> MetricsIndexAggregate {
         metricsIndex.aggregate(projectPath: path, since: startDate)
     }
@@ -299,6 +328,7 @@ final class DashboardStore: ObservableObject {
                 }.value
                 guard !Task.isCancelled, loadID == requestID else { return }
                 subscription = latestSubscription
+                scheduleAnalyticsRefresh()
                 account = await Task.detached(priority: .utility) {
                     CodexAccountReader.read(from: codexHome)
                 }.value
@@ -405,6 +435,7 @@ final class DashboardStore: ObservableObject {
             subscription = await Task.detached(priority: .background) {
                 SubscriptionReader.latest(from: sessionSnapshot)
             }.value
+            scheduleAnalyticsRefresh()
             return true
         } catch {
             // Quiet refresh failures are isolated and retried with exponential backoff.
@@ -511,6 +542,7 @@ final class DashboardStore: ObservableObject {
                 let feedbackStartedAt = ContinuousClock.now
                 let sessions = sessions
                 let pricing = pricing
+                let weeklyQuotaWindow = subscription?.windows.first { $0.windowMinutes == 10_080 }
                 let index: MetricsIndexSnapshot
                 do {
                     index = try await historicalStore.metricsIndex(for: sessions, pricing: pricing)
@@ -534,7 +566,12 @@ final class DashboardStore: ObservableObject {
                         startDate: Calendar.current.startOfDay(for: .now),
                         index: index
                     )
-                    return (selected, today)
+                    let quotaWeek = QuotaWeekAnalytics.calculate(
+                        sessions: sessions,
+                        pricing: pricing,
+                        window: weeklyQuotaWindow
+                    )
+                    return (selected, today, quotaWeek)
                 }.value
 
                 // A newer snapshot supersedes this result. Loop once and calculate
@@ -549,6 +586,7 @@ final class DashboardStore: ObservableObject {
                 guard !Task.isCancelled, analyticsID == requestID else { continue }
                 analytics = refreshed.0
                 todayAnalytics = refreshed.1
+                quotaWeekAnalytics = refreshed.2
                 metricsIndex = index
                 isUpdatingAnalytics = false
                 analyticsTask = nil

@@ -482,6 +482,11 @@ private struct MenuBarDashboardView: View {
                     }
                 }
 
+                if store.quotaWeekInterval != nil {
+                    sectionDivider
+                    quotaWeekMetrics
+                }
+
                 sectionDivider
                 todayMetrics
 
@@ -645,6 +650,54 @@ private struct MenuBarDashboardView: View {
             }
         }
         .padding(.bottom, 8)
+    }
+
+    private var quotaWeekMetrics: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("WEEK")
+                    .font(.caption2.weight(.bold))
+                    .tracking(0.7)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                if let interval = store.quotaWeekInterval {
+                    Text(quotaWeekRangeLabel(interval))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 5)
+
+            HStack(spacing: 0) {
+                menuMetric(
+                    "Estimated cost",
+                    MetricFormatters.preciseCurrency(store.quotaWeekEstimatedCost),
+                    "dollarsign.circle"
+                )
+                metricDivider
+                menuMetric(
+                    "Tokens",
+                    MetricFormatters.compactNumber(store.quotaWeekUsage.total),
+                    "text.word.spacing"
+                )
+            }
+        }
+        .padding(.bottom, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Quota week metrics")
+    }
+
+    private func quotaWeekRangeLabel(_ interval: DateInterval) -> String {
+        let format = Date.FormatStyle.dateTime
+            .month(.abbreviated)
+            .day()
+            .hour()
+            .minute()
+        return "\(interval.start.formatted(format)) – \(interval.end.formatted(format))"
     }
 
     private var metricDivider: some View {
