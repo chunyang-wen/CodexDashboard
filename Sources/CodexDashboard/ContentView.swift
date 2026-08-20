@@ -20,21 +20,12 @@ enum DashboardPage: String, CaseIterable, Identifiable {
 
 private struct ActivityIndicator: View {
     let size: CGFloat
-    let lineWidth: CGFloat
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isRotating = false
 
     var body: some View {
-        Circle()
-            .trim(from: 0.12, to: 0.78)
-            .stroke(.secondary, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-            .rotationEffect(.degrees(isRotating ? 360 : 0))
+        ProgressView()
+            .progressViewStyle(.circular)
+            .controlSize(size <= 16 ? .small : .regular)
             .frame(width: size, height: size)
-            .animation(
-                reduceMotion ? nil : .linear(duration: 0.8).repeatForever(autoreverses: false),
-                value: isRotating
-            )
-            .onAppear { isRotating = true }
             .accessibilityLabel("In progress")
     }
 }
@@ -88,7 +79,7 @@ struct ContentView: View {
             Group {
                 if store.isLoading && store.sessions.isEmpty {
                     VStack(spacing: 10) {
-                        ActivityIndicator(size: 32, lineWidth: 3)
+                        ActivityIndicator(size: 32)
                         Text("Indexing Codex history…")
                     }
                 } else if let error = store.errorMessage, store.sessions.isEmpty {
@@ -160,7 +151,7 @@ private struct AnalyticsUpdateOverlay: View {
 
     var body: some View {
         HStack(spacing: 9) {
-            ActivityIndicator(size: 16, lineWidth: 2)
+            ActivityIndicator(size: 16)
             Text(label)
                 .font(.subheadline.weight(.medium))
         }
@@ -194,49 +185,14 @@ struct OverviewView: View {
         store.trendPeriods.first { $0.start == effectivePeriodStart }
     }
 
-    private var selectedTurns: [TurnMetric] {
-        let interval = periodInterval(containing: effectivePeriodStart)
-        return store.sessions.flatMap(\.turns).filter {
-            $0.completed && interval.contains($0.completedAt)
-        }
-    }
-
-    private var selectedToolCalls: Int {
-        let interval = periodInterval(containing: effectivePeriodStart)
-        return store.sessions.reduce(0) { total, session in
-            if let events = session.toolCallEvents, !events.isEmpty {
-                return total + events.filter { interval.contains($0.date) }.count
-            }
-            return total + (interval.contains(session.updatedAt) ? session.toolCalls : 0)
-        }
-    }
-
-    private var selectedSkillCalls: Int {
-        let interval = periodInterval(containing: effectivePeriodStart)
-        return store.sessions.reduce(0) { total, session in
-            total + (session.skillCallEvents ?? []).filter { interval.contains($0.date) }.count
-        }
-    }
-
-    private var selectedActiveDays: Int {
-        let calendar = Calendar.current
-        let interval = periodInterval(containing: effectivePeriodStart)
-        var days = Set<Date>()
-        for session in store.sessions {
-            for event in session.usageEvents where interval.contains(event.date) {
-                days.insert(calendar.startOfDay(for: event.date))
-            }
-            for turn in session.turns where interval.contains(turn.completedAt) {
-                days.insert(calendar.startOfDay(for: turn.completedAt))
-            }
-            if session.usageEvents.isEmpty, session.turns.isEmpty, interval.contains(session.updatedAt) {
-                days.insert(calendar.startOfDay(for: session.updatedAt))
-            }
-        }
-        return days.count
-    }
-
     var body: some View {
+        let periodDetails = store.periodAggregate(in: periodInterval(containing: effectivePeriodStart))
+        let medianTurn = Analytics.percentile(periodDetails.turnDurations, 0.5)
+        let p95Turn = Analytics.percentile(periodDetails.turnDurations, 0.95)
+        let averageTTFT = periodDetails.firstTokenTimes.isEmpty
+            ? nil
+            : periodDetails.firstTokenTimes.reduce(0, +) / Double(periodDetails.firstTokenTimes.count)
+
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 HStack(alignment: .top, spacing: 16) {
@@ -251,11 +207,11 @@ struct OverviewView: View {
                     MetricCard(title: "Tokens", value: MetricFormatters.compactNumber(selectedPeriod?.usage.total ?? 0), detail: "\(((selectedPeriod?.usage.cacheHitRate ?? 0) * 100).formatted(.number.precision(.fractionLength(1))))% cache hit", icon: "text.word.spacing", tint: .purple, definition: .totalTokens)
                     MetricCard(title: "Agent runtime", value: MetricFormatters.duration(selectedPeriod?.activeRuntime ?? 0), detail: "Completed turn wall time", icon: "clock.fill", tint: .orange, definition: .agentRuntime)
                     MetricCard(title: "Equivalent cost", value: MetricFormatters.currency(selectedPeriod?.estimatedCost ?? 0), detail: "Estimated from token usage", icon: "dollarsign", tint: .green, definition: .estimatedCost)
-                    MetricCard(title: "Median turn", value: Analytics.percentile(selectedTurns.map(\.duration), 0.5).map(MetricFormatters.duration) ?? "—", detail: "P95 \(Analytics.percentile(selectedTurns.map(\.duration), 0.95).map(MetricFormatters.duration) ?? "—")", icon: "gauge.with.dots.needle.50percent", tint: .pink, definition: .turnPercentiles)
-                    MetricCard(title: "First token", value: averageSelectedTTFT.map(MetricFormatters.duration) ?? "—", detail: "Average response startup", icon: "bolt.fill", tint: .yellow, definition: .firstTokenLatency)
-                    MetricCard(title: "Active days", value: selectedActiveDays.formatted(), detail: "Distinct calendar days", icon: "calendar.badge.clock", tint: .teal, definition: .activeDays)
-                    MetricCard(title: "Tool calls", value: selectedToolCalls.formatted(.number.notation(.compactName)), detail: "Calls in this period", icon: "hammer.fill", tint: .indigo, definition: .toolAttribution)
-                    MetricCard(title: "Skill activations", value: selectedSkillCalls.formatted(.number.notation(.compactName)), detail: "Activations in this period", icon: "sparkles", tint: .mint, definition: .skillAttribution)
+                    MetricCard(title: "Median turn", value: medianTurn.map(MetricFormatters.duration) ?? "—", detail: "P95 \(p95Turn.map(MetricFormatters.duration) ?? "—")", icon: "gauge.with.dots.needle.50percent", tint: .pink, definition: .turnPercentiles)
+                    MetricCard(title: "First token", value: averageTTFT.map(MetricFormatters.duration) ?? "—", detail: "Average response startup", icon: "bolt.fill", tint: .yellow, definition: .firstTokenLatency)
+                    MetricCard(title: "Active days", value: periodDetails.activeDays.formatted(), detail: "Distinct calendar days", icon: "calendar.badge.clock", tint: .teal, definition: .activeDays)
+                    MetricCard(title: "Tool calls", value: periodDetails.toolCalls.formatted(.number.notation(.compactName)), detail: "Calls in this period", icon: "hammer.fill", tint: .indigo, definition: .toolAttribution)
+                    MetricCard(title: "Skill activations", value: periodDetails.skillCalls.formatted(.number.notation(.compactName)), detail: "Activations in this period", icon: "sparkles", tint: .mint, definition: .skillAttribution)
                 }
                 ActivityChart(
                     periods: store.trendPeriods,
@@ -275,11 +231,6 @@ struct OverviewView: View {
         .navigationTitle("Overview")
         .onAppear { selectCurrentPeriod() }
         .onChange(of: store.range) { _, _ in selectCurrentPeriod() }
-    }
-
-    private var averageSelectedTTFT: TimeInterval? {
-        let values = selectedTurns.compactMap(\.timeToFirstToken)
-        return values.isEmpty ? nil : values.reduce(0, +) / Double(values.count)
     }
 
     private var selectedPeriodBadge: some View {
@@ -1495,7 +1446,7 @@ struct BillingView: View {
                     }
                     HStack(spacing: 6) {
                         if store.isRefreshingPricing {
-                            ActivityIndicator(size: 12, lineWidth: 1.5)
+                            ActivityIndicator(size: 12)
                         }
                         Text("Pricing: \(store.pricingSource)")
                         if let updatedAt = store.pricingUpdatedAt {

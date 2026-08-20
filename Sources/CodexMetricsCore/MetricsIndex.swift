@@ -68,7 +68,11 @@ public struct MetricsIndexSnapshot: Sendable {
 
     public static let empty = MetricsIndexSnapshot(sessions: [], days: [])
 
-    public func aggregate(projectPath: String? = nil, since startDate: Date? = nil) -> MetricsIndexAggregate {
+    public func aggregate(
+        projectPath: String? = nil,
+        since startDate: Date? = nil,
+        before endDate: Date? = nil
+    ) -> MetricsIndexAggregate {
         let selectedSessions = sessions.filter { projectPath == nil || $0.projectPath == projectPath }
         let selectedIDs = selectedSessions.isEmpty && sessions.isEmpty
             ? Set(days.lazy.filter { projectPath == nil || $0.projectPath == projectPath }.map(\.sessionID))
@@ -77,6 +81,7 @@ public struct MetricsIndexSnapshot: Sendable {
         let selectedDays = days.filter { contribution in
             selectedIDs.contains(contribution.sessionID)
                 && (startDay.map { contribution.day >= $0 } ?? true)
+                && (endDate.map { contribution.day < $0 } ?? true)
         }
 
         let usage: TokenUsage
@@ -126,7 +131,10 @@ public struct MetricsIndexSnapshot: Sendable {
             toolCalls = selectedDays.reduce(0) { $0 + $1.toolCalls }
             skillCalls = selectedDays.reduce(0) { $0 + $1.skillCalls }
             completedTurns = selectedDays.reduce(0) { $0 + $1.completedTurns }
-            abortedTurns = selectedSessions.lazy.filter { $0.updatedAt >= startDate! }.reduce(0) { $0 + $1.abortedTurns }
+            abortedTurns = selectedSessions.lazy.filter { session in
+                session.updatedAt >= startDate!
+                    && (endDate.map { session.updatedAt < $0 } ?? true)
+            }.reduce(0) { $0 + $1.abortedTurns }
         }
 
         return MetricsIndexAggregate(
@@ -145,6 +153,10 @@ public struct MetricsIndexSnapshot: Sendable {
             completedTurns: completedTurns,
             abortedTurns: abortedTurns
         )
+    }
+
+    public func aggregate(projectPath: String? = nil, in interval: DateInterval) -> MetricsIndexAggregate {
+        aggregate(projectPath: projectPath, since: interval.start, before: interval.end)
     }
 
     public func periods(

@@ -283,6 +283,9 @@ final class DashboardStore: ObservableObject {
     func indexedSession(_ id: String) -> IndexedSessionMetrics? {
         metricsIndex.sessions.first { $0.sessionID == id }
     }
+    func periodAggregate(in interval: DateInterval) -> MetricsIndexAggregate {
+        metricsIndex.aggregate(in: interval)
+    }
 
     func load() {
         loadTask?.cancel()
@@ -520,7 +523,6 @@ final class DashboardStore: ObservableObject {
     }
 
     private func scheduleAnalyticsRefresh() {
-        isUpdatingAnalytics = true
         analyticsID = UUID()
 
         // Keep a single calculator alive and let it consume the newest snapshot.
@@ -528,8 +530,13 @@ final class DashboardStore: ObservableObject {
         // detached calculation, which previously allowed one CPU-heavy calculator
         // per enrichment batch to pile up in the background.
         guard analyticsTask == nil else { return }
+        isUpdatingAnalytics = true
 
         analyticsTask = Task {
+            defer {
+                analyticsTask = nil
+                isUpdatingAnalytics = false
+            }
             while !Task.isCancelled {
                 let requestID = analyticsID
 
@@ -574,26 +581,23 @@ final class DashboardStore: ObservableObject {
                     return (selected, today, quotaWeek)
                 }.value
 
-                // A newer snapshot supersedes this result. Loop once and calculate
-                // only the latest state instead of starting another worker beside it.
-                guard analyticsID == requestID else { continue }
-
                 let minimumFeedback = Duration.milliseconds(180)
                 let elapsed = feedbackStartedAt.duration(to: .now)
                 if elapsed < minimumFeedback {
                     try? await Task.sleep(for: minimumFeedback - elapsed)
                 }
-                guard !Task.isCancelled, analyticsID == requestID else { continue }
+                guard !Task.isCancelled else { break }
+
+                // Always publish a completed, internally consistent snapshot. If a
+                // newer batch arrived while it was being calculated, immediately
+                // loop and catch up. Discarding every superseded result can starve
+                // the dashboard forever while an active rollout keeps growing.
                 analytics = refreshed.0
                 todayAnalytics = refreshed.1
                 quotaWeekAnalytics = refreshed.2
                 metricsIndex = index
-                isUpdatingAnalytics = false
-                analyticsTask = nil
-                return
+                guard analyticsID != requestID else { return }
             }
-            analyticsTask = nil
-            isUpdatingAnalytics = false
         }
     }
 

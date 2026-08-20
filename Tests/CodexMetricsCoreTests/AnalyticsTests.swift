@@ -496,6 +496,58 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(restored.aggregate(projectPath: "/tmp/b").usage, originalB.usage)
     }
 
+    func testMetricIndexAggregateUsesAnEndExclusivePeriodWithoutRescanningSessions() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let firstDay = Date(timeIntervalSince1970: 1_788_739_200)
+        let secondDay = calendar.date(byAdding: .day, value: 1, to: firstDay)!
+        let end = calendar.date(byAdding: .day, value: 2, to: firstDay)!
+        let firstUsage = TokenUsage(input: 100, output: 10)
+        let secondUsage = TokenUsage(input: 200, output: 20)
+        let session = SessionMetric(
+            id: "period", rolloutPath: "/tmp/period.jsonl", projectPath: "/tmp/project",
+            title: "", source: "app", provider: "openai", createdAt: firstDay,
+            updatedAt: secondDay, model: "gpt-5.6-luna", reasoningEffort: nil,
+            gitBranch: nil, cliVersion: nil, archived: false,
+            usage: firstUsage + secondUsage,
+            usageEvents: [
+                UsageEvent(date: firstDay, usage: firstUsage, model: "gpt-5.6-luna"),
+                UsageEvent(date: secondDay, usage: secondUsage, model: "gpt-5.6-luna")
+            ],
+            turns: [
+                TurnMetric(completedAt: firstDay, duration: 3, timeToFirstToken: 0.3, completed: true),
+                TurnMetric(completedAt: secondDay, duration: 7, timeToFirstToken: 0.7, completed: true)
+            ],
+            toolCallEvents: [
+                ToolCallEvent(date: firstDay, name: "first", model: "gpt-5.6-luna"),
+                ToolCallEvent(date: secondDay, name: "second", model: "gpt-5.6-luna")
+            ],
+            skillCallEvents: [
+                SkillCallEvent(date: firstDay, name: "one", model: "gpt-5.6-luna"),
+                SkillCallEvent(date: secondDay, name: "two", model: "gpt-5.6-luna")
+            ],
+            enrichmentAvailable: true
+        )
+        let built = MetricsIndexBuilder.build(session: session, calendar: calendar)
+        let index = MetricsIndexSnapshot(sessions: [built.session], days: built.days)
+
+        let first = index.aggregate(in: DateInterval(start: firstDay, end: secondDay))
+        XCTAssertEqual(first.usage, firstUsage)
+        XCTAssertEqual(first.activeDays, 1)
+        XCTAssertEqual(first.turnDurations, [3])
+        XCTAssertEqual(first.firstTokenTimes, [0.3])
+        XCTAssertEqual(first.toolCalls, 1)
+        XCTAssertEqual(first.skillCalls, 1)
+        XCTAssertEqual(first.tools.map(\.tool), ["first"])
+        XCTAssertEqual(first.skills.map(\.skill), ["one"])
+
+        let both = index.aggregate(in: DateInterval(start: firstDay, end: end))
+        XCTAssertEqual(both.usage, firstUsage + secondUsage)
+        XCTAssertEqual(both.activeDays, 2)
+        XCTAssertEqual(both.toolCalls, 2)
+        XCTAssertEqual(both.skillCalls, 2)
+    }
+
     func testIndexedTotalIsNotInventedAsAUsageTrend() {
         let session = SessionMetric(
             id: "session",
