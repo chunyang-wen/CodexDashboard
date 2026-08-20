@@ -161,6 +161,9 @@ struct CodexDashboardApp: App {
     @StateObject private var store = DashboardStore()
     @AppStorage("showMenuBarIcon") private var showMenuBarIcon = true
     @AppStorage("menuBarQuotaIconStyle") private var menuBarQuotaIconStyle = MenuBarQuotaIconStyle.rings.rawValue
+    @AppStorage("showQuotaAlertMarker") private var showQuotaAlertMarker = false
+    // Keep the original defaults key so existing marker values retain their meaning after this correction.
+    @AppStorage("quotaAlertUsedPercent") private var quotaAlertRemainingPercent = 80.0
 
     var body: some Scene {
         Window("Codex Dashboard", id: "dashboard") {
@@ -195,7 +198,11 @@ struct CodexDashboardApp: App {
             MenuBarDashboardView()
                 .environmentObject(store)
         } label: {
-            MenuBarQuotaIcon(windows: menuBarQuotaWindows, style: resolvedMenuBarQuotaIconStyle)
+            MenuBarQuotaIcon(
+                windows: menuBarQuotaWindows,
+                style: resolvedMenuBarQuotaIconStyle,
+                alertRemainingPercent: showQuotaAlertMarker ? quotaAlertRemainingPercent : nil
+            )
         }
         .menuBarExtraStyle(.window)
 
@@ -219,12 +226,14 @@ struct CodexDashboardApp: App {
 private struct MenuBarQuotaIcon: View {
     let windows: [UsageQuotaWindow]
     let style: MenuBarQuotaIconStyle
+    var alertRemainingPercent: Double? = nil
 
     var body: some View {
         Image(nsImage: statusImage)
-            .renderingMode(.template)
+            .renderingMode(alertRemainingPercent == nil ? .template : .original)
             .interpolation(.none)
             .frame(width: 18, height: 18)
+            .accessibilityElement(children: .ignore)
             .accessibilityLabel("Codex quota")
             .accessibilityValue(accessibilityValue)
             .help(accessibilityValue)
@@ -260,10 +269,11 @@ private struct MenuBarQuotaIcon: View {
             case .droplet: drawDroplet()
             case .capsules: drawCapsules()
             }
+            drawAlertMarker()
         }
         NSGraphicsContext.restoreGraphicsState()
 
-        image.isTemplate = true
+        image.isTemplate = alertRemainingPercent == nil
         return image
     }
 
@@ -285,7 +295,7 @@ private struct MenuBarQuotaIcon: View {
         let rect = NSRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
         let track = NSBezierPath(ovalIn: rect)
         track.lineWidth = lineWidth
-        NSColor.black.withAlphaComponent(window == nil ? 0.12 : 0.2).setStroke()
+        iconInk.withAlphaComponent(window == nil ? 0.12 : 0.2).setStroke()
         track.stroke()
 
         guard let fraction = remainingFraction(for: window), fraction > 0 else { return }
@@ -304,7 +314,7 @@ private struct MenuBarQuotaIcon: View {
         }
         progress.lineWidth = lineWidth
         progress.lineCapStyle = .butt
-        NSColor.black.setStroke()
+        iconInk.setStroke()
         progress.stroke()
     }
 
@@ -331,17 +341,17 @@ private struct MenuBarQuotaIcon: View {
     }
 
     private func drawLiquid(in chamber: NSBezierPath, bounds: NSRect, window: UsageQuotaWindow?) {
-        NSColor.black.withAlphaComponent(0.1).setFill()
+        iconInk.withAlphaComponent(0.1).setFill()
         chamber.fill()
         if let fraction = remainingFraction(for: window), fraction > 0 {
             NSGraphicsContext.current?.cgContext.saveGState()
             chamber.addClip()
-            NSColor.black.setFill()
+            iconInk.setFill()
             NSBezierPath(rect: NSRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: bounds.height * fraction)).fill()
             NSGraphicsContext.current?.cgContext.restoreGState()
         }
         chamber.lineWidth = 1
-        NSColor.black.withAlphaComponent(window == nil ? 0.3 : 0.72).setStroke()
+        iconInk.withAlphaComponent(window == nil ? 0.3 : 0.72).setStroke()
         chamber.stroke()
     }
 
@@ -353,12 +363,12 @@ private struct MenuBarQuotaIcon: View {
     private func drawCapsule(in rect: NSRect, window: UsageQuotaWindow?) {
         let radius = rect.height / 2
         let track = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
-        NSColor.black.withAlphaComponent(0.16).setFill()
+        iconInk.withAlphaComponent(0.16).setFill()
         track.fill()
         if let fraction = remainingFraction(for: window), fraction > 0 {
             NSGraphicsContext.current?.cgContext.saveGState()
             track.addClip()
-            NSColor.black.setFill()
+            iconInk.setFill()
             NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY, width: rect.width * fraction, height: rect.height)).fill()
             NSGraphicsContext.current?.cgContext.restoreGState()
         }
@@ -368,20 +378,86 @@ private struct MenuBarQuotaIcon: View {
             yRadius: max(0, radius - 0.5)
         )
         stroke.lineWidth = 1
-        NSColor.black.withAlphaComponent(window == nil ? 0.3 : 0.48).setStroke()
+        iconInk.withAlphaComponent(window == nil ? 0.3 : 0.48).setStroke()
         stroke.stroke()
+    }
+
+    private var iconInk: NSColor {
+        alertRemainingPercent == nil ? .black : .labelColor
+    }
+
+    private func drawAlertMarker() {
+        guard let fraction = alertRemainingFraction else { return }
+        switch style {
+        case .rings:
+            let angle = CGFloat.pi / 2 - 2 * .pi * fraction
+            if weeklyWindow != nil {
+                drawAlertDot(at: NSPoint(x: 9 + 6.8 * cos(angle), y: 9 + 6.8 * sin(angle)), diameter: 4)
+            }
+            if primaryWindow != nil {
+                drawAlertDot(at: NSPoint(x: 9 + 3.2 * cos(angle), y: 9 + 3.2 * sin(angle)), diameter: 3.2)
+            }
+        case .droplet:
+            let y = 2 + 14 * fraction
+            if weeklyWindow != nil {
+                drawAlertBar(y: y, from: 1.5, to: 8.5, clippedTo: dropletChamber(left: true))
+            }
+            if primaryWindow != nil {
+                drawAlertBar(y: y, from: 9.5, to: 16.5, clippedTo: dropletChamber(left: false))
+            }
+        case .capsules:
+            let x = 1.5 + 15 * fraction
+            if weeklyWindow != nil {
+                drawAlertDot(at: NSPoint(x: x, y: 12), diameter: 4)
+            }
+            if primaryWindow != nil {
+                drawAlertDot(at: NSPoint(x: x, y: 5), diameter: 3.4)
+            }
+        }
+    }
+
+    private func drawAlertDot(at center: NSPoint, diameter: CGFloat) {
+        let rect = NSRect(
+            x: center.x - diameter / 2,
+            y: center.y - diameter / 2,
+            width: diameter,
+            height: diameter
+        )
+        NSColor.systemRed.setFill()
+        NSBezierPath(ovalIn: rect).fill()
+    }
+
+    private func drawAlertBar(y: CGFloat, from startX: CGFloat, to endX: CGFloat, clippedTo clip: NSBezierPath) {
+        NSGraphicsContext.current?.cgContext.saveGState()
+        clip.addClip()
+        let bar = NSBezierPath()
+        bar.move(to: NSPoint(x: startX, y: y))
+        bar.line(to: NSPoint(x: endX, y: y))
+        bar.lineWidth = 1.4
+        bar.lineCapStyle = .round
+        NSColor.systemRed.setStroke()
+        bar.stroke()
+        NSGraphicsContext.current?.cgContext.restoreGState()
     }
 
     private func remainingFraction(for window: UsageQuotaWindow?) -> CGFloat? {
         window.map { CGFloat(min(100, max(0, $0.remainingPercent)) / 100) }
     }
 
+    private var alertRemainingFraction: CGFloat? {
+        alertRemainingPercent.map { CGFloat(min(100, max(0, $0)) / 100) }
+    }
+
     private var accessibilityValue: String {
         let displayedWindows = [primaryWindow, weeklyWindow].compactMap { $0 }
         guard !displayedWindows.isEmpty else { return "Quota unavailable" }
-        return displayedWindows.map { window in
+        let quotaDescription = displayedWindows.map { window in
             "\(window.displayName): \(window.remainingPercent.formatted(.number.precision(.fractionLength(0))))% remaining"
         }.joined(separator: ", ")
+        guard let alertRemainingPercent else { return quotaDescription }
+        let threshold = alertRemainingPercent.formatted(.number.precision(.fractionLength(0)))
+        let isReached = displayedWindows.contains { $0.remainingPercent <= alertRemainingPercent }
+        return "\(quotaDescription). Alert marker at \(threshold)% remaining\(isReached ? ", reached" : "")"
     }
 }
 
@@ -389,6 +465,8 @@ private struct MenuBarDashboardView: View {
     @EnvironmentObject private var store: DashboardStore
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
+    @AppStorage("showQuotaAlertMarker") private var showQuotaAlertMarker = false
+    @AppStorage("quotaAlertUsedPercent") private var quotaAlertRemainingPercent = 80.0
 
     var body: some View {
         ZStack {
@@ -506,10 +584,35 @@ private struct MenuBarDashboardView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            QuotaRemainingBar(remainingPercent: window.remainingPercent)
-            Text("Resets \(window.resetsAt, style: .relative)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            QuotaRemainingBar(
+                remainingPercent: window.remainingPercent,
+                alertRemainingPercent: $quotaAlertRemainingPercent,
+                showsAlertMarker: showQuotaAlertMarker
+            )
+            HStack {
+                Text("Resets \(window.resetsAt, style: .relative)")
+                Spacer()
+                if showQuotaAlertMarker {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(.red)
+                            .frame(width: 5, height: 5)
+                        Text("Alert at \(quotaAlertRemainingPercent.formatted(.number.precision(.fractionLength(0))))% remaining")
+                            .monospacedDigit()
+                    }
+                    .foregroundStyle(.secondary)
+                } else {
+                    Button {
+                        showQuotaAlertMarker = true
+                    } label: {
+                        Text("Set alert marker")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.red)
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 13)
@@ -571,7 +674,10 @@ private struct MenuBarDashboardView: View {
 
 private struct QuotaRemainingBar: View {
     let remainingPercent: Double
+    @Binding var alertRemainingPercent: Double
+    let showsAlertMarker: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isDraggingAlert = false
 
     private var fraction: Double {
         min(1, max(0, remainingPercent / 100))
@@ -579,11 +685,16 @@ private struct QuotaRemainingBar: View {
 
     private var color: Color { quotaColor(for: remainingPercent) }
 
+    private var alertRemainingFraction: Double {
+        min(1, max(0, alertRemainingPercent / 100))
+    }
+
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Color.primary.opacity(0.09))
+                    .frame(height: 6)
                 Capsule()
                     .fill(
                         LinearGradient(
@@ -593,14 +704,88 @@ private struct QuotaRemainingBar: View {
                         )
                     )
                     .frame(width: proxy.size.width * fraction)
+                    .frame(height: 6)
                     .shadow(color: color.opacity(0.2), radius: 3)
+
+                if showsAlertMarker {
+                    alertMarker
+                        .position(
+                            x: markerX(in: proxy.size.width),
+                            y: proxy.size.height / 2
+                        )
+                }
+            }
+            .contentShape(Rectangle())
+            .gesture(alertDragGesture(width: proxy.size.width))
+        }
+        .frame(height: 14)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: fraction)
+        .animation(
+            reduceMotion || isDraggingAlert ? nil : .snappy(duration: 0.2),
+            value: alertRemainingFraction
+        )
+        .onHover { isHovering in
+            guard showsAlertMarker else { return }
+            if isHovering {
+                NSCursor.resizeLeftRight.push()
+            } else {
+                NSCursor.pop()
             }
         }
-        .frame(height: 6)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: fraction)
         .accessibilityElement()
         .accessibilityLabel("Quota remaining")
-        .accessibilityValue(remainingPercent.formatted(.percent.scale(1).precision(.fractionLength(0))))
+        .accessibilityValue(accessibilityValue)
+        .accessibilityAdjustableAction { direction in
+            guard showsAlertMarker else { return }
+            switch direction {
+            case .increment:
+                alertRemainingPercent = min(100, alertRemainingPercent + 1)
+            case .decrement:
+                alertRemainingPercent = max(10, alertRemainingPercent - 1)
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    private var alertMarker: some View {
+        ZStack {
+            Capsule()
+                .fill(.red)
+                .frame(width: 2, height: 14)
+            Circle()
+                .fill(.red)
+                .frame(width: 8, height: 8)
+                .overlay {
+                    Circle().stroke(.white.opacity(0.9), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.22), radius: 1, y: 0.5)
+        }
+        .frame(width: 12, height: 14)
+    }
+
+    private func markerX(in width: CGFloat) -> CGFloat {
+        min(max(4, width * alertRemainingFraction), max(4, width - 4))
+    }
+
+    private func alertDragGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                guard showsAlertMarker, width > 0 else { return }
+                isDraggingAlert = true
+                let remainingFraction = min(1, max(0, value.location.x / width))
+                alertRemainingPercent = min(100, max(10, (remainingFraction * 100).rounded()))
+            }
+            .onEnded { _ in
+                isDraggingAlert = false
+            }
+    }
+
+    private var accessibilityValue: String {
+        let remaining = remainingPercent.formatted(.percent.scale(1).precision(.fractionLength(0)))
+        guard showsAlertMarker else { return remaining }
+        let alert = alertRemainingPercent.formatted(.number.precision(.fractionLength(0)))
+        return "\(remaining) remaining, alert marker at \(alert)% remaining"
     }
 }
 
@@ -671,6 +856,8 @@ private struct DashboardSettingsView: View {
     @EnvironmentObject private var store: DashboardStore
     @AppStorage("showMenuBarIcon") private var showMenuBarIcon = true
     @AppStorage("menuBarQuotaIconStyle") private var menuBarQuotaIconStyle = MenuBarQuotaIconStyle.rings.rawValue
+    @AppStorage("showQuotaAlertMarker") private var showQuotaAlertMarker = false
+    @AppStorage("quotaAlertUsedPercent") private var quotaAlertRemainingPercent = 80.0
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchAtLoginError: String?
 
@@ -691,7 +878,11 @@ private struct DashboardSettingsView: View {
                     Picker("Quota icon", selection: $menuBarQuotaIconStyle) {
                         ForEach(MenuBarQuotaIconStyle.allCases) { style in
                             HStack(spacing: 8) {
-                                MenuBarQuotaIcon(windows: quotaIconPreviewWindows, style: style)
+                                MenuBarQuotaIcon(
+                                    windows: quotaIconPreviewWindows,
+                                    style: style,
+                                    alertRemainingPercent: showQuotaAlertMarker ? quotaAlertRemainingPercent : nil
+                                )
                                     .accessibilityHidden(true)
                                 Text(style.label)
                             }
@@ -702,6 +893,20 @@ private struct DashboardSettingsView: View {
                     .frame(width: 190)
                 }
                 .disabled(!showMenuBarIcon)
+                Toggle("Show quota alert marker", isOn: $showQuotaAlertMarker)
+                    .disabled(!showMenuBarIcon)
+                if showQuotaAlertMarker {
+                    LabeledContent("Alert at") {
+                        HStack(spacing: 10) {
+                            Slider(value: $quotaAlertRemainingPercent, in: 10...100, step: 5)
+                            Text("\(quotaAlertRemainingPercent.formatted(.number.precision(.fractionLength(0))))% remaining")
+                                .monospacedDigit()
+                                .frame(width: 104, alignment: .trailing)
+                        }
+                        .frame(width: 260)
+                    }
+                    .disabled(!showMenuBarIcon)
+                }
                 LabeledContent("Refresh metrics") {
                     Picker("Refresh metrics", selection: refreshBinding) {
                         Text("Manually").tag(TimeInterval(0))
