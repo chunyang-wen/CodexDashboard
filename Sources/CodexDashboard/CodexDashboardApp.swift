@@ -393,30 +393,22 @@ private struct MenuBarDashboardView: View {
     var body: some View {
         ZStack {
             Rectangle().fill(.ultraThinMaterial)
-            LinearGradient(
-                colors: [Color.teal.opacity(0.08), .clear, Color.mint.opacity(0.035)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
 
             VStack(spacing: 0) {
                 header
 
                 if let windows = store.subscription?.windows, !windows.isEmpty {
                     sectionDivider
-                    VStack(spacing: 16) {
+                    VStack(spacing: 0) {
                         ForEach(windows) { quotaRow($0) }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 15)
                 }
 
                 sectionDivider
-                todayMetrics.padding(16)
+                todayMetrics
 
                 sectionDivider
-                HStack(spacing: 12) {
-                    Spacer()
+                HStack(spacing: 0) {
                     MenuBarActionButton(
                         title: "Open Dashboard",
                         systemImage: "rectangle.grid.2x2.fill",
@@ -427,6 +419,7 @@ private struct MenuBarDashboardView: View {
                         openWindow(id: "dashboard")
                         AppActivationPolicy.bringWindowToFront(identifier: .dashboard)
                     }
+                    toolbarDivider
                     MenuBarActionButton(
                         title: "Settings",
                         systemImage: "gearshape.fill"
@@ -437,6 +430,7 @@ private struct MenuBarDashboardView: View {
                         AppActivationPolicy.bringWindowToFront(identifier: .settings)
                     }
                     .keyboardShortcut(",", modifiers: .command)
+                    toolbarDivider
                     MenuBarActionButton(
                         title: "Quit Codex Dashboard",
                         systemImage: "power",
@@ -445,11 +439,9 @@ private struct MenuBarDashboardView: View {
                         NSApp.terminate(nil)
                     }
                     .keyboardShortcut("q", modifiers: .command)
-                    Spacer()
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(Color.primary.opacity(0.035))
+                .frame(height: 44)
+                .background(Color.primary.opacity(0.025))
             }
         }
         .frame(width: 350)
@@ -461,22 +453,29 @@ private struct MenuBarDashboardView: View {
             .frame(height: 0.5)
     }
 
+    private var toolbarDivider: some View {
+        Rectangle()
+            .fill(.separator.opacity(0.45))
+            .frame(width: 0.5, height: 24)
+    }
+
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             MenuBarAppIcon(statusColor: headerQuotaColor)
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(store.account?.email ?? "Codex Dashboard")
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                     .textSelection(.enabled)
                 Text(planLabel)
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             Spacer()
             if store.isBusy { ProgressView().controlSize(.small) }
         }
-        .padding(16)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
     }
 
     private var headerQuotaColor: Color? {
@@ -493,50 +492,79 @@ private struct MenuBarDashboardView: View {
     }
 
     private func quotaRow(_ window: UsageQuotaWindow) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Text(window.displayName).font(.subheadline.weight(.medium))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(window.displayName)
+                    .font(.subheadline.weight(.semibold))
                 Spacer()
-                Text("\(window.remainingPercent.formatted(.number.precision(.fractionLength(0))))% remaining")
-                    .font(.caption.monospacedDigit().weight(.medium))
-                    .foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text("\(window.remainingPercent.formatted(.number.precision(.fractionLength(0))))%")
+                        .font(.title2.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(quotaColor(for: window.remainingPercent))
+                    Text("remaining")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             QuotaRemainingBar(remainingPercent: window.remainingPercent)
             Text("Resets \(window.resetsAt, style: .relative)")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
         .accessibilityElement(children: .combine)
     }
 
     private var todayMetrics: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
             Text("TODAY")
                 .font(.caption2.weight(.bold))
                 .tracking(0.7)
                 .foregroundStyle(.secondary)
-            Grid(horizontalSpacing: 18, verticalSpacing: 12) {
-                GridRow {
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
                     menuMetric("Estimated cost", MetricFormatters.preciseCurrency(store.todayEstimatedCost), "dollarsign.circle")
+                    metricDivider
                     menuMetric("Tokens", MetricFormatters.compactNumber(store.todayUsage.total), "text.word.spacing")
                 }
-                GridRow {
+                sectionDivider
+                    .padding(.horizontal, 14)
+                HStack(spacing: 0) {
                     menuMetric("Tools", store.todayToolCalls.formatted(), "wrench.and.screwdriver")
+                    metricDivider
                     menuMetric("Skills", store.todaySkillCalls.formatted(), "sparkles")
                 }
             }
         }
+        .padding(.bottom, 8)
+    }
+
+    private var metricDivider: some View {
+        Rectangle()
+            .fill(.separator.opacity(0.38))
+            .frame(width: 0.5, height: 36)
     }
 
     private func menuMetric(_ title: String, _ value: String, _ icon: String) -> some View {
         HStack(spacing: 9) {
-            Image(systemName: icon).foregroundStyle(.secondary).frame(width: 18)
+            Image(systemName: icon)
+                .font(.system(size: 14))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
             VStack(alignment: .leading, spacing: 1) {
                 Text(value).font(.subheadline.monospacedDigit().weight(.semibold))
                 Text(title).font(.caption2).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -592,23 +620,23 @@ private struct MenuBarAppIcon: View {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .interpolation(.high)
-                .frame(width: 40, height: 40)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .shadow(color: .black.opacity(0.22), radius: 3, y: 1.5)
+                .frame(width: 32, height: 32)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .shadow(color: .black.opacity(0.2), radius: 2.5, y: 1)
 
             if let statusColor {
                 Circle()
                     .fill(statusColor)
-                    .frame(width: 10, height: 10)
+                    .frame(width: 8, height: 8)
                     .overlay {
                         Circle().stroke(Color.black.opacity(0.22), lineWidth: 0.5)
                     }
-                    .padding(2)
+                    .padding(1.5)
                     .background(.ultraThickMaterial, in: Circle())
-                    .offset(x: 2, y: 2)
+                    .offset(x: 1, y: 1)
             }
         }
-        .frame(width: 40, height: 40)
+        .frame(width: 32, height: 32)
         .accessibilityHidden(true)
     }
 }
@@ -627,17 +655,11 @@ private struct MenuBarActionButton: View {
                 .font(.system(size: 14, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(isHovering ? tint : Color.secondary)
-                .frame(width: 36, height: 30)
-                .background(
-                    isHovering ? tint.opacity(0.13) : Color.primary.opacity(0.055),
-                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(Color.primary.opacity(isHovering ? 0.11 : 0.07), lineWidth: 0.5)
-                }
-                .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(isHovering ? tint.opacity(0.11) : Color.clear)
+                .contentShape(Rectangle())
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .help(title)
