@@ -31,7 +31,7 @@ The debugger is deliberately on-demand: conversation payloads are read from the 
 - **Model portfolio:** compare usage volume, runtime, cache behavior, session count, and API-equivalent cost across models.
 - **Subscription usage:** see the latest plan, quota windows, reset times, credits, and limit status reported by Codex.
 - **Historical analysis:** switch between 7 days, 30 days, 90 days, one year, or all history, with daily, weekly, and monthly charts.
-- **Menu-bar quota alerts:** check remaining quota and place a draggable alert marker at the percentage you want to preserve. The threshold also appears in the menu-bar icon, alongside quick access to today's tokens, tool calls, skill activations, and estimated cost.
+- **Menu-bar quota marker:** check remaining quota and place a draggable alert marker at the percentage you want to preserve. The threshold also appears in the menu-bar icon, alongside quick access to today's tokens, tool calls, skill activations, and estimated cost.
 - **Command-line access:** query the same local data from scripts and export session metrics as JSON.
 
 ## A closer look
@@ -39,7 +39,7 @@ The debugger is deliberately on-demand: conversation payloads are read from the 
 <table>
   <tr>
     <td width="34%" valign="top">
-      <img src="docs/images/menubar.png" alt="Codex Dashboard menu-bar popover showing a draggable alert at 70 percent remaining">
+      <img src="docs/images/menubar.png" alt="Codex Dashboard menu-bar popover showing a draggable marker at 70 percent remaining">
       <br><strong>Menu bar</strong><br>
       Track remaining quota and drag the alert marker to the threshold you want to preserve—without leaving the menu bar.
     </td>
