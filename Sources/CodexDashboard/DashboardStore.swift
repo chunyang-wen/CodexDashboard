@@ -212,6 +212,7 @@ final class DashboardStore: ObservableObject {
     private var todayAnalytics = DashboardAnalytics.empty
     private var quotaWeekAnalytics = QuotaWeekAnalytics.empty
     private var metricsIndex = MetricsIndexSnapshot.empty
+    private var indexedSessionsByID: [String: IndexedSessionMetrics] = [:]
 
     init(defaults: UserDefaults = .standard) {
         let savedPath = defaults.string(forKey: "codexDataPath")
@@ -281,7 +282,7 @@ final class DashboardStore: ObservableObject {
         metricsIndex.periods(granularity: granularity, projectPath: path, since: startDate)
     }
     func indexedSession(_ id: String) -> IndexedSessionMetrics? {
-        metricsIndex.sessions.first { $0.sessionID == id }
+        indexedSessionsByID[id]
     }
     func periodAggregate(in interval: DateInterval) -> MetricsIndexAggregate {
         metricsIndex.aggregate(in: interval)
@@ -330,8 +331,9 @@ final class DashboardStore: ObservableObject {
                     SubscriptionReader.latest(from: indexed)
                 }.value
                 guard !Task.isCancelled, loadID == requestID else { return }
-                subscription = latestSubscription
-                scheduleAnalyticsRefresh()
+                if acceptSubscription(latestSubscription) {
+                    scheduleAnalyticsRefresh()
+                }
                 account = await Task.detached(priority: .utility) {
                     CodexAccountReader.read(from: codexHome)
                 }.value
@@ -435,10 +437,12 @@ final class DashboardStore: ObservableObject {
             sessions = sessions.map { byID[$0.id] ?? $0 }
             scheduleAnalyticsRefresh()
             let sessionSnapshot = sessions
-            subscription = await Task.detached(priority: .background) {
+            let latestSubscription = await Task.detached(priority: .background) {
                 SubscriptionReader.latest(from: sessionSnapshot)
             }.value
-            scheduleAnalyticsRefresh()
+            if acceptSubscription(latestSubscription) {
+                scheduleAnalyticsRefresh()
+            }
             return true
         } catch {
             // Quiet refresh failures are isolated and retried with exponential backoff.
@@ -596,15 +600,36 @@ final class DashboardStore: ObservableObject {
                 todayAnalytics = refreshed.1
                 quotaWeekAnalytics = refreshed.2
                 metricsIndex = index
+                indexedSessionsByID = Dictionary(
+                    uniqueKeysWithValues: index.sessions.map { ($0.sessionID, $0) }
+                )
                 guard analyticsID != requestID else { return }
             }
         }
+    }
+
+    /// Quota files can briefly expose an older complete line while a newer line is
+    /// still being appended. Never let a refresh regress the menu-bar snapshot.
+    @discardableResult
+    private func acceptSubscription(_ candidate: SubscriptionSnapshot?) -> Bool {
+        guard let candidate else { return false }
+        if let current = subscription, candidate.observedAt < current.observedAt {
+            return false
+        }
+        guard subscription != candidate else { return false }
+        subscription = candidate
+        return true
     }
 
     func updateCodexHome(_ url: URL) {
         let standardized = url.standardizedFileURL
         guard standardized != codexHome else { return }
         codexHome = standardized
+        subscription = nil
+        account = nil
+        quotaWeekAnalytics = .empty
+        metricsIndex = .empty
+        indexedSessionsByID = [:]
         UserDefaults.standard.set(standardized.path, forKey: "codexDataPath")
         load()
     }

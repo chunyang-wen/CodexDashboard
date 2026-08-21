@@ -115,10 +115,11 @@ public enum SubscriptionReader {
     /// Reads only the tail of recent rollouts. Quota snapshots are emitted by Codex with
     /// token-count events, so this does not require credentials or a full history scan.
     public static func latest(from sessions: [SessionMetric]) -> SubscriptionSnapshot? {
-        for session in sessions.prefix(20) where !session.rolloutPath.isEmpty {
-            if let snapshot = latest(in: session.rolloutPath) { return snapshot }
-        }
-        return nil
+        sessions.prefix(20)
+            .lazy
+            .filter { !$0.rolloutPath.isEmpty }
+            .compactMap { latest(in: $0.rolloutPath) }
+            .max { $0.observedAt < $1.observedAt }
     }
 
     static func latest(in path: String, maximumTailBytes: UInt64 = 8 * 1_024 * 1_024) -> SubscriptionSnapshot? {

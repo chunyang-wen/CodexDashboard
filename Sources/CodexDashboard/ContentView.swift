@@ -57,9 +57,7 @@ private struct MetricProgressBar: View {
 
 struct ContentView: View {
     @EnvironmentObject private var store: DashboardStore
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection: DashboardPage? = .overview
-    @State private var selectedRange: DashboardStore.Range = .month
 
     var body: some View {
         NavigationSplitView {
@@ -95,28 +93,22 @@ struct ContentView: View {
                     page
                 }
             }
-            .overlay {
+            .overlay(alignment: .topTrailing) {
                 if store.isUpdatingAnalytics {
                     AnalyticsUpdateOverlay(label: store.analyticsUpdateLabel)
-                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
-                }
-            }
-            .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: store.isUpdatingAnalytics)
-            .onChange(of: store.range) { _, newRange in
-                if selectedRange != newRange {
-                    selectedRange = newRange
+                        .padding(18)
                 }
             }
             .toolbar {
                 ToolbarItemGroup {
-                    Picker("Aggregation", selection: $selectedRange) {
+                    Picker("Aggregation", selection: Binding(
+                        get: { store.range },
+                        set: { store.updateRange($0) }
+                    )) {
                         ForEach(DashboardStore.Range.allCases) { Text($0.rawValue).tag($0) }
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 245)
-                    .onChange(of: selectedRange) { _, newRange in
-                        store.updateRange(newRange)
-                    }
                     Button { store.load() } label: {
                         Image(systemName: "arrow.clockwise")
                     }
@@ -160,8 +152,6 @@ private struct AnalyticsUpdateOverlay: View {
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().stroke(.separator.opacity(0.55)))
         .shadow(color: .black.opacity(0.14), radius: 10, y: 4)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-        .padding(18)
         .allowsHitTesting(false)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.updatesFrequently)

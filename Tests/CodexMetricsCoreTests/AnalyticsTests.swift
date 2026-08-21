@@ -750,6 +750,36 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(snapshot).observedAt.timeIntervalSince1970, 1_786_854_937.995, accuracy: 0.001)
     }
 
+    func testSubscriptionReaderChoosesNewestSnapshotAcrossRecentSessions() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let olderFile = directory.appendingPathComponent("older.jsonl")
+        let newerFile = directory.appendingPathComponent("newer.jsonl")
+        func line(timestamp: String, usedPercent: Int) -> String {
+            #"{"timestamp":"\#(timestamp)","payload":{"rate_limits":{"limit_id":"codex","secondary":{"used_percent":\#(usedPercent),"window_minutes":10080,"resets_at":1783653502},"plan_type":"plus"}}}"#
+        }
+        try Data((line(timestamp: "2026-08-16T04:00:00.000Z", usedPercent: 10) + "\n").utf8).write(to: olderFile)
+        try Data((line(timestamp: "2026-08-16T05:00:00.000Z", usedPercent: 20) + "\n").utf8).write(to: newerFile)
+        func session(id: String, path: String) -> SessionMetric {
+            SessionMetric(
+                id: id, rolloutPath: path, projectPath: "/tmp/project", title: "",
+                source: "app", provider: "openai", createdAt: .distantPast,
+                updatedAt: .now, model: nil, reasoningEffort: nil, gitBranch: nil,
+                cliVersion: nil, archived: false, usage: .zero
+            )
+        }
+
+        // Session ordering is not a reliable proxy for the embedded quota timestamp.
+        let snapshot = SubscriptionReader.latest(from: [
+            session(id: "older", path: olderFile.path),
+            session(id: "newer", path: newerFile.path)
+        ])
+
+        XCTAssertEqual(snapshot?.windows.first?.usedPercent, 20)
+        XCTAssertEqual(snapshot?.observedAt.timeIntervalSince1970, 1_786_856_400)
+    }
+
     func testCodexStoreFallsBackToSecondaryDatabaseLocation() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let codexHome = home.appendingPathComponent(".codex", isDirectory: true)

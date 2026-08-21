@@ -203,6 +203,7 @@ struct CodexDashboardApp: App {
                 style: resolvedMenuBarQuotaIconStyle,
                 alertRemainingPercent: showQuotaAlertMarker ? quotaAlertRemainingPercent : nil
             )
+            .equatable()
         }
         .menuBarExtraStyle(.window)
 
@@ -223,7 +224,7 @@ struct CodexDashboardApp: App {
     }
 }
 
-private struct MenuBarQuotaIcon: View {
+private struct MenuBarQuotaIcon: View, Equatable {
     let windows: [UsageQuotaWindow]
     let style: MenuBarQuotaIconStyle
     var alertRemainingPercent: Double? = nil
@@ -278,7 +279,9 @@ private struct MenuBarQuotaIcon: View {
     }
 
     private var primaryWindow: UsageQuotaWindow? {
-        windows.first(where: { $0.windowMinutes == 300 })
+        windows
+            .filter { $0.windowMinutes != 10_080 }
+            .min { $0.windowMinutes < $1.windowMinutes }
     }
 
     private var weeklyWindow: UsageQuotaWindow? {
