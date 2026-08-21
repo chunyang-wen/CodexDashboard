@@ -390,8 +390,8 @@ final class DashboardStore: ObservableObject {
             }.value) ?? []
             guard !Task.isCancelled, loadID == requestID else { return }
             do {
-                let merged = try await historicalStore.mergedSessions(with: indexed)
-                sessions = merged.map(\.summary)
+                let merged = try await historicalStore.mergedSessionSummaries(with: indexed)
+                sessions = merged
                 pricing = try await historicalStore.pricingHistory()
                 historySessionCount = try await historicalStore.sessionCount()
                 hadStoredHistory = historySessionCount > 0
@@ -550,9 +550,7 @@ final class DashboardStore: ObservableObject {
                     continue
                 }
 
-                let changedPaths = batch.requiresReconciliation
-                    ? Set(self.sessions.lazy.map(\.rolloutPath).filter { !$0.isEmpty })
-                    : batch.rolloutPaths
+                let changedPaths = batch.rolloutPaths
                 let succeeded = await self.refreshInBackground(
                     changedPaths: changedPaths,
                     indexChanged: batch.indexChanged || batch.requiresReconciliation,
@@ -588,33 +586,29 @@ final class DashboardStore: ObservableObject {
         do {
             let previousIDs = Set(sessions.map(\.id))
             var pathsNeedingEnrichment = changedPaths
-            if indexChanged {
+            if indexChanged || requiresReconciliation {
                 let existingByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
                 let codexHome = self.codexHome
-                let indexed = try await Task.detached(priority: .background) {
+                let indexed = (try? await Task.detached(priority: .background) {
                     try CodexStore(codexHome: codexHome).loadIndexedSessions()
-                }.value
+                }.value) ?? []
                 for session in indexed where !session.rolloutPath.isEmpty {
                     guard let existing = existingByID[session.id] else {
                         pathsNeedingEnrichment.insert(session.rolloutPath)
                         continue
                     }
-                    if existing.updatedAt != session.updatedAt || existing.rolloutPath != session.rolloutPath {
+                    if !existing.enrichmentAvailable || existing.updatedAt < session.updatedAt {
                         pathsNeedingEnrichment.insert(session.rolloutPath)
                     }
                 }
-                let merged = try await historicalStore.mergedSessions(with: indexed)
-                sessions = merged.map { session in
-                    guard let existing = existingByID[session.id],
-                          !pathsNeedingEnrichment.contains(session.rolloutPath) else { return session.summary }
-                    return existing
-                }
+                let merged = try await historicalStore.mergedSessionSummaries(with: indexed)
+                sessions = merged
             }
             let candidates = sessions.filter { session in
-                pathsNeedingEnrichment.contains(session.rolloutPath) || !previousIDs.contains(session.id)
+                (pathsNeedingEnrichment.contains(session.rolloutPath) || !previousIDs.contains(session.id)) && !session.enrichmentAvailable
             }
             guard !candidates.isEmpty else {
-                if indexChanged { scheduleAnalyticsRefresh() }
+                if indexChanged || requiresReconciliation { scheduleAnalyticsRefresh() }
                 return true
             }
 
@@ -661,32 +655,29 @@ final class DashboardStore: ObservableObject {
     ) async -> Bool {
         do {
             let codexHome = self.codexHome
-            let indexed = try await Task.detached(priority: .background) {
+            let indexed = (try? await Task.detached(priority: .background) {
                 try CodexStore(codexHome: codexHome).loadIndexedSessions()
-            }.value
+            }.value) ?? []
             guard !Task.isCancelled, !dashboardDataIsResident else { return true }
 
-            var merged = try await historicalStore.mergedSessions(with: indexed)
+            let merged = try await historicalStore.mergedSessionSummaries(with: indexed)
             let historicalIDs = Set(merged.lazy.filter(\.enrichmentAvailable).map(\.id))
-            let candidates = merged.filter {
-                requiresReconciliation
-                    || changedPaths.contains($0.rolloutPath)
-                    || !historicalIDs.contains($0.id)
+            let candidates = merged.filter { session in
+                (changedPaths.contains(session.rolloutPath) || !historicalIDs.contains(session.id)) && !session.enrichmentAvailable
             }
             var enriched: [SessionMetric] = []
-            enriched.reserveCapacity(candidates.count)
-            for await progress in CodexStore(codexHome: codexHome).enrichmentStream(candidates) {
-                guard !Task.isCancelled, !dashboardDataIsResident else { return true }
-                enriched.append(progress.session)
-            }
-            if !enriched.isEmpty {
-                historySessionCount = try await historicalStore.record(enriched, pricing: pricing)
-                let persisted = try await historicalStore.sessions(withIDs: Set(enriched.map(\.id)))
-                let persistedByID = Dictionary(uniqueKeysWithValues: persisted.map { ($0.id, $0) })
-                merged = merged.map { persistedByID[$0.id] ?? $0 }
+            if !candidates.isEmpty {
+                enriched.reserveCapacity(candidates.count)
+                for await progress in CodexStore(codexHome: codexHome).enrichmentStream(candidates) {
+                    guard !Task.isCancelled, !dashboardDataIsResident else { return true }
+                    enriched.append(progress.session)
+                }
+                if !enriched.isEmpty {
+                    historySessionCount = try await historicalStore.record(enriched, pricing: pricing)
+                }
             }
 
-            let index = try await historicalStore.metricsIndex(for: merged, pricing: pricing)
+            let index = try await historicalStore.metricsIndex(pricing: pricing)
             let compact = await Task.detached(priority: .background) {
                 MenuBarAnalytics.calculate(index: index)
             }.value
@@ -694,7 +685,7 @@ final class DashboardStore: ObservableObject {
             menuBarAnalytics = compact
             try await historicalStore.recordMenuBarMetrics(compact.snapshot)
 
-            let latestSubscription = SubscriptionReader.latestCached(from: enriched.isEmpty ? merged : enriched)
+            let latestSubscription = SubscriptionReader.latestCached(from: enriched.isEmpty ? indexed : enriched)
             if acceptSubscription(latestSubscription), let latestSubscription {
                 try? await historicalStore.recordSubscription(latestSubscription)
             }

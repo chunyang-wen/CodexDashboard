@@ -21,6 +21,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(windowWillClose(_:)),
+            name: NSWindow.didChangeOcclusionStateNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(windowDidBecomeKey(_:)),
             name: NSWindow.didBecomeKeyNotification,
             object: nil
@@ -162,6 +168,9 @@ private struct DashboardWindowRoot: View {
     @ViewBuilder var body: some View {
         if store.dashboardDataIsResident {
             ContentView()
+                .onDisappear {
+                    AppActivationPolicy.releaseDashboardMemoryIfHidden()
+                }
         } else {
             Color.clear
         }
@@ -185,9 +194,14 @@ private final class WindowIdentifyingNSView: NSView {
         super.viewDidMoveToWindow()
         if let window {
             window.identifier = appWindowIdentifier
-        }
-        if window?.isVisible == true {
-            AppActivationPolicy.showDockIcon()
+            if window.isVisible {
+                AppActivationPolicy.showDockIcon()
+            }
+        } else {
+            DispatchQueue.main.async {
+                AppActivationPolicy.hideDockIconIfNoManagedWindowIsVisible()
+                AppActivationPolicy.releaseDashboardMemoryIfHidden()
+            }
         }
     }
 }

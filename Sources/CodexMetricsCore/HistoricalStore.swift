@@ -532,6 +532,67 @@ public actor HistoricalStore {
         return result.sorted { $0.updatedAt > $1.updatedAt }
     }
 
+    public func mergedSessionSummaries(with indexed: [SessionMetric]) throws -> [SessionSummary] {
+        let storedSummaries = try sessionSummaries()
+        let storedByID = Dictionary(uniqueKeysWithValues: storedSummaries.map { ($0.id, $0) })
+        var result = indexed.map { session in
+            guard let historical = storedByID[session.id] else { return session.summary }
+            let canReuseEnrichment = historical.enrichmentAvailable
+                && historical.updatedAt >= session.updatedAt
+            return Self.combineSummaries(
+                historical,
+                session.summary,
+                enrichmentAvailable: canReuseEnrichment
+            )
+        }
+        let indexedIDs = Set(indexed.map(\.id))
+        result.append(contentsOf: storedSummaries.filter { !indexedIDs.contains($0.id) })
+        return result.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private static func combineSummaries(
+        _ historical: SessionSummary,
+        _ indexed: SessionSummary,
+        enrichmentAvailable: Bool
+    ) -> SessionSummary {
+        let enriched = enrichmentAvailable ? historical : indexed
+        let title = indexed.title.isEmpty ? historical.title : indexed.title
+        let originator = enriched.originator ?? indexed.originator
+        let updatedAt = max(historical.updatedAt, indexed.updatedAt)
+        let model = enriched.model ?? indexed.model
+        let reasoningEffort = enriched.reasoningEffort ?? indexed.reasoningEffort
+        let gitBranch = indexed.gitBranch ?? historical.gitBranch
+        let cliVersion = indexed.cliVersion ?? historical.cliVersion
+        let usage = enriched.usage.total > 0 ? enriched.usage : indexed.usage
+        let subscription = historical.subscription ?? indexed.subscription
+        return SessionSummary(
+            id: indexed.id,
+            rolloutPath: indexed.rolloutPath,
+            projectPath: indexed.projectPath,
+            title: title,
+            source: indexed.source,
+            originator: originator,
+            provider: indexed.provider,
+            createdAt: indexed.createdAt,
+            updatedAt: updatedAt,
+            model: model,
+            reasoningEffort: reasoningEffort,
+            gitBranch: gitBranch,
+            cliVersion: cliVersion,
+            archived: indexed.archived,
+            usage: usage,
+            toolCalls: enriched.toolCalls,
+            skillCalls: enriched.skillCalls,
+            userMessages: enriched.userMessages,
+            completedTurns: enriched.completedTurns,
+            abortedTurns: enriched.abortedTurns,
+            activeRuntime: enriched.activeRuntime,
+            averageTTFT: enriched.averageTTFT,
+            subscription: subscription,
+            enrichmentAvailable: enrichmentAvailable
+        )
+    }
+
     @discardableResult
     public func record(_ sessions: [SessionMetric], pricing: PricingHistory = .bundled) throws -> Int {
         guard !sessions.isEmpty else { return 0 }
@@ -598,7 +659,10 @@ public actor HistoricalStore {
         return imported.sessions.count
     }
 
-    public func sessionCount() throws -> Int { try load().sessions.count }
+    public func sessionCount() throws -> Int {
+        if let database { return try database.historicalSessionCount() }
+        return try load().sessions.count
+    }
 
     public func storedSessionCount() throws -> Int {
         if let database { return try database.historicalSessionCount() }
