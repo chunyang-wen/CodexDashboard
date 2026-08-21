@@ -710,7 +710,12 @@ private struct MenuUsageTrendView: View {
     let week: MenuUsageSummary
     let month: MenuUsageSummary
 
+    // MenuBarExtra measures its content before the popover has a stable window
+    // width. Keep this view's layout finite during that first measurement pass.
+    private let contentWidth: CGFloat = 342
     private let barSpacing: CGFloat = 3
+    private let comparisonTrailingWidth: CGFloat = 85
+    private let comparisonBarWidth: CGFloat = 47
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -752,6 +757,7 @@ private struct MenuUsageTrendView: View {
                 comparisonRow("MONTH", summary: month, tint: .secondary)
             }
         }
+        .frame(width: contentWidth)
         .padding(14)
         .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
@@ -763,7 +769,8 @@ private struct MenuUsageTrendView: View {
     }
 
     private var monthBars: some View {
-        HStack(alignment: .bottom, spacing: barSpacing) {
+        let barWidth = resolvedBarWidth
+        return HStack(alignment: .bottom, spacing: barSpacing) {
             ForEach(days) { day in
                 let height = barHeight(for: day)
                 let isToday = day.day == todayDay
@@ -778,8 +785,7 @@ private struct MenuUsageTrendView: View {
                                 .stroke(isThisWeek ? Color.teal.opacity(0.52) : Color.secondary.opacity(0.28), lineWidth: 0.7)
                         }
                     }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: height)
+                    .frame(width: barWidth, height: height)
                     .overlay(alignment: .top) {
                         if isToday {
                             Circle()
@@ -794,7 +800,7 @@ private struct MenuUsageTrendView: View {
                     .accessibilityValue(dayValueLabel(day))
             }
         }
-        .frame(height: 78, alignment: .bottom)
+        .frame(width: contentWidth, height: 78, alignment: .bottom)
     }
 
     private var monthAxis: some View {
@@ -814,21 +820,20 @@ private struct MenuUsageTrendView: View {
     }
 
     private var weekSpanMarker: some View {
-        GeometryReader { proxy in
-            let count = max(1, days.count)
-            let availableWidth = max(0, proxy.size.width - barSpacing * CGFloat(count - 1))
-            let barWidth = availableWidth / CGFloat(count)
-            let startIndex = max(0, currentWeekDays.lowerBound - 1)
-            let endIndex = min(count - 1, currentWeekDays.upperBound - 1)
-            let startX = CGFloat(startIndex) * (barWidth + barSpacing)
-            let spanWidth = CGFloat(endIndex - startIndex + 1) * barWidth
-                + CGFloat(max(0, endIndex - startIndex)) * barSpacing
+        let count = max(1, days.count)
+        let startIndex = max(0, currentWeekDays.lowerBound - 1)
+        let endIndex = min(count - 1, currentWeekDays.upperBound - 1)
+        let startX = CGFloat(startIndex) * (resolvedBarWidth + barSpacing)
+        let spanWidth = CGFloat(endIndex - startIndex + 1) * resolvedBarWidth
+            + CGFloat(max(0, endIndex - startIndex)) * barSpacing
 
+        return HStack(spacing: 0) {
+            Color.clear.frame(width: startX)
             CompactWeekMarker()
                 .frame(width: spanWidth, height: 14)
-                .offset(x: startX)
+            Spacer(minLength: 0)
         }
-        .frame(height: 14)
+        .frame(width: contentWidth, height: 14)
         .accessibilityHidden(true)
     }
 
@@ -839,7 +844,7 @@ private struct MenuUsageTrendView: View {
             Text("TOKENS").frame(width: 46, alignment: .trailing)
             Text("TOOLS").frame(width: 34, alignment: .trailing)
             Text("SKILLS").frame(width: 36, alignment: .trailing)
-            Text("MONTH %").frame(maxWidth: .infinity, alignment: .trailing)
+            Text("MONTH %").frame(width: comparisonTrailingWidth, alignment: .trailing)
         }
         .font(.system(size: 7.5, weight: .bold))
         .tracking(0.25)
@@ -869,16 +874,14 @@ private struct MenuUsageTrendView: View {
             HStack(spacing: 4) {
                 Text(share.formatted(.percent.precision(.fractionLength(0))))
                     .frame(width: 34, alignment: .trailing)
-                GeometryReader { proxy in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(Color.primary.opacity(0.08))
-                        Capsule().fill(tint.opacity(0.85))
-                            .frame(width: proxy.size.width * min(1, max(0, share)))
-                    }
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.08))
+                    Capsule().fill(tint.opacity(0.85))
+                        .frame(width: comparisonBarWidth * min(1, max(0, share)))
                 }
-                .frame(height: 4)
+                .frame(width: comparisonBarWidth, height: 4)
             }
-            .frame(maxWidth: .infinity)
+            .frame(width: comparisonTrailingWidth)
         }
         .font(.system(size: 11, weight: .medium).monospacedDigit())
         .accessibilityElement(children: .combine)
@@ -891,6 +894,11 @@ private struct MenuUsageTrendView: View {
         case .cost: NSDecimalNumber(decimal: period.estimatedCost).doubleValue
         case .tokens: Double(period.usage.total)
         }
+    }
+
+    private var resolvedBarWidth: CGFloat {
+        let count = CGFloat(max(1, days.count))
+        return max(1, (contentWidth - barSpacing * (count - 1)) / count)
     }
 
     private func summaryValue(_ summary: MenuUsageSummary) -> Double {
