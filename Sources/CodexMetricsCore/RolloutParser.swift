@@ -13,6 +13,7 @@ struct RolloutEnrichment: Codable, Sendable {
     var skillCallEvents: [SkillCallEvent] = []
     var userMessages = 0
     var abortedTurns = 0
+    var subscription: SubscriptionSnapshot?
 }
 
 struct CachedRollout: Codable, Sendable {
@@ -355,6 +356,12 @@ enum RolloutParser {
         guard type == "event_msg", let event = payload["type"] as? String else { return }
         switch event {
         case "token_count":
+            if let limits = payload["rate_limits"] as? [String: Any] {
+                let candidate = SubscriptionReader.snapshot(from: limits, observedAt: timestamp)
+                if result.subscription.map({ $0.observedAt < candidate.observedAt }) ?? true {
+                    result.subscription = candidate
+                }
+            }
             guard let info = payload["info"] as? [String: Any],
                   let total = info["total_token_usage"] as? [String: Any] else { return }
             let usage = tokenUsage(total)

@@ -35,11 +35,16 @@ public actor DynamicPricingLoader {
         var lastModified: String?
     }
 
+    private struct CachedCatalog: Codable {
+        let prices: [String: ModelPrice]
+    }
+
     private let catalogURL = URL(string: "https://models.dev/api.json")!
     private let cacheURL: URL
     private let stateURL: URL
     private let session: URLSession
     private let refreshInterval: TimeInterval
+    private var memorySnapshot: DynamicPricingSnapshot?
 
     public init(
         userHome: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -54,13 +59,20 @@ public actor DynamicPricingLoader {
     }
 
     public func refresh(force: Bool = false, now: Date = .now) async throws -> DynamicPricingSnapshot {
+        if !force,
+           let memorySnapshot,
+           now.timeIntervalSince(memorySnapshot.fetchedAt) < refreshInterval
+        {
+            return memorySnapshot
+        }
         var state = loadState()
         if !force,
            let lastSuccess = state.lastSuccess,
            now.timeIntervalSince(lastSuccess) < refreshInterval,
-           let cached = try? Data(contentsOf: cacheURL)
+           let cached = loadCached(fetchedAt: lastSuccess)
         {
-            return try Self.parse(cached, fetchedAt: lastSuccess, fromCache: true)
+            memorySnapshot = cached
+            return cached
         }
 
         var request = URLRequest(url: catalogURL)
@@ -76,29 +88,34 @@ public actor DynamicPricingLoader {
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw DynamicPricingError.invalidResponse }
-            if http.statusCode == 304, let cached = try? Data(contentsOf: cacheURL) {
+            if http.statusCode == 304, let cached = loadCached(fetchedAt: now) {
                 state.lastSuccess = now
                 try persistState(state)
-                return try Self.parse(cached, fetchedAt: now, fromCache: true)
+                memorySnapshot = cached
+                return cached
             }
             guard http.statusCode == 200 else { throw DynamicPricingError.invalidResponse }
             guard data.count <= 20_000_000 else { throw DynamicPricingError.responseTooLarge }
             let snapshot = try Self.parse(data, fetchedAt: now, fromCache: false)
-            try FileManager.default.createDirectory(
-                at: cacheURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try data.write(to: cacheURL, options: .atomic)
+            try persistCache(snapshot.prices)
             state.lastSuccess = now
             state.etag = http.value(forHTTPHeaderField: "ETag")
             state.lastModified = http.value(forHTTPHeaderField: "Last-Modified")
             try persistState(state)
+            memorySnapshot = snapshot
             return snapshot
         } catch {
-            if let cached = try? Data(contentsOf: cacheURL),
-               let lastSuccess = state.lastSuccess
-            {
-                return try Self.parse(cached, fetchedAt: lastSuccess, fromCache: true)
+            if let memorySnapshot {
+                return DynamicPricingSnapshot(
+                    prices: memorySnapshot.prices,
+                    fetchedAt: memorySnapshot.fetchedAt,
+                    fromCache: true
+                )
+            }
+            if let lastSuccess = state.lastSuccess,
+               let cached = loadCached(fetchedAt: lastSuccess) {
+                memorySnapshot = cached
+                return cached
             }
             throw error
         }
@@ -152,6 +169,30 @@ public actor DynamicPricingLoader {
         guard let data = try? Data(contentsOf: stateURL),
               let value = try? JSONDecoder().decode(State.self, from: data) else { return State() }
         return value
+    }
+
+    /// Reads both the compact cache and the legacy full models.dev response. A
+    /// successful legacy read is migrated atomically so it is paid only once.
+    private func loadCached(fetchedAt: Date) -> DynamicPricingSnapshot? {
+        guard let data = try? Data(contentsOf: cacheURL) else { return nil }
+        if let cached = try? JSONDecoder().decode(CachedCatalog.self, from: data),
+           !cached.prices.isEmpty {
+            return DynamicPricingSnapshot(prices: cached.prices, fetchedAt: fetchedAt, fromCache: true)
+        }
+        guard let snapshot = try? Self.parse(data, fetchedAt: fetchedAt, fromCache: true) else {
+            return nil
+        }
+        try? persistCache(snapshot.prices)
+        return snapshot
+    }
+
+    private func persistCache(_ prices: [String: ModelPrice]) throws {
+        try FileManager.default.createDirectory(
+            at: cacheURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try JSONEncoder().encode(CachedCatalog(prices: prices))
+            .write(to: cacheURL, options: .atomic)
     }
 
     private func persistState(_ state: State) throws {

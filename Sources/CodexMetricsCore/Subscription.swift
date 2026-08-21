@@ -112,6 +112,11 @@ public struct SubscriptionSnapshot: Codable, Hashable, Sendable {
 }
 
 public enum SubscriptionReader {
+    /// Returns already-parsed quota data without opening any rollout files.
+    public static func latestCached(from sessions: [SessionMetric]) -> SubscriptionSnapshot? {
+        sessions.compactMap(\.subscription).max { $0.observedAt < $1.observedAt }
+    }
+
     /// Reads only the tail of recent rollouts. Quota snapshots are emitted by Codex with
     /// token-count events, so this does not require credentials or a full history scan.
     public static func latest(from sessions: [SessionMetric]) -> SubscriptionSnapshot? {
@@ -142,7 +147,11 @@ public enum SubscriptionReader {
         return nil
     }
 
-    private static func snapshot(from value: [String: Any], timestamp: String?) -> SubscriptionSnapshot {
+    static func snapshot(from value: [String: Any], timestamp: String?) -> SubscriptionSnapshot {
+        snapshot(from: value, observedAt: parseDate(timestamp) ?? .now)
+    }
+
+    static func snapshot(from value: [String: Any], observedAt: Date) -> SubscriptionSnapshot {
         let windows = ["primary", "secondary", "individual_limit"].compactMap { key -> UsageQuotaWindow? in
             guard let window = value[key] as? [String: Any],
                   let used = number(window["used_percent"]),
@@ -167,7 +176,7 @@ public enum SubscriptionReader {
             windows: windows,
             credits: credits,
             rateLimitReachedType: value["rate_limit_reached_type"] as? String,
-            observedAt: parseDate(timestamp) ?? .now
+            observedAt: observedAt
         )
     }
 

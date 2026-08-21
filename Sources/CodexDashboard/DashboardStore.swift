@@ -4,44 +4,6 @@ import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
-private struct MetricsSourceFingerprint: Sendable {
-    struct FileStamp: Equatable, Sendable {
-        let size: Int64
-        let modifiedAt: TimeInterval
-    }
-
-    let index: FileStamp?
-    let rollouts: [String: FileStamp]
-
-    static func capture(paths: [String], codexHome: URL) -> MetricsSourceFingerprint {
-        let manager = FileManager.default
-        func stamp(_ path: String) -> FileStamp? {
-            guard let values = try? manager.attributesOfItem(atPath: path),
-                  let size = values[.size] as? NSNumber,
-                  let modified = values[.modificationDate] as? Date else { return nil }
-            return FileStamp(size: size.int64Value, modifiedAt: modified.timeIntervalSince1970)
-        }
-        let indexPath = [
-            codexHome.appendingPathComponent("state_5.sqlite").path,
-            codexHome.appendingPathComponent("sqlite/state_5.sqlite").path
-        ].first(where: { manager.fileExists(atPath: $0) })
-        let indexStamp = indexPath.flatMap { path -> FileStamp? in
-            let stamps = [path, path + "-wal"].compactMap(stamp)
-            guard !stamps.isEmpty else { return nil }
-            return FileStamp(
-                size: stamps.reduce(0) { $0 + $1.size },
-                modifiedAt: stamps.map(\.modifiedAt).max() ?? 0
-            )
-        }
-        return MetricsSourceFingerprint(
-            index: indexStamp,
-            rollouts: Dictionary(uniqueKeysWithValues: paths.compactMap { path in
-                stamp(path).map { (path, $0) }
-            })
-        )
-    }
-}
-
 private struct DashboardAnalytics: Sendable {
     let filteredSessions: [SessionMetric]
     let allProjects: [ProjectMetric]
@@ -203,6 +165,7 @@ final class DashboardStore: ObservableObject {
     private var analyticsTask: Task<Void, Never>?
     private var rangeRefreshTask: Task<Void, Never>?
     private var backgroundRefreshTask: Task<Void, Never>?
+    private var sourceWatcher: CodexSourceWatcher?
     private var loadID = UUID()
     private var enrichmentID = UUID()
     private var analyticsID = UUID()
@@ -291,6 +254,8 @@ final class DashboardStore: ObservableObject {
     func load() {
         loadTask?.cancel()
         enrichmentTask?.cancel()
+        sourceWatcher?.stop()
+        sourceWatcher = nil
         backgroundRefreshTask?.cancel()
         backgroundRefreshTask = nil
         let requestID = UUID()
@@ -311,6 +276,8 @@ final class DashboardStore: ObservableObject {
             }
             do {
                 let codexHome = self.codexHome
+                var storedSubscription: SubscriptionSnapshot?
+                var hadStoredHistory = false
                 let indexed = try await Task.detached(priority: .userInitiated) {
                     try CodexStore(codexHome: codexHome).loadIndexedSessions()
                 }.value
@@ -319,25 +286,45 @@ final class DashboardStore: ObservableObject {
                     sessions = try await historicalStore.mergedSessions(with: indexed)
                     pricing = try await historicalStore.pricingHistory()
                     historySessionCount = try await historicalStore.sessionCount()
+                    hadStoredHistory = historySessionCount > 0
+                    storedSubscription = try? await historicalStore.subscriptionSnapshot()
                 } catch {
                     sessions = indexed
                     historyMessage = "Stored history could not be loaded: \(error.localizedDescription)"
                 }
                 scheduleAnalyticsRefresh()
+                await startBackgroundRefreshIfNeeded(reconcileIfCursorMissing: hadStoredHistory)
+                guard !Task.isCancelled, loadID == requestID else { return }
                 isLoading = false
                 startEnrichmentForAvailableHistory()
                 refreshPricing()
-                let latestSubscription = await Task.detached(priority: .utility) {
-                    SubscriptionReader.latest(from: indexed)
-                }.value
+                let cachedSubscription = ([
+                    storedSubscription,
+                    SubscriptionReader.latestCached(from: sessions)
+                ].compactMap { $0 }).max { $0.observedAt < $1.observedAt }
+                if acceptSubscription(cachedSubscription) {
+                    scheduleAnalyticsRefresh()
+                }
+                // Older history does not contain parser-extracted quota snapshots.
+                // Keep the bounded tail scan as a one-time compatibility fallback;
+                // once a snapshot is persisted, future loads remain entirely in-memory.
+                let latestSubscription = if cachedSubscription == nil {
+                    await Task.detached(priority: .utility) {
+                        SubscriptionReader.latest(from: indexed)
+                    }.value
+                } else {
+                    cachedSubscription
+                }
                 guard !Task.isCancelled, loadID == requestID else { return }
                 if acceptSubscription(latestSubscription) {
                     scheduleAnalyticsRefresh()
                 }
+                if let latestSubscription {
+                    try? await historicalStore.recordSubscription(latestSubscription)
+                }
                 account = await Task.detached(priority: .utility) {
                     CodexAccountReader.read(from: codexHome)
                 }.value
-                startBackgroundRefreshIfNeeded()
             } catch {
                 guard loadID == requestID else { return }
                 errorMessage = error.localizedDescription
@@ -347,53 +334,85 @@ final class DashboardStore: ObservableObject {
         }
     }
 
-    /// Watches only small file metadata and performs quiet, in-process enrichment.
-    /// No helper executable or dedicated OS thread is created.
-    private func startBackgroundRefreshIfNeeded() {
+    /// Consumes the system-wide macOS filesystem journal. Normal refresh work is
+    /// proportional to changed paths; all-session reconciliation occurs only when
+    /// installing the watcher cursor or when macOS reports a journal gap.
+    private func startBackgroundRefreshIfNeeded(reconcileIfCursorMissing: Bool? = nil) async {
         guard backgroundRefreshTask == nil, refreshInterval > 0 else { return }
-        backgroundRefreshTask = Task(priority: .background) { [weak self] in
-            guard let self else { return }
-            let codexHome = self.codexHome
-            let initialPaths = self.sessions.map(\.rolloutPath)
-            var fingerprint = await Task.detached(priority: .background) {
-                MetricsSourceFingerprint.capture(paths: initialPaths, codexHome: codexHome)
-            }.value
+        let codexHome = self.codexHome
+        let storedEventID = try? await historicalStore.sourceEventID(for: codexHome)
+        guard backgroundRefreshTask == nil, refreshInterval > 0, codexHome == self.codexHome else { return }
+        let historyExists = reconcileIfCursorMissing ?? (historySessionCount > 0)
+        let watcher: CodexSourceWatcher
+        do {
+            watcher = try CodexSourceWatcher(
+                codexHome: codexHome,
+                sinceEventID: storedEventID,
+                latency: refreshInterval
+            )
+        } catch {
+            historyMessage = "Automatic refresh unavailable: \(error.localizedDescription)"
+            return
+        }
+        sourceWatcher = watcher
+
+        backgroundRefreshTask = Task(priority: .background) { [weak self, watcher] in
+            guard let self else {
+                watcher.stop()
+                return
+            }
+            defer {
+                watcher.stop()
+                if self.sourceWatcher === watcher { self.sourceWatcher = nil }
+            }
+
+            var pending: CodexSourceChangeBatch?
+            if storedEventID == nil, historyExists {
+                pending = CodexSourceChangeBatch(
+                    rolloutPaths: [],
+                    indexChanged: true,
+                    requiresReconciliation: true,
+                    latestEventID: watcher.startingEventID
+                )
+            } else if storedEventID == nil {
+                try? await self.historicalStore.recordSourceEventID(watcher.startingEventID, for: codexHome)
+            }
+
+            var iterator = watcher.events.makeAsyncIterator()
             var failures = 0
-
             while !Task.isCancelled {
-                let configuredDelay = Int(self.refreshInterval)
-                guard configuredDelay > 0 else { return }
-                let baseDelay = min(300, configuredDelay * (1 << min(failures, 3)))
-                let jitter = Int.random(in: 0...min(10, max(1, baseDelay / 8)))
-                try? await Task.sleep(for: .seconds(baseDelay + jitter))
-                guard !Task.isCancelled else { return }
-                let process = ProcessInfo.processInfo
-                guard process.thermalState != .serious,
-                      process.thermalState != .critical,
-                      !process.isLowPowerModeEnabled else { continue }
+                if pending == nil {
+                    pending = await iterator.next()
+                }
+                guard let batch = pending else { return }
 
-                let paths = self.sessions.map(\.rolloutPath).filter { !$0.isEmpty }
-                let next = await Task.detached(priority: .background) {
-                    MetricsSourceFingerprint.capture(paths: paths, codexHome: codexHome)
-                }.value
-                let changedPaths = Set(next.rollouts.compactMap { path, stamp in
-                    fingerprint.rollouts[path] == stamp ? nil : path
-                })
-                let indexChanged = fingerprint.index != next.index
-                fingerprint = next
-                guard indexChanged || !changedPaths.isEmpty else {
-                    failures = 0
+                let process = ProcessInfo.processInfo
+                if self.isLoading || self.isEnriching
+                    || process.thermalState == .serious
+                    || process.thermalState == .critical
+                    || process.isLowPowerModeEnabled
+                {
+                    try? await Task.sleep(for: .seconds(5))
                     continue
                 }
 
-                if await self.refreshInBackground(changedPaths: changedPaths, indexChanged: indexChanged) {
+                let changedPaths = batch.requiresReconciliation
+                    ? Set(self.sessions.lazy.map(\.rolloutPath).filter { !$0.isEmpty })
+                    : batch.rolloutPaths
+                let succeeded = await self.refreshInBackground(
+                    changedPaths: changedPaths,
+                    indexChanged: batch.indexChanged || batch.requiresReconciliation
+                )
+                guard !Task.isCancelled else { return }
+                if succeeded {
+                    try? await self.historicalStore.recordSourceEventID(batch.latestEventID, for: codexHome)
+                    pending = nil
                     failures = 0
-                    let refreshedPaths = self.sessions.map(\.rolloutPath).filter { !$0.isEmpty }
-                    fingerprint = await Task.detached(priority: .background) {
-                        MetricsSourceFingerprint.capture(paths: refreshedPaths, codexHome: codexHome)
-                    }.value
                 } else {
                     failures += 1
+                    let baseDelay = min(300, max(1, Int(self.refreshInterval)) * (1 << min(failures, 3)))
+                    let jitter = Int.random(in: 0...min(10, max(1, baseDelay / 8)))
+                    try? await Task.sleep(for: .seconds(baseDelay + jitter))
                 }
             }
         }
@@ -403,21 +422,31 @@ final class DashboardStore: ObservableObject {
         guard !isLoading, !isEnriching else { return true }
         do {
             let previousIDs = Set(sessions.map(\.id))
+            var pathsNeedingEnrichment = changedPaths
             if indexChanged {
                 let existingByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
                 let codexHome = self.codexHome
                 let indexed = try await Task.detached(priority: .background) {
                     try CodexStore(codexHome: codexHome).loadIndexedSessions()
                 }.value
+                for session in indexed where !session.rolloutPath.isEmpty {
+                    guard let existing = existingByID[session.id] else {
+                        pathsNeedingEnrichment.insert(session.rolloutPath)
+                        continue
+                    }
+                    if existing.updatedAt != session.updatedAt || existing.rolloutPath != session.rolloutPath {
+                        pathsNeedingEnrichment.insert(session.rolloutPath)
+                    }
+                }
                 let merged = try await historicalStore.mergedSessions(with: indexed)
                 sessions = merged.map { session in
                     guard let existing = existingByID[session.id],
-                          !changedPaths.contains(session.rolloutPath) else { return session }
+                          !pathsNeedingEnrichment.contains(session.rolloutPath) else { return session }
                     return existing
                 }
             }
             let candidates = sessions.filter { session in
-                changedPaths.contains(session.rolloutPath) || !previousIDs.contains(session.id)
+                pathsNeedingEnrichment.contains(session.rolloutPath) || !previousIDs.contains(session.id)
             }
             guard !candidates.isEmpty else {
                 if indexChanged { scheduleAnalyticsRefresh() }
@@ -437,11 +466,12 @@ final class DashboardStore: ObservableObject {
             sessions = sessions.map { byID[$0.id] ?? $0 }
             scheduleAnalyticsRefresh()
             let sessionSnapshot = sessions
-            let latestSubscription = await Task.detached(priority: .background) {
-                SubscriptionReader.latest(from: sessionSnapshot)
-            }.value
+            let latestSubscription = SubscriptionReader.latestCached(from: sessionSnapshot)
             if acceptSubscription(latestSubscription) {
                 scheduleAnalyticsRefresh()
+                if let latestSubscription {
+                    try? await historicalStore.recordSubscription(latestSubscription)
+                }
             }
             return true
         } catch {
@@ -498,6 +528,10 @@ final class DashboardStore: ObservableObject {
                         historyMessage = "History could not be saved: \(error.localizedDescription)"
                     }
                     sessions = updated
+                    let latestSubscription = SubscriptionReader.latestCached(from: updated)
+                    if acceptSubscription(latestSubscription), let latestSubscription {
+                        try? await historicalStore.recordSubscription(latestSubscription)
+                    }
                     scheduleAnalyticsRefresh()
                     pending.removeAll(keepingCapacity: true)
                     enrichedSessions = progress.completed
@@ -642,9 +676,13 @@ final class DashboardStore: ObservableObject {
         guard interval != refreshInterval else { return }
         refreshInterval = interval
         UserDefaults.standard.set(interval, forKey: "metricsRefreshInterval")
+        sourceWatcher?.stop()
+        sourceWatcher = nil
         backgroundRefreshTask?.cancel()
         backgroundRefreshTask = nil
-        startBackgroundRefreshIfNeeded()
+        Task { [weak self] in
+            await self?.startBackgroundRefreshIfNeeded()
+        }
     }
 
     func exportHistory() {

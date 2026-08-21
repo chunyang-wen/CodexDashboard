@@ -158,6 +158,22 @@ final class MetricsDatabase: @unchecked Sendable {
         try storeMetadata(pricing, key: "pricing")
     }
 
+    func subscription() throws -> SubscriptionSnapshot? {
+        try metadata(SubscriptionSnapshot.self, key: "subscription")
+    }
+
+    func storeSubscription(_ subscription: SubscriptionSnapshot) throws {
+        try storeMetadata(subscription, key: "subscription")
+    }
+
+    func sourceEventID(for key: String) throws -> UInt64? {
+        try metadata(UInt64.self, key: key)
+    }
+
+    func storeSourceEventID(_ eventID: UInt64, for key: String) throws {
+        try storeMetadata(eventID, key: key)
+    }
+
     func loadMetricIndex() throws -> (context: Data?, sessions: [IndexedSessionMetrics], days: [IndexedDailyMetrics]) {
         try lockedThrowing {
             let decoder = Self.decoder()
@@ -421,6 +437,8 @@ public actor HistoricalStore {
     private let database: MetricsDatabase?
     private var metricsIndexCache: MetricsIndexSnapshot?
     private var metricsIndexContext: Data?
+    private var subscriptionCache: SubscriptionSnapshot?
+    private var didLoadSubscription = false
 
     public init(userHome: URL = FileManager.default.homeDirectoryForCurrentUser) {
         let directory = userHome.appendingPathComponent("Library/Application Support/CodexDashboard", isDirectory: true)
@@ -457,18 +475,22 @@ public actor HistoricalStore {
         var byID = Dictionary(uniqueKeysWithValues: current.sessions.map { ($0.id, $0) })
         var changed: [SessionMetric] = []
         for session in sessions where session.enrichmentAvailable {
-            if let existing = byID[session.id] {
-                byID[session.id] = Self.combine(existing, session, enrichmentAvailable: true)
-            } else {
-                byID[session.id] = session
-            }
-            if let value = byID[session.id] { changed.append(value) }
+            let existing = byID[session.id]
+            let combined = existing.map {
+                Self.combine($0, session, enrichmentAvailable: true)
+            } ?? session
+            byID[session.id] = combined
+            if combined != existing { changed.append(combined) }
         }
+        let mergedPricing = current.pricing.merging(pricing).merging(.bundled)
         archive = HistoricalArchive(
             sessions: byID.values.sorted { $0.updatedAt > $1.updatedAt },
-            pricing: current.pricing.merging(pricing).merging(.bundled)
+            pricing: mergedPricing
         )
-        try persist(changedSessions: changed)
+        try persist(
+            changedSessions: changed,
+            pricingChanged: mergedPricing != current.pricing
+        )
         return byID.count
     }
 
@@ -493,18 +515,22 @@ public actor HistoricalStore {
         var byID = Dictionary(uniqueKeysWithValues: current.sessions.map { ($0.id, $0) })
         var changed: [SessionMetric] = []
         for session in imported.sessions {
-            if let existing = byID[session.id] {
-                byID[session.id] = Self.combine(existing, session, enrichmentAvailable: true)
-            } else {
-                byID[session.id] = session
-            }
-            if let value = byID[session.id] { changed.append(value) }
+            let existing = byID[session.id]
+            let combined = existing.map {
+                Self.combine($0, session, enrichmentAvailable: true)
+            } ?? session
+            byID[session.id] = combined
+            if combined != existing { changed.append(combined) }
         }
+        let mergedPricing = current.pricing.merging(imported.pricing).merging(.bundled)
         archive = HistoricalArchive(
             sessions: byID.values.sorted { $0.updatedAt > $1.updatedAt },
-            pricing: current.pricing.merging(imported.pricing).merging(.bundled)
+            pricing: mergedPricing
         )
-        try persist(changedSessions: changed)
+        try persist(
+            changedSessions: changed,
+            pricingChanged: mergedPricing != current.pricing
+        )
         return imported.sessions.count
     }
 
@@ -512,6 +538,36 @@ public actor HistoricalStore {
 
     public func sessions(withIDs ids: Set<String>) throws -> [SessionMetric] {
         try load().sessions.filter { ids.contains($0.id) }
+    }
+
+    public func subscriptionSnapshot() throws -> SubscriptionSnapshot? {
+        if didLoadSubscription { return subscriptionCache }
+        subscriptionCache = try database?.subscription()
+        didLoadSubscription = true
+        return subscriptionCache
+    }
+
+    public func recordSubscription(_ snapshot: SubscriptionSnapshot) throws {
+        let existing = try subscriptionSnapshot()
+        if let existing, existing.observedAt > snapshot.observedAt || existing == snapshot { return }
+        if let database { try database.storeSubscription(snapshot) }
+        subscriptionCache = snapshot
+        didLoadSubscription = true
+    }
+
+    public func sourceEventID(for codexHome: URL) throws -> UInt64? {
+        try database?.sourceEventID(for: sourceEventKey(codexHome))
+    }
+
+    public func recordSourceEventID(_ eventID: UInt64, for codexHome: URL) throws {
+        let key = sourceEventKey(codexHome)
+        let existing = try database?.sourceEventID(for: key)
+        guard existing.map({ $0 < eventID }) ?? true else { return }
+        if let database { try database.storeSourceEventID(eventID, for: key) }
+    }
+
+    private func sourceEventKey(_ codexHome: URL) -> String {
+        "source_event_id:\(codexHome.standardizedFileURL.path)"
     }
 
     /// Returns a durable incremental index. Only new or advanced sessions are rebuilt;
@@ -581,9 +637,11 @@ public actor HistoricalStore {
 
     public func recordPricing(_ pricing: PricingHistory) throws {
         let current = try load()
+        let merged = current.pricing.merging(pricing).merging(.bundled)
+        guard merged != current.pricing else { return }
         archive = HistoricalArchive(
             sessions: current.sessions,
-            pricing: current.pricing.merging(pricing).merging(.bundled)
+            pricing: merged
         )
         if let database {
             try database.storePricing(archive!.pricing)
@@ -634,11 +692,11 @@ public actor HistoricalStore {
         return decoded
     }
 
-    private func persist(changedSessions: [SessionMetric]) throws {
+    private func persist(changedSessions: [SessionMetric], pricingChanged: Bool) throws {
         guard let archive else { return }
         if let database {
             try database.upsertHistoricalSessions(changedSessions)
-            try database.storePricing(archive.pricing)
+            if pricingChanged { try database.storePricing(archive.pricing) }
             return
         }
         try persistJSON()
@@ -711,6 +769,9 @@ public actor HistoricalStore {
             skillCallEvents: skillCallEvents,
             userMessages: max(older.userMessages, newer.userMessages),
             abortedTurns: max(older.abortedTurns, newer.abortedTurns),
+            subscription: [older.subscription, newer.subscription]
+                .compactMap { $0 }
+                .max { $0.observedAt < $1.observedAt },
             enrichmentAvailable: enrichmentAvailable
         )
     }

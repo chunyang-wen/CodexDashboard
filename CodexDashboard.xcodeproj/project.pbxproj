@@ -17,11 +17,13 @@
 		A10000000000000000000008 /* DynamicPricing.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000008 /* DynamicPricing.swift */; };
 		A10000000000000000000009 /* Conversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000009 /* Conversation.swift */; };
 		A1000000000000000000000A /* MetricsIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000A /* MetricsIndex.swift */; };
+		A1000000000000000000000B /* CodexSourcePaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000B /* CodexSourcePaths.swift */; };
 		A20000000000000000000001 /* CodexDashboardApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* CodexDashboardApp.swift */; };
 		A20000000000000000000002 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* Components.swift */; };
 		A20000000000000000000003 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* ContentView.swift */; };
 		A20000000000000000000004 /* DashboardStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* DashboardStore.swift */; };
 		A20000000000000000000005 /* ConversationInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* ConversationInspectorView.swift */; };
+		A20000000000000000000006 /* CodexSourceWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* CodexSourceWatcher.swift */; };
 		A30000000000000000000001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000001 /* main.swift */; };
 		A40000000000000000000001 /* AnalyticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40000000000000000000001 /* AnalyticsTests.swift */; };
 		A50000000000000000000001 /* CodexMetricsCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* CodexMetricsCore.framework */; };
@@ -80,11 +82,13 @@
 		B10000000000000000000008 /* DynamicPricing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DynamicPricing.swift; sourceTree = "<group>"; };
 		B10000000000000000000009 /* Conversation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Conversation.swift; sourceTree = "<group>"; };
 		B1000000000000000000000A /* MetricsIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricsIndex.swift; sourceTree = "<group>"; };
+		B1000000000000000000000B /* CodexSourcePaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSourcePaths.swift; sourceTree = "<group>"; };
 		B20000000000000000000001 /* CodexDashboardApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexDashboardApp.swift; sourceTree = "<group>"; };
 		B20000000000000000000002 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
 		B20000000000000000000003 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B20000000000000000000004 /* DashboardStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardStore.swift; sourceTree = "<group>"; };
 		B20000000000000000000005 /* ConversationInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationInspectorView.swift; sourceTree = "<group>"; };
+		B20000000000000000000006 /* CodexSourceWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSourceWatcher.swift; sourceTree = "<group>"; };
 		B30000000000000000000001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		B40000000000000000000001 /* AnalyticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalyticsTests.swift; sourceTree = "<group>"; };
 		B50000000000000000000001 /* CodexMetricsCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = CodexMetricsCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -167,6 +171,7 @@
 				B10000000000000000000008 /* DynamicPricing.swift */,
 				B10000000000000000000009 /* Conversation.swift */,
 				B1000000000000000000000A /* MetricsIndex.swift */,
+				B1000000000000000000000B /* CodexSourcePaths.swift */,
 			);
 			path = CodexMetricsCore;
 			sourceTree = "<group>";
@@ -179,6 +184,7 @@
 				B20000000000000000000003 /* ContentView.swift */,
 				B20000000000000000000004 /* DashboardStore.swift */,
 				B20000000000000000000005 /* ConversationInspectorView.swift */,
+				B20000000000000000000006 /* CodexSourceWatcher.swift */,
 				B60000000000000000000004 /* Assets.xcassets */,
 			);
 			path = CodexDashboard;
@@ -365,6 +371,7 @@
 				A10000000000000000000008 /* DynamicPricing.swift in Sources */,
 				A10000000000000000000009 /* Conversation.swift in Sources */,
 				A1000000000000000000000A /* MetricsIndex.swift in Sources */,
+				A1000000000000000000000B /* CodexSourcePaths.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -377,6 +384,7 @@
 				A20000000000000000000003 /* ContentView.swift in Sources */,
 				A20000000000000000000004 /* DashboardStore.swift in Sources */,
 				A20000000000000000000005 /* ConversationInspectorView.swift in Sources */,
+				A20000000000000000000006 /* CodexSourceWatcher.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -200,6 +200,7 @@ public final class CodexStore: @unchecked Sendable {
                 skillCallEvents: details.skillCallEvents,
                 userMessages: details.userMessages,
                 abortedTurns: details.abortedTurns,
+                subscription: details.subscription,
                 enrichmentAvailable: true
             )
             enriched.append(enrichedSession)

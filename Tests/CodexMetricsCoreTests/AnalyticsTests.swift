@@ -330,6 +330,44 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertNil(snapshot.prices["bad"])
     }
 
+    func testDynamicPricingMigratesLegacyCatalogAndReusesMemorySnapshot() async throws {
+        struct PricingState: Codable {
+            let lastSuccess: Date?
+            let etag: String?
+            let lastModified: String?
+        }
+
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let cacheDirectory = home.appendingPathComponent("Library/Caches/CodexDashboard", isDirectory: true)
+        try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let fetchedAt = Date(timeIntervalSince1970: 1_786_800_000)
+        let legacy = Data((#"{"openai":{"models":{"gpt-test":{"id":"gpt-test","cost":{"input":2,"output":12,"cache_read":0.2}}}},"padding":""#
+            + String(repeating: "x", count: 20_000)
+            + #""}"#).utf8)
+        let cacheURL = cacheDirectory.appendingPathComponent("models-dev-pricing.json")
+        let stateURL = cacheDirectory.appendingPathComponent("models-dev-pricing-state.json")
+        try legacy.write(to: cacheURL)
+        try JSONEncoder().encode(PricingState(lastSuccess: fetchedAt, etag: nil, lastModified: nil)).write(to: stateURL)
+
+        let loader = DynamicPricingLoader(userHome: home)
+        let first = try await loader.refresh(now: fetchedAt.addingTimeInterval(60))
+        XCTAssertEqual(first.prices["gpt-test"]?.inputPerMillion, 2)
+        XCTAssertTrue(first.fromCache)
+
+        let compact = try Data(contentsOf: cacheURL)
+        XCTAssertLessThan(compact.count, legacy.count / 10)
+        let compactRoot = try XCTUnwrap(JSONSerialization.jsonObject(with: compact) as? [String: Any])
+        XCTAssertNotNil(compactRoot["prices"])
+        XCTAssertNil(compactRoot["openai"])
+
+        // Removing the file proves a repeated refresh is served from actor memory.
+        try FileManager.default.removeItem(at: cacheURL)
+        let second = try await loader.refresh(now: fetchedAt.addingTimeInterval(120))
+        XCTAssertEqual(second.prices, first.prices)
+    }
+
     func testDynamicScheduleDoesNotRewriteEarlierCosts() {
         let futureDate = Date(timeIntervalSince1970: 1_800_000_000)
         var futurePrices = PricingRegistry.current.prices
@@ -748,6 +786,146 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(snapshot?.windows.map(\.usedPercent), [15, 33])
         XCTAssertEqual(snapshot?.credits?.balance, "12.5")
         XCTAssertEqual(try XCTUnwrap(snapshot).observedAt.timeIntervalSince1970, 1_786_854_937.995, accuracy: 0.001)
+    }
+
+    func testRolloutParserPersistsQuotaSnapshotWithEnrichment() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let line = #"{"timestamp":"2026-08-16T04:35:37.995Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":10,"total_tokens":110}},"rate_limits":{"limit_id":"codex","secondary":{"used_percent":33,"window_minutes":10080,"resets_at":1783653502},"plan_type":"plus"}}}"#
+        try Data((line + "\n").utf8).write(to: file)
+
+        let enrichment = RolloutParser.parse(path: file.path)
+
+        XCTAssertEqual(enrichment.subscription?.displayPlan, "Plus")
+        XCTAssertEqual(enrichment.subscription?.windows.first?.usedPercent, 33)
+        XCTAssertEqual(try XCTUnwrap(enrichment.subscription).observedAt.timeIntervalSince1970, 1_786_854_937.995, accuracy: 0.001)
+    }
+
+    func testCachedSubscriptionLookupDoesNotRequireRolloutFiles() {
+        let older = SubscriptionSnapshot(
+            planType: "plus", limitID: "codex", limitName: nil, windows: [], credits: nil,
+            rateLimitReachedType: nil, observedAt: Date(timeIntervalSince1970: 100)
+        )
+        let newer = SubscriptionSnapshot(
+            planType: "pro", limitID: "codex", limitName: nil, windows: [], credits: nil,
+            rateLimitReachedType: nil, observedAt: Date(timeIntervalSince1970: 200)
+        )
+        func session(id: String, subscription: SubscriptionSnapshot?) -> SessionMetric {
+            SessionMetric(
+                id: id, rolloutPath: "/path/that/does/not/exist", projectPath: "/tmp/project", title: "",
+                source: "app", provider: "openai", createdAt: .distantPast, updatedAt: .now,
+                model: nil, reasoningEffort: nil, gitBranch: nil, cliVersion: nil, archived: false,
+                usage: .zero, subscription: subscription, enrichmentAvailable: true
+            )
+        }
+
+        let snapshot = SubscriptionReader.latestCached(from: [
+            session(id: "older", subscription: older),
+            session(id: "none", subscription: nil),
+            session(id: "newer", subscription: newer)
+        ])
+
+        XCTAssertEqual(snapshot?.planType, "pro")
+        XCTAssertEqual(snapshot?.observedAt, newer.observedAt)
+    }
+
+    func testSessionMetricDecodesArchiveWrittenBeforeCachedSubscription() throws {
+        let session = SessionMetric(
+            id: "legacy", rolloutPath: "/tmp/legacy.jsonl", projectPath: "/tmp/project", title: "",
+            source: "app", provider: "openai", createdAt: .distantPast, updatedAt: .now,
+            model: nil, reasoningEffort: nil, gitBranch: nil, cliVersion: nil, archived: false,
+            usage: .zero, enrichmentAvailable: true
+        )
+        let encoded = try JSONEncoder().encode(session)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "subscription")
+
+        let decoded = try JSONDecoder().decode(
+            SessionMetric.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        XCTAssertNil(decoded.subscription)
+        XCTAssertEqual(decoded.id, session.id)
+    }
+
+    func testHistoricalStoreDoesNotRewriteIdenticalSession() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = HistoricalStore(userHome: home)
+        let session = SessionMetric(
+            id: "stable", rolloutPath: "/tmp/stable.jsonl", projectPath: "/tmp/project", title: "Stable",
+            source: "app", provider: "openai", createdAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 200), model: "gpt-test", reasoningEffort: nil,
+            gitBranch: nil, cliVersion: nil, archived: false, usage: TokenUsage(total: 10),
+            enrichmentAvailable: true
+        )
+
+        let firstCount = try await store.record([session])
+        XCTAssertEqual(firstCount, 1)
+        let databaseURL = home.appendingPathComponent("Library/Application Support/CodexDashboard/metrics-v1.sqlite")
+        let walURL = URL(fileURLWithPath: databaseURL.path + "-wal")
+        let databaseBefore = try Data(contentsOf: databaseURL)
+        let walBefore = try Data(contentsOf: walURL)
+
+        let secondCount = try await store.record([session])
+        XCTAssertEqual(secondCount, 1)
+
+        XCTAssertEqual(try Data(contentsOf: databaseURL), databaseBefore)
+        XCTAssertEqual(try Data(contentsOf: walURL), walBefore)
+    }
+
+    func testHistoricalStorePersistsNewestSubscriptionWithoutRegressing() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let older = SubscriptionSnapshot(
+            planType: "plus", limitID: "codex", limitName: nil, windows: [], credits: nil,
+            rateLimitReachedType: nil, observedAt: Date(timeIntervalSince1970: 100)
+        )
+        let newer = SubscriptionSnapshot(
+            planType: "pro", limitID: "codex", limitName: nil, windows: [], credits: nil,
+            rateLimitReachedType: nil, observedAt: Date(timeIntervalSince1970: 200)
+        )
+        let writer = HistoricalStore(userHome: home)
+        try await writer.recordSubscription(newer)
+        try await writer.recordSubscription(older)
+
+        let reader = HistoricalStore(userHome: home)
+        let persisted = try await reader.subscriptionSnapshot()
+
+        XCTAssertEqual(persisted, newer)
+    }
+
+    func testCodexSourcePathClassifierRecognizesOnlyRolloutsAndIndexFiles() {
+        let home = URL(fileURLWithPath: "/tmp/custom-codex", isDirectory: true)
+        let classifier = CodexSourcePathClassifier(codexHome: home)
+        let rollout = "/tmp/custom-codex/sessions/2026/08/21/rollout-test.jsonl"
+
+        XCTAssertEqual(classifier.classify(rollout), .rollout(rollout))
+        XCTAssertEqual(classifier.classify("/tmp/custom-codex/state_5.sqlite"), .index)
+        XCTAssertEqual(classifier.classify("/tmp/custom-codex/state_5.sqlite-wal"), .index)
+        XCTAssertEqual(classifier.classify("/tmp/custom-codex/sqlite/state_5.sqlite-journal"), .index)
+        XCTAssertEqual(classifier.classify("/tmp/custom-codex/generated_images/image.png"), .irrelevant)
+        XCTAssertEqual(classifier.classify("/tmp/custom-codex/sessions/2026/08/21/note.txt"), .irrelevant)
+        XCTAssertEqual(classifier.classify("/tmp/custom-codex-other/sessions/rollout.jsonl"), .irrelevant)
+    }
+
+    func testHistoricalStoreKeepsIndependentMonotonicEventCursorsPerCodexHome() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let firstCodexHome = home.appendingPathComponent("first", isDirectory: true)
+        let secondCodexHome = home.appendingPathComponent("second", isDirectory: true)
+        let writer = HistoricalStore(userHome: home)
+
+        try await writer.recordSourceEventID(200, for: firstCodexHome)
+        try await writer.recordSourceEventID(100, for: firstCodexHome)
+        try await writer.recordSourceEventID(300, for: secondCodexHome)
+
+        let reader = HistoricalStore(userHome: home)
+        let first = try await reader.sourceEventID(for: firstCodexHome)
+        let second = try await reader.sourceEventID(for: secondCodexHome)
+        XCTAssertEqual(first, 200)
+        XCTAssertEqual(second, 300)
     }
 
     func testSubscriptionReaderChoosesNewestSnapshotAcrossRecentSessions() throws {

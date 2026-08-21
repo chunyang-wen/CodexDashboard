@@ -86,7 +86,7 @@ Parsed metrics, session metadata, effective-dated price schedules, and byte chec
 
 The only routine network request is an anonymous pricing-catalog download from `https://models.dev/api.json`. It contains no local metrics or identifiers. A validated response is cached locally; bundled prices remain available offline.
 
-While the app is open, a low-priority task checks the Codex index and known rollout files for changes. It pauses in Low Power Mode or under serious thermal pressure, backs off after failures, and stops when the app quits. Append-only logs resume from the last complete newline instead of being scanned again from the beginning.
+While the app is open, one recursive macOS FSEvents subscription reports changes under the Codex data directory; the app does not periodically poll every known rollout. Events are coalesced using the configured refresh interval, and the durable filesystem-journal cursor lets normal reopening resume without an inventory sweep. An all-session reconciliation is reserved for first-time watcher migration or when macOS reports dropped or expired journal events. Refresh pauses in Low Power Mode or under serious thermal pressure, retries unacknowledged changes with backoff, and stops when the app quits. Append-only logs resume from the last complete newline instead of being scanned again from the beginning. Quota snapshots are extracted during that same incremental pass and cached, avoiding a second scan of recent rollout tails.
 
 ## Run from source
 

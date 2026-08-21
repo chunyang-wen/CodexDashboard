@@ -132,6 +132,9 @@ public struct SessionMetric: Identifiable, Codable, Hashable, Sendable {
     public let skillCallEvents: [SkillCallEvent]?
     public let userMessages: Int
     public let abortedTurns: Int
+    /// Most recent quota snapshot observed while incrementally parsing this rollout.
+    /// Optional so existing archives and parser checkpoints remain decodable.
+    public let subscription: SubscriptionSnapshot?
     public let enrichmentAvailable: Bool
 
     public init(
@@ -157,6 +160,7 @@ public struct SessionMetric: Identifiable, Codable, Hashable, Sendable {
         skillCallEvents: [SkillCallEvent]? = [],
         userMessages: Int = 0,
         abortedTurns: Int = 0,
+        subscription: SubscriptionSnapshot? = nil,
         enrichmentAvailable: Bool = false
     ) {
         self.id = id
@@ -181,6 +185,7 @@ public struct SessionMetric: Identifiable, Codable, Hashable, Sendable {
         self.skillCallEvents = skillCallEvents
         self.userMessages = userMessages
         self.abortedTurns = abortedTurns
+        self.subscription = subscription
         self.enrichmentAvailable = enrichmentAvailable
     }
 
