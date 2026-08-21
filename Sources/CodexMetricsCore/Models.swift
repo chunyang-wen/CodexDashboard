@@ -201,16 +201,138 @@ public struct SessionMetric: Identifiable, Codable, Hashable, Sendable {
         let values = turns.compactMap(\.timeToFirstToken)
         return values.isEmpty ? nil : values.reduce(0, +) / Double(values.count)
     }
+
+    public var summary: SessionSummary { SessionSummary(session: self) }
+}
+
+public struct SessionSummary: Identifiable, Codable, Hashable, Sendable {
+    public let id: String
+    public let rolloutPath: String
+    public let projectPath: String
+    public let title: String
+    public let source: String
+    public let originator: String?
+    public let provider: String
+    public let createdAt: Date
+    public let updatedAt: Date
+    public let model: String?
+    public let reasoningEffort: String?
+    public let gitBranch: String?
+    public let cliVersion: String?
+    public let archived: Bool
+    public let usage: TokenUsage
+    public let toolCalls: Int
+    public let skillCalls: Int
+    public let userMessages: Int
+    public let completedTurns: Int
+    public let abortedTurns: Int
+    public let activeRuntime: TimeInterval
+    public let averageTTFT: TimeInterval?
+    public let subscription: SubscriptionSnapshot?
+    public let enrichmentAvailable: Bool
+
+    public init(
+        id: String,
+        rolloutPath: String,
+        projectPath: String,
+        title: String,
+        source: String,
+        originator: String? = nil,
+        provider: String,
+        createdAt: Date,
+        updatedAt: Date,
+        model: String?,
+        reasoningEffort: String? = nil,
+        gitBranch: String? = nil,
+        cliVersion: String? = nil,
+        archived: Bool = false,
+        usage: TokenUsage,
+        toolCalls: Int = 0,
+        skillCalls: Int = 0,
+        userMessages: Int = 0,
+        completedTurns: Int = 0,
+        abortedTurns: Int = 0,
+        activeRuntime: TimeInterval = 0,
+        averageTTFT: TimeInterval? = nil,
+        subscription: SubscriptionSnapshot? = nil,
+        enrichmentAvailable: Bool = false
+    ) {
+        self.id = id
+        self.rolloutPath = rolloutPath
+        self.projectPath = projectPath
+        self.title = title
+        self.source = source
+        self.originator = originator
+        self.provider = provider
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.model = model
+        self.reasoningEffort = reasoningEffort
+        self.gitBranch = gitBranch
+        self.cliVersion = cliVersion
+        self.archived = archived
+        self.usage = usage
+        self.toolCalls = toolCalls
+        self.skillCalls = skillCalls
+        self.userMessages = userMessages
+        self.completedTurns = completedTurns
+        self.abortedTurns = abortedTurns
+        self.activeRuntime = activeRuntime
+        self.averageTTFT = averageTTFT
+        self.subscription = subscription
+        self.enrichmentAvailable = enrichmentAvailable
+    }
+
+    public init(session: SessionMetric) {
+        self.init(
+            id: session.id,
+            rolloutPath: session.rolloutPath,
+            projectPath: session.projectPath,
+            title: session.title,
+            source: session.source,
+            originator: session.originator,
+            provider: session.provider,
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt,
+            model: session.model,
+            reasoningEffort: session.reasoningEffort,
+            gitBranch: session.gitBranch,
+            cliVersion: session.cliVersion,
+            archived: session.archived,
+            usage: session.usage,
+            toolCalls: session.toolCalls,
+            skillCalls: session.skillCallEvents?.count ?? 0,
+            userMessages: session.userMessages,
+            completedTurns: session.completedTurns,
+            abortedTurns: session.abortedTurns,
+            activeRuntime: session.activeRuntime,
+            averageTTFT: session.averageTTFT,
+            subscription: session.subscription,
+            enrichmentAvailable: session.enrichmentAvailable
+        )
+    }
+
+    public var projectName: String {
+        URL(fileURLWithPath: projectPath).lastPathComponent.isEmpty ? projectPath : URL(fileURLWithPath: projectPath).lastPathComponent
+    }
+    public var displayTitle: String { title.isEmpty ? "Untitled session" : title }
+    public var displaySource: String { originator ?? source }
+    public var sessionSpan: TimeInterval { max(0, updatedAt.timeIntervalSince(createdAt)) }
 }
 
 public struct ProjectMetric: Identifiable, Hashable, Sendable {
     public var id: String { path }
     public let path: String
-    public let sessions: [SessionMetric]
+    public let sessions: [SessionSummary]
 
-    public init(path: String, sessions: [SessionMetric]) {
+    public init(path: String, sessions: [SessionSummary]) {
         self.path = path
         self.sessions = sessions
+    }
+
+    public init(path: String, fullSessions: [SessionMetric]) {
+        self.path = path
+        self.sessions = fullSessions.map(\.summary)
     }
 
     public var name: String { URL(fileURLWithPath: path).lastPathComponent }
@@ -231,6 +353,20 @@ public struct PeriodMetric: Identifiable, Codable, Hashable, Sendable {
     public let sessions: Int
     public let activeRuntime: TimeInterval
     public let estimatedCost: Decimal
+
+    public init(
+        start: Date,
+        usage: TokenUsage,
+        sessions: Int,
+        activeRuntime: TimeInterval,
+        estimatedCost: Decimal
+    ) {
+        self.start = start
+        self.usage = usage
+        self.sessions = sessions
+        self.activeRuntime = activeRuntime
+        self.estimatedCost = estimatedCost
+    }
 }
 
 public struct ModelMetric: Identifiable, Codable, Hashable, Sendable {

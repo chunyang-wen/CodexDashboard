@@ -10,23 +10,34 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        AppActivationPolicy.bringWindowToFront(identifier: .dashboard)
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(windowWillClose(_:)),
             name: NSWindow.willCloseNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidBecomeKey(_:)),
+            name: NSWindow.didBecomeKeyNotification,
+            object: nil
+        )
     }
 
     @objc private func windowWillClose(_ notification: Notification) {
-        guard
-            let window = notification.object as? NSWindow,
-            let identifier = window.identifier,
-            AppActivationPolicy.managedWindowIdentifiers.contains(identifier)
-        else { return }
-
         DispatchQueue.main.async {
             AppActivationPolicy.hideDockIconIfNoManagedWindowIsVisible()
+            AppActivationPolicy.releaseDashboardMemoryIfHidden()
+        }
+    }
+
+    @objc private func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        if window.identifier == .dashboard || window.title == "Codex Dashboard" {
+            AppActivationPolicy.dashboardStore?.activateDashboard()
         }
     }
 }
@@ -34,15 +45,23 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 private enum AppActivationPolicy {
     static let managedWindowIdentifiers: Set<NSUserInterfaceItemIdentifier> = [.dashboard, .conversation, .settings]
+    static weak var dashboardStore: DashboardStore?
+
+    static func configure(store: DashboardStore) {
+        dashboardStore = store
+    }
 
     static func showDockIcon() {
-        NSApp.setActivationPolicy(.regular)
+        if NSApp.activationPolicy() != .regular {
+            NSApp.setActivationPolicy(.regular)
+        }
     }
 
     static func dismissMenuBarExtra() {
         guard
             let window = NSApp.keyWindow,
-            window.identifier.map({ !managedWindowIdentifiers.contains($0) }) ?? true
+            window.identifier.map({ !managedWindowIdentifiers.contains($0) }) ?? true,
+            window.title != "Codex Dashboard"
         else { return }
 
         window.orderOut(nil)
@@ -51,17 +70,28 @@ private enum AppActivationPolicy {
     static func bringWindowToFront(
         identifier: NSUserInterfaceItemIdentifier
     ) {
-        // Let the menu-bar popover resign key status before promoting the app window.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            bringWindowToFront(identifier: identifier, attemptsRemaining: 8)
-        }
+        showDockIcon()
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
+        NSApp.activate(ignoringOtherApps: true)
+        bringWindowToFront(identifier: identifier, attemptsRemaining: 20)
     }
 
     private static func bringWindowToFront(
         identifier: NSUserInterfaceItemIdentifier,
         attemptsRemaining: Int
     ) {
-        guard let window = NSApp.windows.first(where: { $0.identifier == identifier }) else {
+        showDockIcon()
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
+        NSApp.activate(ignoringOtherApps: true)
+
+        let targetWindow = NSApp.windows.first { window in
+            if window.identifier == identifier { return true }
+            if identifier == .dashboard && window.title == "Codex Dashboard" { return true }
+            if identifier == .settings && window.title.contains("Settings") { return true }
+            return false
+        }
+
+        guard let window = targetWindow else {
             guard attemptsRemaining > 0 else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 bringWindowToFront(identifier: identifier, attemptsRemaining: attemptsRemaining - 1)
@@ -69,14 +99,15 @@ private enum AppActivationPolicy {
             return
         }
 
-        showDockIcon()
+        window.identifier = identifier
         NSApp.unhide(nil)
-        NSApp.activate(ignoringOtherApps: true)
         if window.isMiniaturized {
-            window.deminiaturize(nil)
+            window.deminiaturize(nil as Any?)
         }
-        window.makeKeyAndOrderFront(nil)
+        window.makeKeyAndOrderFront(nil as Any?)
         window.orderFrontRegardless()
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     static func hideDockIconIfNoManagedWindowIsVisible() {
@@ -86,11 +117,23 @@ private enum AppActivationPolicy {
         }
 
         let hasVisibleManagedWindow = NSApp.windows.contains { window in
-            guard let identifier = window.identifier else { return false }
-            return window.isVisible && managedWindowIdentifiers.contains(identifier)
+            let isManaged = (window.identifier.map { managedWindowIdentifiers.contains($0) } ?? false)
+                || window.title == "Codex Dashboard"
+                || window.title.contains("Settings")
+            return isManaged && window.isVisible
         }
         if !hasVisibleManagedWindow {
             NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    static func releaseDashboardMemoryIfHidden() {
+        let dashboardIsVisible = NSApp.windows.contains { window in
+            let isDashboard = window.identifier == .dashboard || window.title == "Codex Dashboard"
+            return isDashboard && window.isVisible
+        }
+        if !dashboardIsVisible {
+            dashboardStore?.releaseDashboardMemory()
         }
     }
 
@@ -108,6 +151,21 @@ private struct AppWindowIdentifier: NSViewRepresentable {
     }
 
     func updateNSView(_ view: NSView, context: Context) {}
+}
+
+/// Removes the dashboard's SwiftUI/Charts render tree while its window is closed.
+/// Keeping an invisible hosting tree alive costs considerably more than the small
+/// menu-bar interface, even after its data model has been emptied.
+private struct DashboardWindowRoot: View {
+    @EnvironmentObject private var store: DashboardStore
+
+    @ViewBuilder var body: some View {
+        if store.dashboardDataIsResident {
+            ContentView()
+        } else {
+            Color.clear
+        }
+    }
 }
 
 private final class WindowIdentifyingNSView: NSView {
@@ -156,22 +214,29 @@ private enum MenuBarQuotaIconStyle: String, CaseIterable, Identifiable {
 }
 
 @main
-struct CodexDashboardApp: App {
+private struct CodexDashboardApplication: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var store = DashboardStore()
+    @StateObject private var store: DashboardStore
     @AppStorage("showMenuBarIcon") private var showMenuBarIcon = true
     @AppStorage("menuBarQuotaIconStyle") private var menuBarQuotaIconStyle = MenuBarQuotaIconStyle.rings.rawValue
     @AppStorage("showQuotaAlertMarker") private var showQuotaAlertMarker = false
     // Keep the original defaults key so existing marker values retain their meaning after this correction.
     @AppStorage("quotaAlertUsedPercent") private var quotaAlertRemainingPercent = 80.0
 
+    init() {
+        let store = DashboardStore()
+        _store = StateObject(wrappedValue: store)
+        AppActivationPolicy.configure(store: store)
+        store.loadMenuBar()
+    }
+
     var body: some Scene {
         Window("Codex Dashboard", id: "dashboard") {
-            ContentView()
+            DashboardWindowRoot()
                 .environmentObject(store)
                 .frame(minWidth: 1060, minHeight: 700)
                 .background(AppWindowIdentifier(identifier: .dashboard))
-                .task { store.load() }
+                .task { store.activateDashboard() }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 820)
@@ -179,6 +244,12 @@ struct CodexDashboardApp: App {
             CommandGroup(after: .newItem) {
                 Button("Refresh Metrics") { store.load() }
                     .keyboardShortcut("r", modifiers: .command)
+            }
+            CommandGroup(replacing: .appTermination) {
+                Button("Quit Codex Dashboard") {
+                    NSApp.terminate(nil)
+                }
+                .keyboardShortcut("q", modifiers: .command)
             }
         }
 
@@ -194,7 +265,7 @@ struct CodexDashboardApp: App {
         .defaultSize(width: 980, height: 760)
         .windowResizability(.contentMinSize)
 
-        MenuBarExtra(isInserted: $showMenuBarIcon) {
+        MenuBarExtra(isInserted: menuBarExtraIsInserted) {
             MenuBarDashboardView()
                 .environmentObject(store)
         } label: {
@@ -204,6 +275,7 @@ struct CodexDashboardApp: App {
                 alertRemainingPercent: showQuotaAlertMarker ? quotaAlertRemainingPercent : nil
             )
             .equatable()
+            .background(InitialDashboardOpener())
         }
         .menuBarExtraStyle(.window)
 
@@ -215,6 +287,13 @@ struct CodexDashboardApp: App {
         .defaultSize(width: 520, height: 420)
     }
 
+    private var menuBarExtraIsInserted: Binding<Bool> {
+        Binding(
+            get: { showMenuBarIcon },
+            set: { showMenuBarIcon = $0 }
+        )
+    }
+
     private var menuBarQuotaWindows: [UsageQuotaWindow] {
         store.subscription?.windows.sorted { $0.windowMinutes < $1.windowMinutes } ?? []
     }
@@ -224,23 +303,60 @@ struct CodexDashboardApp: App {
     }
 }
 
-private struct MenuBarQuotaIcon: View, Equatable {
-    let windows: [UsageQuotaWindow]
-    let style: MenuBarQuotaIconStyle
-    var alertRemainingPercent: Double? = nil
+@MainActor
+private enum InitialDashboardPresentation {
+    static var wasRequested = false
+}
+
+/// A `Window` scene remembers that it was closed across debug launches. The
+/// menu-bar label is always instantiated, so use it to request the dashboard
+/// exactly once per process and preserve the app's launch contract.
+private struct InitialDashboardOpener: View {
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Image(nsImage: statusImage)
-            .renderingMode(alertRemainingPercent == nil ? .template : .original)
-            .interpolation(.none)
-            .frame(width: 18, height: 18)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Codex quota")
-            .accessibilityValue(accessibilityValue)
-            .help(accessibilityValue)
+        Color.clear
+            .frame(width: 0, height: 0)
+            .task {
+                guard !InitialDashboardPresentation.wasRequested else { return }
+                InitialDashboardPresentation.wasRequested = true
+                openWindow(id: "dashboard")
+                AppActivationPolicy.bringWindowToFront(identifier: .dashboard)
+            }
+    }
+}
+
+@MainActor
+private enum MenuBarQuotaIconRenderer {
+    struct Key: Hashable {
+        let windows: [UsageQuotaWindow]
+        let style: MenuBarQuotaIconStyle
+        let alertRemainingPercent: Double?
     }
 
-    private var statusImage: NSImage {
+    private static var cachedKey: Key?
+    private static var cachedImage: NSImage?
+
+    static func image(
+        windows: [UsageQuotaWindow],
+        style: MenuBarQuotaIconStyle,
+        alertRemainingPercent: Double?
+    ) -> NSImage {
+        let key = Key(windows: windows, style: style, alertRemainingPercent: alertRemainingPercent)
+        if let cachedImage, cachedKey == key {
+            return cachedImage
+        }
+        let rendered = render(windows: windows, style: style, alertRemainingPercent: alertRemainingPercent)
+        cachedKey = key
+        cachedImage = rendered
+        return rendered
+    }
+
+    private static func render(
+        windows: [UsageQuotaWindow],
+        style: MenuBarQuotaIconStyle,
+        alertRemainingPercent: Double?
+    ) -> NSImage {
         let size = NSSize(width: 18, height: 18)
         let image = NSImage(size: size)
         guard let representation = NSBitmapImageRep(
@@ -261,16 +377,22 @@ private struct MenuBarQuotaIcon: View, Equatable {
         representation.size = size
         image.addRepresentation(representation)
 
+        let primaryWindow = windows
+            .filter { $0.windowMinutes != 10_080 }
+            .min { $0.windowMinutes < $1.windowMinutes }
+        let weeklyWindow = windows.first(where: { $0.windowMinutes == 10_080 })
+        let iconInk: NSColor = alertRemainingPercent == nil ? .black : .labelColor
+
         NSGraphicsContext.saveGraphicsState()
         if let context = NSGraphicsContext(bitmapImageRep: representation) {
             NSGraphicsContext.current = context
             context.cgContext.setShouldAntialias(true)
             switch style {
-            case .rings: drawRings()
-            case .droplet: drawDroplet()
-            case .capsules: drawCapsules()
+            case .rings: drawRings(weeklyWindow: weeklyWindow, primaryWindow: primaryWindow, iconInk: iconInk)
+            case .droplet: drawDroplet(weeklyWindow: weeklyWindow, primaryWindow: primaryWindow, iconInk: iconInk)
+            case .capsules: drawCapsules(weeklyWindow: weeklyWindow, primaryWindow: primaryWindow, iconInk: iconInk)
             }
-            drawAlertMarker()
+            drawAlertMarker(style: style, alertRemainingPercent: alertRemainingPercent, weeklyWindow: weeklyWindow, primaryWindow: primaryWindow)
         }
         NSGraphicsContext.restoreGraphicsState()
 
@@ -278,22 +400,12 @@ private struct MenuBarQuotaIcon: View, Equatable {
         return image
     }
 
-    private var primaryWindow: UsageQuotaWindow? {
-        windows
-            .filter { $0.windowMinutes != 10_080 }
-            .min { $0.windowMinutes < $1.windowMinutes }
+    private static func drawRings(weeklyWindow: UsageQuotaWindow?, primaryWindow: UsageQuotaWindow?, iconInk: NSColor) {
+        drawRing(radius: 6.8, lineWidth: 2.4, window: weeklyWindow, iconInk: iconInk)
+        drawRing(radius: 3.2, lineWidth: 1.8, window: primaryWindow, iconInk: iconInk)
     }
 
-    private var weeklyWindow: UsageQuotaWindow? {
-        windows.first(where: { $0.windowMinutes == 10_080 })
-    }
-
-    private func drawRings() {
-        drawRing(radius: 6.8, lineWidth: 2.4, window: weeklyWindow)
-        drawRing(radius: 3.2, lineWidth: 1.8, window: primaryWindow)
-    }
-
-    private func drawRing(radius: CGFloat, lineWidth: CGFloat, window: UsageQuotaWindow?) {
+    private static func drawRing(radius: CGFloat, lineWidth: CGFloat, window: UsageQuotaWindow?, iconInk: NSColor) {
         let center = NSPoint(x: 9, y: 9)
         let rect = NSRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
         let track = NSBezierPath(ovalIn: rect)
@@ -321,14 +433,14 @@ private struct MenuBarQuotaIcon: View, Equatable {
         progress.stroke()
     }
 
-    private func drawDroplet() {
+    private static func drawDroplet(weeklyWindow: UsageQuotaWindow?, primaryWindow: UsageQuotaWindow?, iconInk: NSColor) {
         let left = dropletChamber(left: true)
         let right = dropletChamber(left: false)
-        drawLiquid(in: left, bounds: NSRect(x: 1.7, y: 2, width: 6.65, height: 14), window: weeklyWindow)
-        drawLiquid(in: right, bounds: NSRect(x: 9.65, y: 2, width: 6.65, height: 14), window: primaryWindow)
+        drawLiquid(in: left, bounds: NSRect(x: 1.7, y: 2, width: 6.65, height: 14), window: weeklyWindow, iconInk: iconInk)
+        drawLiquid(in: right, bounds: NSRect(x: 9.65, y: 2, width: 6.65, height: 14), window: primaryWindow, iconInk: iconInk)
     }
 
-    private func dropletChamber(left: Bool) -> NSBezierPath {
+    private static func dropletChamber(left: Bool) -> NSBezierPath {
         let path = NSBezierPath()
         if left {
             path.move(to: NSPoint(x: 8.35, y: 16))
@@ -343,7 +455,7 @@ private struct MenuBarQuotaIcon: View, Equatable {
         return path
     }
 
-    private func drawLiquid(in chamber: NSBezierPath, bounds: NSRect, window: UsageQuotaWindow?) {
+    private static func drawLiquid(in chamber: NSBezierPath, bounds: NSRect, window: UsageQuotaWindow?, iconInk: NSColor) {
         iconInk.withAlphaComponent(0.1).setFill()
         chamber.fill()
         if let fraction = remainingFraction(for: window), fraction > 0 {
@@ -358,12 +470,12 @@ private struct MenuBarQuotaIcon: View, Equatable {
         chamber.stroke()
     }
 
-    private func drawCapsules() {
-        drawCapsule(in: NSRect(x: 1.5, y: 9, width: 15, height: 6), window: weeklyWindow)
-        drawCapsule(in: NSRect(x: 1.5, y: 3, width: 15, height: 4), window: primaryWindow)
+    private static func drawCapsules(weeklyWindow: UsageQuotaWindow?, primaryWindow: UsageQuotaWindow?, iconInk: NSColor) {
+        drawCapsule(in: NSRect(x: 1.5, y: 9, width: 15, height: 6), window: weeklyWindow, iconInk: iconInk)
+        drawCapsule(in: NSRect(x: 1.5, y: 3, width: 15, height: 4), window: primaryWindow, iconInk: iconInk)
     }
 
-    private func drawCapsule(in rect: NSRect, window: UsageQuotaWindow?) {
+    private static func drawCapsule(in rect: NSRect, window: UsageQuotaWindow?, iconInk: NSColor) {
         let radius = rect.height / 2
         let track = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
         iconInk.withAlphaComponent(0.16).setFill()
@@ -385,12 +497,14 @@ private struct MenuBarQuotaIcon: View, Equatable {
         stroke.stroke()
     }
 
-    private var iconInk: NSColor {
-        alertRemainingPercent == nil ? .black : .labelColor
-    }
-
-    private func drawAlertMarker() {
-        guard let fraction = alertRemainingFraction else { return }
+    private static func drawAlertMarker(
+        style: MenuBarQuotaIconStyle,
+        alertRemainingPercent: Double?,
+        weeklyWindow: UsageQuotaWindow?,
+        primaryWindow: UsageQuotaWindow?
+    ) {
+        guard let alertRemainingPercent else { return }
+        let fraction = CGFloat(min(100, max(0, alertRemainingPercent)) / 100)
         switch style {
         case .rings:
             let angle = CGFloat.pi / 2 - 2 * .pi * fraction
@@ -419,7 +533,7 @@ private struct MenuBarQuotaIcon: View, Equatable {
         }
     }
 
-    private func drawAlertDot(at center: NSPoint, diameter: CGFloat) {
+    private static func drawAlertDot(at center: NSPoint, diameter: CGFloat) {
         let rect = NSRect(
             x: center.x - diameter / 2,
             y: center.y - diameter / 2,
@@ -430,7 +544,7 @@ private struct MenuBarQuotaIcon: View, Equatable {
         NSBezierPath(ovalIn: rect).fill()
     }
 
-    private func drawAlertBar(y: CGFloat, from startX: CGFloat, to endX: CGFloat, clippedTo clip: NSBezierPath) {
+    private static func drawAlertBar(y: CGFloat, from startX: CGFloat, to endX: CGFloat, clippedTo clip: NSBezierPath) {
         NSGraphicsContext.current?.cgContext.saveGState()
         clip.addClip()
         let bar = NSBezierPath()
@@ -443,12 +557,43 @@ private struct MenuBarQuotaIcon: View, Equatable {
         NSGraphicsContext.current?.cgContext.restoreGState()
     }
 
-    private func remainingFraction(for window: UsageQuotaWindow?) -> CGFloat? {
+    private static func remainingFraction(for window: UsageQuotaWindow?) -> CGFloat? {
         window.map { CGFloat(min(100, max(0, $0.remainingPercent)) / 100) }
     }
+}
 
-    private var alertRemainingFraction: CGFloat? {
-        alertRemainingPercent.map { CGFloat(min(100, max(0, $0)) / 100) }
+private struct MenuBarQuotaIcon: View, Equatable {
+    let windows: [UsageQuotaWindow]
+    let style: MenuBarQuotaIconStyle
+    var alertRemainingPercent: Double? = nil
+
+    var body: some View {
+        Image(nsImage: statusImage)
+            .renderingMode(alertRemainingPercent == nil ? .template : .original)
+            .interpolation(.none)
+            .frame(width: 18, height: 18)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Codex quota")
+            .accessibilityValue(accessibilityValue)
+            .help(accessibilityValue)
+    }
+
+    private var statusImage: NSImage {
+        MenuBarQuotaIconRenderer.image(
+            windows: windows,
+            style: style,
+            alertRemainingPercent: alertRemainingPercent
+        )
+    }
+
+    private var primaryWindow: UsageQuotaWindow? {
+        windows
+            .filter { $0.windowMinutes != 10_080 }
+            .min { $0.windowMinutes < $1.windowMinutes }
+    }
+
+    private var weeklyWindow: UsageQuotaWindow? {
+        windows.first(where: { $0.windowMinutes == 10_080 })
     }
 
     private var accessibilityValue: String {
@@ -497,7 +642,7 @@ private struct MenuBarDashboardView: View {
                         tint: .teal
                     ) {
                         AppActivationPolicy.dismissMenuBarExtra()
-                        AppActivationPolicy.showDockIcon()
+                        store.activateDashboard()
                         openWindow(id: "dashboard")
                         AppActivationPolicy.bringWindowToFront(identifier: .dashboard)
                     }
@@ -630,9 +775,9 @@ private struct MenuBarDashboardView: View {
             ?? DateInterval(start: calendar.startOfDay(for: now), duration: 86_400)
         let weekInterval = calendar.dateInterval(of: .weekOfYear, for: now) ?? todayInterval
         let monthInterval = calendar.dateInterval(of: .month, for: now) ?? todayInterval
-        let today = store.periodAggregate(in: todayInterval)
-        let week = store.periodAggregate(in: weekInterval)
-        let month = store.periodAggregate(in: monthInterval)
+        let today = store.menuBarAggregate(in: todayInterval)
+        let week = store.menuBarAggregate(in: weekInterval)
+        let month = store.menuBarAggregate(in: monthInterval)
 
         return MenuUsageTrendView(
             metric: $usageTrendMetric,
@@ -650,7 +795,7 @@ private struct MenuBarDashboardView: View {
     }
 
     private func monthUsageDays(in interval: DateInterval, calendar: Calendar) -> [MenuUsageDay] {
-        let dailyByStart = Dictionary(store.daily.map { (calendar.startOfDay(for: $0.start), $0) }) { _, latest in latest }
+        let dailyByStart = Dictionary(store.menuBarDaily.map { (calendar.startOfDay(for: $0.start), $0) }) { _, latest in latest }
         let dayCount = calendar.range(of: .day, in: .month, for: interval.start)?.count ?? 1
 
         return (0..<dayCount).compactMap { offset in
@@ -693,7 +838,7 @@ private struct MenuUsageSummary {
     let tools: Int
     let skills: Int
 
-    init(aggregate: MetricsIndexAggregate) {
+    init(aggregate: MenuBarUsageAggregate) {
         cost = aggregate.estimatedCost
         tokens = aggregate.usage.total
         tools = aggregate.toolCalls
@@ -1101,9 +1246,20 @@ private func quotaColor(for remainingPercent: Double) -> Color {
 private struct MenuBarAppIcon: View {
     let statusColor: Color?
 
+    @MainActor
+    private static let cachedAppIcon: NSImage = {
+        let original = NSApp.applicationIconImage ?? NSImage()
+        let size = NSSize(width: 32, height: 32)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        original.draw(in: NSRect(origin: .zero, size: size), from: .zero, operation: .sourceOver, fraction: 1.0)
+        image.unlockFocus()
+        return image
+    }()
+
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
-            Image(nsImage: NSApp.applicationIconImage)
+            Image(nsImage: Self.cachedAppIcon)
                 .resizable()
                 .interpolation(.high)
                 .frame(width: 32, height: 32)

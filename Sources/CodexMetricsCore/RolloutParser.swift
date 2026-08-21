@@ -64,14 +64,21 @@ final class RolloutCache {
         // the final session model and cannot price sessions that switched models.
         url = directory.appendingPathComponent("rollouts-v5.json")
         database = try? MetricsDatabase(userHome: home)
-        if let data = try? Data(contentsOf: url), let decoded = try? JSONDecoder().decode([String: CachedRollout].self, from: data) {
-            entries = decoded
+        if database == nil {
+            if let data = try? Data(contentsOf: url), let decoded = try? JSONDecoder().decode([String: CachedRollout].self, from: data) {
+                entries = decoded
+            } else {
+                entries = [:]
+            }
         } else {
             entries = [:]
-        }
-        if let database {
-            for (path, cached) in entries where database.rollout(for: path) == nil {
-                try? database.storeRollout(cached, for: path)
+            if FileManager.default.fileExists(atPath: url.path),
+               let data = try? Data(contentsOf: url),
+               let decoded = try? JSONDecoder().decode([String: CachedRollout].self, from: data) {
+                for (path, cached) in decoded where database?.rollout(for: path) == nil {
+                    try? database?.storeRollout(cached, for: path)
+                }
+                try? FileManager.default.removeItem(at: url)
             }
         }
     }
@@ -112,7 +119,7 @@ final class RolloutCache {
               let modified = attributes[.modificationDate] as? Date else { return }
         var versionedEnrichment = enrichment
         versionedEnrichment.parserVersion = CachedRollout.currentParserVersion
-        entries[path] = CachedRollout(
+        let cached = CachedRollout(
             fileSize: Int64(clamping: parsedBytes),
             modifiedAt: modified,
             enrichment: versionedEnrichment,
@@ -121,7 +128,11 @@ final class RolloutCache {
             boundaryHash: Self.boundaryHash(path: path, through: Int64(clamping: parsedBytes)),
             parserVersion: CachedRollout.currentParserVersion
         )
-        if let cached = entries[path] { try? database?.storeRollout(cached, for: path) }
+        if let database {
+            try? database.storeRollout(cached, for: path)
+        } else {
+            entries[path] = cached
+        }
     }
 
     func persist() {
@@ -422,34 +433,59 @@ enum RolloutParser {
     }
 
     private static func extractedString(named key: String, from data: Data.SubSequence) -> String? {
-        let bytes = Array(data)
-        let marker = Array("\"\(key)\":\"".utf8)
-        guard let start = bytes.indices.first(where: { index in
-            index + marker.count <= bytes.count && bytes[index..<(index + marker.count)].elementsEqual(marker)
-        }) else { return nil }
-        var index = start + marker.count
-        var value: [UInt8] = []
-        var escaped = false
-        while index < bytes.count {
-            let byte = bytes[index]
-            if escaped {
-                value.append(byte)
-                escaped = false
-            } else if byte == 0x5C {
-                escaped = true
-            } else if byte == 0x22 {
-                return String(bytes: value, encoding: .utf8)
-            } else {
-                value.append(byte)
+        data.withUnsafeBytes { (rawBuffer: UnsafeRawBufferPointer) -> String? in
+            guard let baseAddress = rawBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return nil }
+            let count = rawBuffer.count
+            let keyBytes = Array("\"\(key)\":\"".utf8)
+            let keyCount = keyBytes.count
+            guard count >= keyCount else { return nil }
+
+            var startOffset: Int?
+            for i in 0...(count - keyCount) {
+                var match = true
+                for j in 0..<keyCount {
+                    if baseAddress[i + j] != keyBytes[j] {
+                        match = false
+                        break
+                    }
+                }
+                if match {
+                    startOffset = i + keyCount
+                    break
+                }
             }
-            index += 1
+            guard let start = startOffset else { return nil }
+            var index = start
+            var value: [UInt8] = []
+            value.reserveCapacity(64)
+            var escaped = false
+            while index < count {
+                let byte = baseAddress[index]
+                if escaped {
+                    value.append(byte)
+                    escaped = false
+                } else if byte == 0x5C {
+                    escaped = true
+                } else if byte == 0x22 {
+                    return String(decoding: value, as: UTF8.self)
+                } else {
+                    value.append(byte)
+                }
+                index += 1
+            }
+            return nil
         }
-        return nil
     }
 
     /// `exec` is a JavaScript orchestration envelope. Surface the operations it
     /// invokes while retaining the outer name so one envelope remains one call.
     private static func toolInput(from data: Data) -> String? {
+        if let input = extractedString(named: "input", from: data.prefix(metricHeaderLimit)) {
+            return input
+        }
+        if let arguments = extractedString(named: "arguments", from: data.prefix(metricHeaderLimit)) {
+            return arguments
+        }
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let payload = object["payload"] as? [String: Any] else { return nil }
         return payload["input"] as? String ?? payload["arguments"] as? String

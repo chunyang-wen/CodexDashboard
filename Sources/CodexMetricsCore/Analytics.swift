@@ -5,10 +5,14 @@ public enum PeriodGranularity: String, CaseIterable, Hashable, Sendable {
 }
 
 public enum Analytics {
-    public static func projects(from sessions: [SessionMetric]) -> [ProjectMetric] {
+    public static func projects(from sessions: [SessionSummary]) -> [ProjectMetric] {
         Dictionary(grouping: sessions, by: \.projectPath)
             .map { ProjectMetric(path: $0.key, sessions: $0.value) }
             .sorted { $0.lastActivity > $1.lastActivity }
+    }
+
+    public static func projects(from sessions: [SessionMetric]) -> [ProjectMetric] {
+        projects(from: sessions.map(\.summary))
     }
 
     public static func totalUsage(_ sessions: [SessionMetric], since startDate: Date? = nil) -> TokenUsage {

@@ -78,7 +78,7 @@ struct ContentView: View {
                 if store.isLoading && store.sessions.isEmpty {
                     VStack(spacing: 10) {
                         ActivityIndicator(size: 32)
-                        Text("Indexing Codex history…")
+                        Text("Loading metrics…")
                     }
                 } else if let error = store.errorMessage, store.sessions.isEmpty {
                     ContentUnavailableView {
@@ -899,9 +899,7 @@ struct ProjectsView: View {
                 }
             } else { selectionPlaceholder }
         case .session(let id):
-            if let session = store.sessions.first(where: { $0.id == id }) {
-                SessionDetailView(session: session, pricing: store.pricing)
-            } else { selectionPlaceholder }
+            SessionDetailLoaderView(sessionID: id)
         case nil:
             selectionPlaceholder
         }
@@ -925,6 +923,36 @@ struct ProjectsView: View {
     }
 }
 
+private struct SessionDetailLoaderView: View {
+    @EnvironmentObject private var store: DashboardStore
+    let sessionID: String
+    @State private var session: SessionMetric?
+    @State private var isLoading = true
+
+    var body: some View {
+        Group {
+            if let session {
+                SessionDetailView(session: session, pricing: store.pricing)
+            } else if isLoading {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("Loading session…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ContentUnavailableView("Session Not Found", systemImage: "bubble.left.and.text.bubble.right", description: Text("The selected session could not be retrieved from history."))
+            }
+        }
+        .task(id: sessionID) {
+            isLoading = true
+            session = try? await store.sessionMetric(withID: sessionID)
+            isLoading = false
+        }
+    }
+}
+
 private struct ProjectTreeRow: View {
     let project: ProjectMetric
     var body: some View {
@@ -943,7 +971,7 @@ private struct ProjectTreeRow: View {
 }
 
 private struct SessionTreeRow: View {
-    let session: SessionMetric
+    let session: SessionSummary
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "bubble.left.and.text.bubble.right.fill").font(.caption).foregroundStyle(.secondary)
@@ -962,14 +990,14 @@ private struct SessionTreeRow: View {
 
 private struct ProjectDetailView: View {
     let project: ProjectMetric
-    let rangedSessions: [SessionMetric]
+    let rangedSessions: [SessionSummary]
     let rangeLabel: String
     let granularity: PeriodGranularity
     let pricing: PricingHistory
     let indexed: MetricsIndexAggregate
     let periods: [PeriodMetric]
     let sessionIndexes: [String: IndexedSessionMetrics]
-    let onSelectSession: (SessionMetric) -> Void
+    let onSelectSession: (SessionSummary) -> Void
 
     var body: some View {
         ScrollView {
@@ -1001,10 +1029,10 @@ private struct ProjectDetailView: View {
                                 VStack(alignment: .trailing, spacing: 2) {
                                     Text(MetricFormatters.compactNumber(session.usage.total)).monospacedDigit()
                                     let sessionCost = sessionIndexes[session.id]?.estimatedCost
-                                        ?? Analytics.totalEstimatedCost([session], pricing: pricing)
+                                        ?? (pricing.estimate(usage: session.usage, model: session.model, on: session.updatedAt) ?? 0)
                                     let sessionCoverage = sessionIndexes[session.id].map { indexed in
                                         indexed.usage.total > 0 ? Double(indexed.coveredTokens) / Double(indexed.usage.total) : 0
-                                    } ?? Analytics.costCoverage([session], pricing: pricing)
+                                    } ?? (pricing.price(for: session.model, on: session.updatedAt) != nil ? 1.0 : 0.0)
                                     Text(sessionCoverage > 0 ? MetricFormatters.preciseCurrency(sessionCost) : "Cost —")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
