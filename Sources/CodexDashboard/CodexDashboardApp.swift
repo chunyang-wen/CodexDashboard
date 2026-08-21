@@ -470,6 +470,7 @@ private struct MenuBarDashboardView: View {
     @Environment(\.openSettings) private var openSettings
     @AppStorage("showQuotaAlertMarker") private var showQuotaAlertMarker = false
     @AppStorage("quotaAlertUsedPercent") private var quotaAlertRemainingPercent = 80.0
+    @State private var usageTrendMetric = MenuUsageTrendMetric.cost
 
     var body: some View {
         ZStack {
@@ -485,13 +486,8 @@ private struct MenuBarDashboardView: View {
                     }
                 }
 
-                if store.quotaWeekInterval != nil {
-                    sectionDivider
-                    quotaWeekMetrics
-                }
-
                 sectionDivider
-                todayMetrics
+                usageTrend
 
                 sectionDivider
                 HStack(spacing: 0) {
@@ -530,7 +526,7 @@ private struct MenuBarDashboardView: View {
                 .background(Color.primary.opacity(0.025))
             }
         }
-        .frame(width: 350)
+        .frame(width: 390)
     }
 
     private var sectionDivider: some View {
@@ -605,7 +601,7 @@ private struct MenuBarDashboardView: View {
                         Circle()
                             .fill(.red)
                             .frame(width: 5, height: 5)
-                        Text("Alert at \(quotaAlertRemainingPercent.formatted(.number.precision(.fractionLength(0))))% remaining")
+                        Text("Attention at \(quotaAlertRemainingPercent.formatted(.number.precision(.fractionLength(0))))%")
                             .monospacedDigit()
                     }
                     .foregroundStyle(.secondary)
@@ -627,104 +623,345 @@ private struct MenuBarDashboardView: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var todayMetrics: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("TODAY")
-                .font(.caption2.weight(.bold))
-                .tracking(0.7)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
+    private var usageTrend: some View {
+        let calendar = Calendar.current
+        let now = Date.now
+        let todayInterval = calendar.dateInterval(of: .day, for: now)
+            ?? DateInterval(start: calendar.startOfDay(for: now), duration: 86_400)
+        let weekInterval = calendar.dateInterval(of: .weekOfYear, for: now) ?? todayInterval
+        let monthInterval = calendar.dateInterval(of: .month, for: now) ?? todayInterval
+        let today = store.periodAggregate(in: todayInterval)
+        let week = store.periodAggregate(in: weekInterval)
+        let month = store.periodAggregate(in: monthInterval)
 
-            VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    menuMetric("Estimated cost", MetricFormatters.preciseCurrency(store.todayEstimatedCost), "dollarsign.circle")
-                    metricDivider
-                    menuMetric("Tokens", MetricFormatters.compactNumber(store.todayUsage.total), "text.word.spacing")
+        return MenuUsageTrendView(
+            metric: $usageTrendMetric,
+            days: monthUsageDays(in: monthInterval, calendar: calendar),
+            currentWeekDays: currentWeekDays(
+                weekInterval: weekInterval,
+                monthInterval: monthInterval,
+                calendar: calendar
+            ),
+            todayDay: calendar.component(.day, from: now),
+            today: MenuUsageSummary(aggregate: today),
+            week: MenuUsageSummary(aggregate: week),
+            month: MenuUsageSummary(aggregate: month)
+        )
+    }
+
+    private func monthUsageDays(in interval: DateInterval, calendar: Calendar) -> [MenuUsageDay] {
+        let dailyByStart = Dictionary(store.daily.map { (calendar.startOfDay(for: $0.start), $0) }) { _, latest in latest }
+        let dayCount = calendar.range(of: .day, in: .month, for: interval.start)?.count ?? 1
+
+        return (0..<dayCount).compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: offset, to: interval.start) else { return nil }
+            let start = calendar.startOfDay(for: date)
+            return MenuUsageDay(date: start, period: dailyByStart[start])
+        }
+    }
+
+    private func currentWeekDays(
+        weekInterval: DateInterval,
+        monthInterval: DateInterval,
+        calendar: Calendar
+    ) -> ClosedRange<Int> {
+        let clippedStart = max(weekInterval.start, monthInterval.start)
+        let clippedEnd = min(weekInterval.end, monthInterval.end)
+        let finalDay = calendar.date(byAdding: .day, value: -1, to: clippedEnd) ?? clippedStart
+        return calendar.component(.day, from: clippedStart)...calendar.component(.day, from: finalDay)
+    }
+}
+
+private enum MenuUsageTrendMetric: String, CaseIterable, Identifiable {
+    case cost = "Cost"
+    case tokens = "Tokens"
+
+    var id: String { rawValue }
+}
+
+private struct MenuUsageDay: Identifiable {
+    let date: Date
+    let period: PeriodMetric?
+
+    var id: Date { date }
+    var day: Int { Calendar.current.component(.day, from: date) }
+}
+
+private struct MenuUsageSummary {
+    let cost: Decimal
+    let tokens: Int64
+    let tools: Int
+    let skills: Int
+
+    init(aggregate: MetricsIndexAggregate) {
+        cost = aggregate.estimatedCost
+        tokens = aggregate.usage.total
+        tools = aggregate.toolCalls
+        skills = aggregate.skillCalls
+    }
+}
+
+private struct MenuUsageTrendView: View {
+    @Binding var metric: MenuUsageTrendMetric
+    let days: [MenuUsageDay]
+    let currentWeekDays: ClosedRange<Int>
+    let todayDay: Int
+    let today: MenuUsageSummary
+    let week: MenuUsageSummary
+    let month: MenuUsageSummary
+
+    private let barSpacing: CGFloat = 3
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                HStack(spacing: 5) {
+                    Image(systemName: "chart.line.uptrend.xyaxis")
+                        .foregroundStyle(.teal)
+                    Text(insightLabel)
+                        .foregroundStyle(.secondary)
                 }
-                sectionDivider
-                    .padding(.horizontal, 14)
-                HStack(spacing: 0) {
-                    menuMetric("Tools", store.todayToolCalls.formatted(), "wrench.and.screwdriver")
-                    metricDivider
-                    menuMetric("Skills", store.todaySkillCalls.formatted(), "sparkles")
+                .font(.caption2.weight(.medium))
+                .accessibilityElement(children: .combine)
+
+                Spacer(minLength: 8)
+
+                Picker("Usage chart metric", selection: $metric) {
+                    ForEach(MenuUsageTrendMetric.allCases) { metric in
+                        Text(metric.rawValue.uppercased()).tag(metric)
+                    }
                 }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .controlSize(.mini)
+                .frame(width: 132)
+            }
+
+            VStack(spacing: 5) {
+                monthBars
+                monthAxis
+                weekSpanMarker
+            }
+
+            Divider().opacity(0.55)
+
+            VStack(spacing: 8) {
+                comparisonHeader
+                comparisonRow("TODAY", summary: today, tint: .cyan)
+                comparisonRow("WEEK", summary: week, tint: .teal)
+                comparisonRow("MONTH", summary: month, tint: .secondary)
             }
         }
-        .padding(.bottom, 8)
+        .padding(14)
+        .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(.separator.opacity(0.38), lineWidth: 0.5)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
     }
 
-    private var quotaWeekMetrics: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("WEEK")
-                    .font(.caption2.weight(.bold))
-                    .tracking(0.7)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 4)
-                if let interval = store.quotaWeekInterval {
-                    Text(quotaWeekRangeLabel(interval))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+    private var monthBars: some View {
+        HStack(alignment: .bottom, spacing: barSpacing) {
+            ForEach(days) { day in
+                let height = barHeight(for: day)
+                let isToday = day.day == todayDay
+                let isFuture = day.day > todayDay
+                let isThisWeek = currentWeekDays.contains(day.day)
+
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(isFuture ? Color.clear : barColor(isToday: isToday, isThisWeek: isThisWeek))
+                    .overlay {
+                        if isFuture {
+                            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                                .stroke(isThisWeek ? Color.teal.opacity(0.52) : Color.secondary.opacity(0.28), lineWidth: 0.7)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: height)
+                    .overlay(alignment: .top) {
+                        if isToday {
+                            Circle()
+                                .fill(.cyan)
+                                .frame(width: 6, height: 6)
+                                .overlay(Circle().stroke(.white.opacity(0.9), lineWidth: 1))
+                                .shadow(color: .cyan.opacity(0.65), radius: 4)
+                                .offset(y: -5)
+                        }
+                    }
+                    .accessibilityLabel(day.date.formatted(date: .long, time: .omitted))
+                    .accessibilityValue(dayValueLabel(day))
+            }
+        }
+        .frame(height: 78, alignment: .bottom)
+    }
+
+    private var monthAxis: some View {
+        HStack(spacing: 0) {
+            Text(monthAnchorLabel(day: 1))
+            Spacer()
+            Text(monthAnchorLabel(day: 8))
+            Spacer()
+            Text(monthAnchorLabel(day: 15))
+            Spacer()
+            Text("TODAY \(todayDay)").foregroundStyle(.cyan)
+            Spacer()
+            Text(monthAnchorLabel(day: days.count))
+        }
+        .font(.system(size: 8, weight: .medium).monospacedDigit())
+        .foregroundStyle(.tertiary)
+    }
+
+    private var weekSpanMarker: some View {
+        GeometryReader { proxy in
+            let count = max(1, days.count)
+            let availableWidth = max(0, proxy.size.width - barSpacing * CGFloat(count - 1))
+            let barWidth = availableWidth / CGFloat(count)
+            let startIndex = max(0, currentWeekDays.lowerBound - 1)
+            let endIndex = min(count - 1, currentWeekDays.upperBound - 1)
+            let startX = CGFloat(startIndex) * (barWidth + barSpacing)
+            let spanWidth = CGFloat(endIndex - startIndex + 1) * barWidth
+                + CGFloat(max(0, endIndex - startIndex)) * barSpacing
+
+            CompactWeekMarker()
+                .frame(width: spanWidth, height: 14)
+                .offset(x: startX)
+        }
+        .frame(height: 14)
+        .accessibilityHidden(true)
+    }
+
+    private var comparisonHeader: some View {
+        HStack(spacing: 5) {
+            Text("").frame(width: 56)
+            Text("COST").frame(width: 60, alignment: .trailing)
+            Text("TOKENS").frame(width: 46, alignment: .trailing)
+            Text("TOOLS").frame(width: 34, alignment: .trailing)
+            Text("SKILLS").frame(width: 36, alignment: .trailing)
+            Text("MONTH %").frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .font(.system(size: 7.5, weight: .bold))
+        .tracking(0.25)
+        .foregroundStyle(.tertiary)
+    }
+
+    private func comparisonRow(_ title: String, summary: MenuUsageSummary, tint: Color) -> some View {
+        let share = monthShare(for: summary)
+        return HStack(spacing: 5) {
+            HStack(spacing: 5) {
+                Circle().fill(tint).frame(width: 6, height: 6)
+                Text(title)
+            }
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(title == "MONTH" ? .secondary : tint)
+            .frame(width: 56, alignment: .leading)
+
+            Text(MetricFormatters.preciseCurrency(summary.cost))
+                .frame(width: 60, alignment: .trailing)
+            Text(MetricFormatters.compactNumber(summary.tokens))
+                .frame(width: 46, alignment: .trailing)
+            Text(summary.tools.formatted(.number.notation(.compactName)))
+                .frame(width: 34, alignment: .trailing)
+            Text(summary.skills.formatted(.number.notation(.compactName)))
+                .frame(width: 36, alignment: .trailing)
+
+            HStack(spacing: 4) {
+                Text(share.formatted(.percent.precision(.fractionLength(0))))
+                    .frame(width: 34, alignment: .trailing)
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.primary.opacity(0.08))
+                        Capsule().fill(tint.opacity(0.85))
+                            .frame(width: proxy.size.width * min(1, max(0, share)))
+                    }
                 }
+                .frame(height: 4)
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
-            .padding(.bottom, 5)
-
-            HStack(spacing: 0) {
-                menuMetric(
-                    "Estimated cost",
-                    MetricFormatters.preciseCurrency(store.quotaWeekEstimatedCost),
-                    "dollarsign.circle"
-                )
-                metricDivider
-                menuMetric(
-                    "Tokens",
-                    MetricFormatters.compactNumber(store.quotaWeekUsage.total),
-                    "text.word.spacing"
-                )
-            }
+            .frame(maxWidth: .infinity)
         }
-        .padding(.bottom, 8)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Quota week metrics")
+        .font(.system(size: 11, weight: .medium).monospacedDigit())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title), \(MetricFormatters.preciseCurrency(summary.cost)), \(MetricFormatters.compactNumber(summary.tokens)) tokens, \(summary.tools) tools, \(summary.skills) skills, \(share.formatted(.percent.precision(.fractionLength(0)))) of the month")
     }
 
-    private func quotaWeekRangeLabel(_ interval: DateInterval) -> String {
-        let format = Date.FormatStyle.dateTime
-            .month(.abbreviated)
-            .day()
-            .hour()
-            .minute()
-        return "\(interval.start.formatted(format)) – \(interval.end.formatted(format))"
-    }
-
-    private var metricDivider: some View {
-        Rectangle()
-            .fill(.separator.opacity(0.38))
-            .frame(width: 0.5, height: 36)
-    }
-
-    private func menuMetric(_ title: String, _ value: String, _ icon: String) -> some View {
-        HStack(spacing: 9) {
-            Image(systemName: icon)
-                .font(.system(size: 14))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(value).font(.subheadline.monospacedDigit().weight(.semibold))
-                Text(title).font(.caption2).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
+    private func barValue(_ day: MenuUsageDay) -> Double {
+        guard let period = day.period else { return 0 }
+        return switch metric {
+        case .cost: NSDecimalNumber(decimal: period.estimatedCost).doubleValue
+        case .tokens: Double(period.usage.total)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func summaryValue(_ summary: MenuUsageSummary) -> Double {
+        return switch metric {
+        case .cost: NSDecimalNumber(decimal: summary.cost).doubleValue
+        case .tokens: Double(summary.tokens)
+        }
+    }
+
+    private func barHeight(for day: MenuUsageDay) -> CGFloat {
+        guard day.day <= todayDay else { return 5 }
+        let maximum = max(1, days.lazy.filter { $0.day <= todayDay }.map(barValue).max() ?? 0)
+        let fraction = min(1, max(0, barValue(day) / maximum))
+        // Daily usage is naturally spiky. A square-root scale keeps outliers
+        // dominant without flattening the rest of the month's trend into noise.
+        return max(3, 68 * sqrt(fraction))
+    }
+
+    private func barColor(isToday: Bool, isThisWeek: Bool) -> Color {
+        if isToday { return .cyan }
+        if isThisWeek { return .teal.opacity(0.82) }
+        return .secondary.opacity(0.36)
+    }
+
+    private func monthShare(for summary: MenuUsageSummary) -> Double {
+        let denominator = summaryValue(month)
+        guard denominator > 0 else { return 0 }
+        return min(1, max(0, summaryValue(summary) / denominator))
+    }
+
+    private var insightLabel: String {
+        let completedDays = max(1, min(todayDay, days.count))
+        let average = summaryValue(month) / Double(completedDays)
+        guard average > 0 else { return "No usage recorded this month" }
+        let ratio = summaryValue(today) / average
+        return "Today is \(ratio.formatted(.number.precision(.fractionLength(1))))× daily avg"
+    }
+
+    private func monthAnchorLabel(day: Int) -> String {
+        guard let firstDate = days.first?.date else { return "—" }
+        let month = firstDate.formatted(.dateTime.month(.abbreviated)).uppercased()
+        return "\(month) \(day)"
+    }
+
+    private func dayValueLabel(_ day: MenuUsageDay) -> String {
+        switch metric {
+        case .cost: return MetricFormatters.preciseCurrency(day.period?.estimatedCost ?? 0)
+        case .tokens: return "\(MetricFormatters.compactNumber(day.period?.usage.total ?? 0)) tokens"
+        }
+    }
+}
+
+private struct CompactWeekMarker: View {
+    var body: some View {
+        HStack(spacing: 4) {
+            Rectangle().frame(height: 0.5)
+            Text("THIS WEEK")
+                .font(.system(size: 7, weight: .bold))
+                .tracking(0.35)
+                .fixedSize()
+            Rectangle().frame(height: 0.5)
+        }
+        .foregroundStyle(.cyan)
+        .overlay {
+            HStack {
+                Rectangle().frame(width: 0.5, height: 7)
+                Spacer(minLength: 0)
+                Rectangle().frame(width: 0.5, height: 7)
+            }
+            .foregroundStyle(.cyan)
+        }
     }
 }
 
@@ -952,7 +1189,7 @@ private struct DashboardSettingsView: View {
                 Toggle("Show quota alert marker", isOn: $showQuotaAlertMarker)
                     .disabled(!showMenuBarIcon)
                 if showQuotaAlertMarker {
-                    LabeledContent("Alert at") {
+                    LabeledContent("Attention at") {
                         HStack(spacing: 10) {
                             Slider(value: $quotaAlertRemainingPercent, in: 10...100, step: 5)
                             Text("\(quotaAlertRemainingPercent.formatted(.number.precision(.fractionLength(0))))% remaining")
