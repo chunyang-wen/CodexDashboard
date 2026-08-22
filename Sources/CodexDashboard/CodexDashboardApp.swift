@@ -670,7 +670,14 @@ private struct MenuBarDashboardView: View {
     @Environment(\.openSettings) private var openSettings
     @AppStorage("showQuotaAlertMarker") private var showQuotaAlertMarker = false
     @AppStorage("quotaAlertUsedPercent") private var quotaAlertRemainingPercent = 80.0
-    @State private var usageTrendMetric = MenuUsageTrendMetric.cost
+    @AppStorage("menuBarUsageTrendMetric") private var usageTrendMetricRawValue = MenuUsageTrendMetric.cost.rawValue
+
+    private var usageTrendMetric: Binding<MenuUsageTrendMetric> {
+        Binding(
+            get: { MenuUsageTrendMetric(rawValue: usageTrendMetricRawValue) ?? .cost },
+            set: { usageTrendMetricRawValue = $0.rawValue }
+        )
+    }
 
     var body: some View {
         ZStack {
@@ -886,7 +893,7 @@ private struct MenuBarDashboardView: View {
         let month = store.menuBarAggregate(in: monthInterval)
 
         return MenuUsageTrendView(
-            metric: $usageTrendMetric,
+            metric: usageTrendMetric,
             days: monthUsageDays(in: monthInterval, calendar: calendar),
             currentWeekDays: currentWeekDays(
                 weekInterval: weekInterval,
