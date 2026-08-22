@@ -369,6 +369,32 @@ public struct PeriodMetric: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+public struct ModelPeriodMetric: Identifiable, Codable, Hashable, Sendable {
+    public var id: String { "\(model)|\(start.timeIntervalSinceReferenceDate)" }
+    public let start: Date
+    public let model: String
+    public let usage: TokenUsage
+    public let sessions: Int
+    public let activeRuntime: TimeInterval
+    public let estimatedCost: Decimal
+
+    public init(
+        start: Date,
+        model: String,
+        usage: TokenUsage,
+        sessions: Int,
+        activeRuntime: TimeInterval,
+        estimatedCost: Decimal
+    ) {
+        self.start = start
+        self.model = model
+        self.usage = usage
+        self.sessions = sessions
+        self.activeRuntime = activeRuntime
+        self.estimatedCost = estimatedCost
+    }
+}
+
 public struct ModelMetric: Identifiable, Codable, Hashable, Sendable {
     public var id: String { model }
     public let model: String

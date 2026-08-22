@@ -1347,45 +1347,466 @@ private struct TokenCompositionLegend: View {
     }
 }
 
+private struct ModelTrendChartData {
+    struct Sample: Identifiable {
+        let id: String
+        let index: Int
+        let model: String
+        let modelIndex: Int
+        let tokens: Double
+        let cacheRate: Double
+        let cacheHitRate: Double
+        let tokenSeries: String
+        let cacheSeries: String
+    }
+
+    let dates: [Date]
+    let samples: [Sample]
+    let maximumTokens: Double
+    let identity: String
+
+    init(points: [ModelPeriodMetric], models: [ModelMetric]) {
+        let preparedDates = Array(Set(points.map(\.start))).sorted()
+        let pointsByModel = Dictionary(grouping: points, by: \.model).mapValues { values in
+            Dictionary(uniqueKeysWithValues: values.map { ($0.start, $0) })
+        }
+        let preparedMaximumTokens = max(1, points
+            .filter { point in models.contains { $0.model == point.model } }
+            .map { max(0, Double($0.usage.total)) }
+            .max() ?? 1)
+        let preparedSamples = preparedDates.enumerated().flatMap { dateItem in
+            models.enumerated().map { modelItem in
+                let point = pointsByModel[modelItem.element.model]?[dateItem.element]
+                let usage = point?.usage ?? .zero
+                let cacheHitRate = min(1, max(0, usage.cacheHitRate))
+                return Sample(
+                    id: "\(modelItem.element.model)-\(dateItem.offset)",
+                    index: dateItem.offset,
+                    model: modelItem.element.model,
+                    modelIndex: modelItem.offset,
+                    tokens: max(0, Double(usage.total)),
+                    cacheRate: cacheHitRate * preparedMaximumTokens,
+                    cacheHitRate: cacheHitRate,
+                    tokenSeries: "\(modelItem.element.model) · tokens",
+                    cacheSeries: "\(modelItem.element.model) · cache"
+                )
+            }
+        }
+        dates = preparedDates
+        samples = preparedSamples
+        maximumTokens = preparedMaximumTokens
+        identity = models.map(\.model).joined(separator: "|") + "#" + preparedDates.map(String.init(describing:)).joined(separator: "|")
+    }
+}
+
+private struct ModelTrendChart: View {
+    private enum ScrollEdge {
+        case older
+        case newer
+    }
+
+    let data: ModelTrendChartData
+    let models: [ModelMetric]
+    let granularity: PeriodGranularity
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hoveredScrollEdge: ScrollEdge?
+    @State private var hoveredIndex: Int?
+    @State private var hoverLocation: CGPoint?
+    @State private var scrollPosition = 0.0
+    @State private var dragStartScrollPosition: Double?
+
+    private var dates: [Date] {
+        data.dates
+    }
+
+    private var visiblePeriodCount: Double { Double(min(30, max(1, dates.count))) }
+    private var latestScrollPosition: Double { max(0, Double(dates.count) - visiblePeriodCount) }
+    private var canScroll: Bool { Double(dates.count) > visiblePeriodCount }
+    private var axisPositions: [Double] {
+        let step = max(1, Int(ceil(visiblePeriodCount / 8)))
+        var positions = stride(from: 0, to: dates.count, by: step).map { Double($0) + 0.5 }
+        if !dates.isEmpty { positions.append(Double(dates.count) - 0.5) }
+        return Array(Set(positions)).sorted()
+    }
+
+    private var samples: [ModelTrendChartData.Sample] {
+        data.samples
+    }
+
+    private var maximumTokens: Double {
+        data.maximumTokens
+    }
+
+    private var cacheAxisPositions: [Double] {
+        stride(from: 0, through: 1, by: 0.25).map { $0 * maximumTokens }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionHeader(
+                title: "Model trend",
+                subtitle: "Same models as the summary table. Drag, swipe, or use the edge arrows to move through " + granularityLabel.lowercased() + " history.",
+                definition: .periodUsage
+            )
+
+            if dates.isEmpty || models.isEmpty {
+                Text("No model trend data is available yet.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 180, alignment: .center)
+            } else {
+                legend
+                Chart {
+                    ForEach(samples) { sample in
+                        tokenMark(for: sample)
+                        cacheMark(for: sample)
+                        tokenPointMark(for: sample)
+                        cachePointMark(for: sample)
+                    }
+                    if let hoveredIndex, dates.indices.contains(hoveredIndex) {
+                        RuleMark(x: .value("Hovered period", Double(hoveredIndex)))
+                            .lineStyle(.init(lineWidth: 1, dash: [4, 4]))
+                            .foregroundStyle(.secondary.opacity(0.72))
+                    }
+                }
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: visiblePeriodCount)
+                .chartScrollPosition(x: $scrollPosition)
+                .chartXScale(range: .plotDimension(startPadding: 20, endPadding: 24))
+                .chartYScale(domain: 0...maximumTokens)
+                .chartXAxis {
+                    AxisMarks(values: axisPositions) { value in
+                        AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                        AxisValueLabel {
+                            if let position = value.as(Double.self), let label = axisLabel(at: position) {
+                                Text(label)
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
+                        }
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .leading) { value in
+                        AxisGridLine().foregroundStyle(.secondary.opacity(0.2))
+                        AxisValueLabel {
+                            if let number = value.as(Double.self) {
+                                Text(MetricFormatters.compactNumber(Int64(max(0, number))))
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                    AxisMarks(position: .trailing, values: cacheAxisPositions) { value in
+                        AxisValueLabel {
+                            if let number = value.as(Double.self) {
+                                Text(cacheAxisLabel(number))
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+                .chartOverlay { proxy in
+                    GeometryReader { geometry in
+                        ZStack {
+                            Rectangle()
+                                .fill(.clear)
+                                .contentShape(Rectangle())
+                                .onContinuousHover { phase in
+                                    switch phase {
+                                    case .active(let location):
+                                        guard let plotFrame = proxy.plotFrame else { return }
+                                        let frame = geometry[plotFrame]
+                                        let x = location.x - frame.minX
+                                        guard x >= 0, x <= frame.width,
+                                              let rawIndex: Double = proxy.value(atX: x) else {
+                                            hoveredIndex = nil
+                                            hoverLocation = nil
+                                            return
+                                        }
+                                        let index = min(max(0, Int(rawIndex.rounded())), dates.count - 1)
+                                        hoveredIndex = index
+                                        hoverLocation = location
+                                    case .ended:
+                                        hoveredIndex = nil
+                                        hoverLocation = nil
+                                    }
+                                }
+                                .simultaneousGesture(
+                                    DragGesture(minimumDistance: 2)
+                                        .onChanged { value in
+                                            guard canScroll, let plotFrame = proxy.plotFrame else { return }
+                                            let frame = geometry[plotFrame]
+                                            guard frame.width > 0 else { return }
+                                            if dragStartScrollPosition == nil {
+                                                dragStartScrollPosition = scrollPosition
+                                            }
+                                            let translatedPeriods = Double(value.translation.width / frame.width) * visiblePeriodCount
+                                            let proposed = (dragStartScrollPosition ?? scrollPosition) - translatedPeriods
+                                            scrollPosition = min(latestScrollPosition, max(0, proposed))
+                                            hoveredIndex = nil
+                                            hoverLocation = nil
+                                        }
+                                        .onEnded { _ in
+                                            dragStartScrollPosition = nil
+                                        }
+                                )
+
+                            if let hoveredIndex, let hoverLocation {
+                                hoverCard(for: hoveredIndex)
+                                    .position(hoverCardPosition(for: hoverLocation, in: geometry.size))
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                    }
+                }
+                .frame(height: 320)
+                .overlay {
+                    if canScroll {
+                        HStack(spacing: 0) {
+                            edgeScrollControl(.older)
+                            Spacer(minLength: 0)
+                            edgeScrollControl(.newer)
+                        }
+                    }
+                }
+                .onAppear {
+                    scrollPosition = latestScrollPosition
+                }
+                .onChange(of: data.identity) { _, _ in
+                    hoveredIndex = nil
+                    hoverLocation = nil
+                    scrollPosition = latestScrollPosition
+                }
+                .onChange(of: granularity) { _, _ in
+                    hoveredIndex = nil
+                    hoverLocation = nil
+                    scrollPosition = latestScrollPosition
+                }
+            }
+        }
+        .padding(20)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private var legend: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 180), alignment: .leading)],
+                alignment: .leading,
+                spacing: 8
+            ) {
+                ForEach(Array(models.enumerated()), id: \.element.id) { index, model in
+                    HStack(spacing: 6) {
+                        Circle().fill(seriesColor(index)).frame(width: 7, height: 7)
+                        Text(model.model)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            HStack(spacing: 6) {
+                Capsule().fill(.primary.opacity(0.72)).frame(width: 18, height: 2)
+                Text("Tokens").font(.caption2).foregroundStyle(.secondary)
+                Capsule().fill(.secondary.opacity(0.72)).frame(width: 18, height: 2)
+                Text("Cache hit").font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func scroll(by amount: Double) {
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) {
+            scrollPosition = min(latestScrollPosition, max(0, scrollPosition + amount))
+        }
+    }
+
+    @ViewBuilder private func edgeScrollControl(_ edge: ScrollEdge) -> some View {
+        let canMove = edge == .older
+            ? scrollPosition > 0
+            : scrollPosition < latestScrollPosition
+
+        if canMove {
+            Button { scroll(by: edge == .older ? -15 : 15) } label: {
+                Image(systemName: edge == .older ? "chevron.left" : "chevron.right")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 26, height: 44)
+                    .background(.regularMaterial, in: Capsule())
+                    .overlay {
+                        Capsule().stroke(.separator.opacity(0.6), lineWidth: 0.5)
+                    }
+                    .shadow(color: .black.opacity(0.2), radius: 7, y: 3)
+            }
+            .buttonStyle(.plain)
+            .help(edge == .older ? "Show older model trend" : "Show newer model trend")
+            .accessibilityLabel(edge == .older ? "Show older model trend" : "Show newer model trend")
+            .opacity(hoveredScrollEdge == edge ? 1 : 0.48)
+            .scaleEffect(hoveredScrollEdge == edge ? 1 : 0.9)
+            .offset(x: hoveredScrollEdge == edge ? 0 : (edge == .older ? -8 : 8))
+            .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: hoveredScrollEdge)
+            .onHover { isHovering in
+                withAnimation(reduceMotion ? nil : .snappy(duration: 0.18)) {
+                    if isHovering {
+                        hoveredScrollEdge = edge
+                    } else if hoveredScrollEdge == edge {
+                        hoveredScrollEdge = nil
+                    }
+                }
+            }
+        } else {
+            Color.clear
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private func tokenMark(for sample: ModelTrendChartData.Sample) -> some ChartContent {
+        LineMark(
+            x: .value("Period", Double(sample.index)),
+            y: .value("Tokens", sample.tokens),
+            series: .value("Series", sample.tokenSeries)
+        )
+        .interpolationMethod(.monotone)
+        .foregroundStyle(seriesColor(sample.modelIndex))
+        .lineStyle(.init(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+    }
+
+    private func cacheMark(for sample: ModelTrendChartData.Sample) -> some ChartContent {
+        LineMark(
+            x: .value("Period", Double(sample.index)),
+            y: .value("Cache hit rate", sample.cacheRate),
+            series: .value("Series", sample.cacheSeries)
+        )
+        .interpolationMethod(.monotone)
+        .foregroundStyle(seriesColor(sample.modelIndex).opacity(0.52))
+        .lineStyle(.init(lineWidth: 1.5, lineCap: .round, lineJoin: .round, dash: [5, 4], dashPhase: 0))
+    }
+
+    private func tokenPointMark(for sample: ModelTrendChartData.Sample) -> some ChartContent {
+        PointMark(
+            x: .value("Period", Double(sample.index)),
+            y: .value("Tokens", sample.tokens)
+        )
+        .foregroundStyle(seriesColor(sample.modelIndex))
+        .symbolSize(34)
+    }
+
+    private func cachePointMark(for sample: ModelTrendChartData.Sample) -> some ChartContent {
+        PointMark(
+            x: .value("Period", Double(sample.index)),
+            y: .value("Cache hit rate", sample.cacheRate)
+        )
+        .foregroundStyle(seriesColor(sample.modelIndex).opacity(0.68))
+        .symbolSize(24)
+    }
+
+    private func hoverCard(for index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(axisPeriodLabel(dates[index]))
+                .font(.caption.weight(.semibold))
+            ForEach(samples.filter { $0.index == index }) { sample in
+                HStack(alignment: .top, spacing: 7) {
+                    Circle()
+                        .fill(seriesColor(sample.modelIndex))
+                        .frame(width: 7, height: 7)
+                        .padding(.top, 4)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(sample.model)
+                            .font(.caption2.weight(.semibold))
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("\(MetricFormatters.compactNumber(Int64(max(0, sample.tokens)))) tokens · \(sample.cacheHitRate.formatted(.percent.precision(.fractionLength(1)))) cache")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .frame(width: 270, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.separator.opacity(0.55)))
+        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+    }
+
+    private func hoverCardPosition(for location: CGPoint, in size: CGSize) -> CGPoint {
+        let horizontalOffset: CGFloat = location.x < size.width / 2 ? 165 : -165
+        let verticalOffset: CGFloat = location.y < size.height / 2 ? 122 : -122
+        return CGPoint(
+            x: min(max(140, location.x + horizontalOffset), max(140, size.width - 140)),
+            y: min(max(122, location.y + verticalOffset), max(122, size.height - 122))
+        )
+    }
+
+    private func seriesColor(_ index: Int) -> Color {
+        [.blue, .purple, .teal, .orange, .pink, .indigo][index % 6]
+    }
+
+    private func axisLabel(at position: Double) -> String? {
+        let index = Int(floor(position))
+        guard dates.indices.contains(index) else { return nil }
+        return axisPeriodLabel(dates[index])
+    }
+
+    private func cacheAxisLabel(_ value: Double) -> String {
+        let cachePercent = value / maximumTokens
+        return cachePercent.formatted(.percent.precision(.fractionLength(0)))
+    }
+
+    private var granularityLabel: String {
+        switch granularity {
+        case .day: "Daily"
+        case .week: "Weekly"
+        case .month: "Monthly"
+        case .year: "Yearly"
+        }
+    }
+
+    private func axisPeriodLabel(_ date: Date) -> String {
+        switch granularity {
+        case .day, .week: date.formatted(.dateTime.month(.abbreviated).day())
+        case .month: date.formatted(.dateTime.year().month(.abbreviated))
+        case .year: date.formatted(.dateTime.year())
+        }
+    }
+}
+
 struct ModelsView: View {
     @EnvironmentObject private var store: DashboardStore
     @State private var modelPage = 0
-
-    private let modelPageSize = 10
+    private let modelPageSize = 4
 
     private var modelPageCount: Int {
-        max(1, Int(ceil(Double(store.models.count) / Double(modelPageSize))))
+        max(1, Int(ceil(Double(store.allTimeModels.count) / Double(modelPageSize))))
     }
 
     private var visibleModels: [ModelMetric] {
         let safePage = min(modelPage, modelPageCount - 1)
-        return Array(store.models.dropFirst(safePage * modelPageSize).prefix(modelPageSize))
+        return Array(store.allTimeModels.dropFirst(safePage * modelPageSize).prefix(modelPageSize))
     }
 
     private var modelPageSummary: String {
-        guard !store.models.isEmpty else { return "0 models" }
+        guard !store.allTimeModels.isEmpty else { return "0 models" }
         let safePage = min(modelPage, modelPageCount - 1)
         let start = safePage * modelPageSize
-        let end = min(start + modelPageSize, store.models.count)
-        return "\(start + 1)–\(end) of \(store.models.count) models"
+        let end = min(start + modelPageSize, store.allTimeModels.count)
+        return "Models \(start + 1)–\(end) of \(store.allTimeModels.count)"
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                let chartModels = Array(store.models.prefix(12))
+                ModelTrendChart(
+                    data: ModelTrendChartData(points: store.modelTrendPeriods, models: visibleModels),
+                    models: visibleModels,
+                    granularity: store.range.granularity
+                )
                 SectionHeader(
                     title: "Model portfolio",
-                    subtitle: chartModels.count < store.models.count
-                        ? "The chart shows the top \(chartModels.count) models by token volume; the full list is below."
-                        : "Compare volume, runtime, cache behavior, and API-equivalent cost."
+                    subtitle: "All-time aggregated totals for the same models shown in the trend above."
                 )
-                Chart(chartModels) { model in
-                    BarMark(x: .value("Tokens", model.usage.total), y: .value("Model", model.model))
-                        .foregroundStyle(.purple.gradient)
-                        .annotation(position: .trailing) { Text(MetricFormatters.compactNumber(model.usage.total)).font(.caption).foregroundStyle(.secondary) }
-                }.frame(height: 420)
-                SectionHeader(title: "All models", subtitle: "Every indexed model appears in this table, including low-volume models.")
+                modelPager
                 Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 12) {
                     GridRow {
                         Text("Model")
@@ -1399,7 +1820,9 @@ struct ModelsView: View {
                     Divider().gridCellColumns(6)
                     ForEach(visibleModels) { model in
                         GridRow {
-                            Text(model.model).fontWeight(.medium)
+                            Text(model.model)
+                                .fontWeight(.medium)
+                                .fixedSize(horizontal: false, vertical: true)
                             Text(model.sessions.formatted()).monospacedDigit()
                             Text(MetricFormatters.compactNumber(model.usage.total)).monospacedDigit()
                             Text((model.usage.cacheHitRate * 100).formatted(.percent.scale(1).precision(.fractionLength(1)))).monospacedDigit()
@@ -1409,42 +1832,43 @@ struct ModelsView: View {
                     }
 
                     Divider().gridCellColumns(6)
-                    GridRow {
-                        HStack(spacing: 12) {
-                            Text(modelPageSummary)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button {
-                                modelPage = max(0, modelPage - 1)
-                            } label: {
-                                Label("Previous page", systemImage: "chevron.left")
-                                    .labelStyle(.iconOnly)
-                            }
-                            .disabled(modelPage == 0)
-                            .help("Previous page")
-                            Text("Page \(min(modelPage + 1, modelPageCount)) of \(modelPageCount)")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                            Button {
-                                modelPage = min(modelPageCount - 1, modelPage + 1)
-                            } label: {
-                                Label("Next page", systemImage: "chevron.right")
-                                    .labelStyle(.iconOnly)
-                            }
-                            .disabled(modelPage >= modelPageCount - 1)
-                            .help("Next page")
-                        }
-                        .frame(maxWidth: .infinity)
-                        .gridCellColumns(6)
-                    }
                 }
             }.padding(28)
         }
         .navigationTitle("Models")
-        .onChange(of: store.models.map(\.id)) { _, _ in
+        .onChange(of: store.allTimeModels.map(\.id)) { _, _ in
             modelPage = min(modelPage, modelPageCount - 1)
         }
+    }
+
+    private var modelPager: some View {
+        HStack(spacing: 12) {
+            Text(modelPageSummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button {
+                modelPage = max(0, modelPage - 1)
+            } label: {
+                Label("Previous model page", systemImage: "chevron.left")
+                    .labelStyle(.iconOnly)
+            }
+            .disabled(modelPage == 0)
+            .help("Show previous models")
+            Text("Page \(min(modelPage + 1, modelPageCount)) of \(modelPageCount)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 86)
+            Button {
+                modelPage = min(modelPageCount - 1, modelPage + 1)
+            } label: {
+                Label("Next model page", systemImage: "chevron.right")
+                    .labelStyle(.iconOnly)
+            }
+            .disabled(modelPage >= modelPageCount - 1)
+            .help("Show next models")
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 

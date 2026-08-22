@@ -14,12 +14,17 @@ private struct DashboardAnalytics: Sendable {
     let costCoverage: Double
     let runtime: TimeInterval
     let models: [ModelMetric]
+    let allTimeModels: [ModelMetric]
     let tools: [ToolMetric]
     let skills: [SkillMetric]
     let daily: [PeriodMetric]
     let weekly: [PeriodMetric]
     let monthly: [PeriodMetric]
     let yearly: [PeriodMetric]
+    let modelDaily: [ModelPeriodMetric]
+    let modelWeekly: [ModelPeriodMetric]
+    let modelMonthly: [ModelPeriodMetric]
+    let modelYearly: [ModelPeriodMetric]
     let turnDurations: [TimeInterval]
     let averageTTFT: TimeInterval?
     let activeDays: Int
@@ -31,7 +36,8 @@ private struct DashboardAnalytics: Sendable {
     static let empty = DashboardAnalytics(
         filteredSessions: [], allProjects: [], projects: [],
         usage: .zero, estimatedCost: 0, costCoverage: 0, runtime: 0,
-        models: [], tools: [], skills: [], daily: [], weekly: [], monthly: [], yearly: [], turnDurations: [],
+        models: [], allTimeModels: [], tools: [], skills: [], daily: [], weekly: [], monthly: [], yearly: [],
+        modelDaily: [], modelWeekly: [], modelMonthly: [], modelYearly: [], turnDurations: [],
         averageTTFT: nil, activeDays: 0, toolCalls: 0, skillCalls: 0, completedTurns: 0,
         abortedTurns: 0
     )
@@ -46,6 +52,7 @@ private struct DashboardAnalytics: Sendable {
         }
 
         let summary = index.aggregate(since: startDate)
+        let allTimeModels = startDate == nil ? summary.models : index.aggregate().models
         let averageTTFT = summary.firstTokenTimes.isEmpty
             ? nil
             : summary.firstTokenTimes.reduce(0, +) / Double(summary.firstTokenTimes.count)
@@ -60,12 +67,17 @@ private struct DashboardAnalytics: Sendable {
             costCoverage: summary.costCoverage,
             runtime: summary.activeRuntime,
             models: summary.models,
+            allTimeModels: allTimeModels,
             tools: summary.tools,
             skills: summary.skills,
             daily: index.periods(granularity: .day, since: startDate, calendar: calendar),
             weekly: index.periods(granularity: .week, since: startDate, calendar: calendar),
             monthly: index.periods(granularity: .month, since: startDate, calendar: calendar),
             yearly: index.periods(granularity: .year, since: startDate, calendar: calendar),
+            modelDaily: index.modelPeriods(granularity: .day, since: startDate, calendar: calendar),
+            modelWeekly: index.modelPeriods(granularity: .week, since: startDate, calendar: calendar),
+            modelMonthly: index.modelPeriods(granularity: .month, since: startDate, calendar: calendar),
+            modelYearly: index.modelPeriods(granularity: .year, since: startDate, calendar: calendar),
             turnDurations: summary.turnDurations,
             averageTTFT: averageTTFT,
             activeDays: summary.activeDays,
@@ -90,7 +102,8 @@ private struct DashboardAnalytics: Sendable {
             estimatedCost: summary.estimatedCost,
             costCoverage: 0,
             runtime: 0,
-            models: [], tools: [], skills: [], daily: [], weekly: [], monthly: [], yearly: [],
+            models: [], allTimeModels: [], tools: [], skills: [], daily: [], weekly: [], monthly: [], yearly: [],
+            modelDaily: [], modelWeekly: [], modelMonthly: [], modelYearly: [],
             turnDurations: [], averageTTFT: nil, activeDays: 0,
             toolCalls: summary.toolCalls, skillCalls: summary.skillCalls,
             completedTurns: 0, abortedTurns: 0
@@ -309,12 +322,21 @@ final class DashboardStore: ObservableObject {
     var costCoverage: Double { analytics.costCoverage }
     var runtime: TimeInterval { analytics.runtime }
     var models: [ModelMetric] { analytics.models }
+    var allTimeModels: [ModelMetric] { analytics.allTimeModels }
     var tools: [ToolMetric] { analytics.tools }
     var skills: [SkillMetric] { analytics.skills }
     var daily: [PeriodMetric] { analytics.daily }
     var weekly: [PeriodMetric] { analytics.weekly }
     var monthly: [PeriodMetric] { analytics.monthly }
     var yearly: [PeriodMetric] { analytics.yearly }
+    var modelTrendPeriods: [ModelPeriodMetric] {
+        switch range {
+        case .day: analytics.modelDaily
+        case .week: analytics.modelWeekly
+        case .month: analytics.modelMonthly
+        case .year: analytics.modelYearly
+        }
+    }
     var trendPeriods: [PeriodMetric] {
         switch range {
         case .day: daily

@@ -195,6 +195,56 @@ public struct MetricsIndexSnapshot: Sendable {
         }.sorted { $0.start < $1.start }
     }
 
+    public func modelPeriods(
+        granularity: PeriodGranularity,
+        projectPath: String? = nil,
+        since startDate: Date? = nil,
+        calendar: Calendar = .current
+    ) -> [ModelPeriodMetric] {
+        struct Bucket {
+            var usage = TokenUsage.zero
+            var sessions = Set<String>()
+            var runtime: TimeInterval = 0
+            var cost = Decimal.zero
+        }
+
+        let startDay = startDate.map { calendar.startOfDay(for: $0) }
+        var buckets: [String: [Date: Bucket]] = [:]
+        for contribution in days where
+            (projectPath == nil || contribution.projectPath == projectPath)
+                && (startDay.map { contribution.day >= $0 } ?? true)
+        {
+            let start = Self.periodStart(contribution.day, granularity: granularity, calendar: calendar)
+            for model in contribution.models {
+                var modelBuckets = buckets[model.model, default: [:]]
+                var bucket = modelBuckets[start, default: Bucket()]
+                bucket.usage = bucket.usage + model.usage
+                bucket.sessions.insert(contribution.sessionID)
+                bucket.runtime += model.activeRuntime
+                bucket.cost += model.estimatedCost
+                modelBuckets[start] = bucket
+                buckets[model.model] = modelBuckets
+            }
+        }
+
+        return buckets.flatMap { model, modelBuckets in
+            modelBuckets.map { start, bucket in
+                ModelPeriodMetric(
+                    start: start,
+                    model: model,
+                    usage: bucket.usage,
+                    sessions: bucket.sessions.count,
+                    activeRuntime: bucket.runtime,
+                    estimatedCost: bucket.cost
+                )
+            }
+        }
+        .sorted {
+            if $0.start != $1.start { return $0.start < $1.start }
+            return $0.model.localizedStandardCompare($1.model) == .orderedAscending
+        }
+    }
+
     private static func periodStart(_ date: Date, granularity: PeriodGranularity, calendar: Calendar) -> Date {
         switch granularity {
         case .day: calendar.startOfDay(for: date)
