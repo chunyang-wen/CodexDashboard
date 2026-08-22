@@ -109,12 +109,23 @@ public struct SubscriptionSnapshot: Codable, Hashable, Sendable {
     public var displayPlan: String {
         planType.replacingOccurrences(of: "_", with: " ").capitalized
     }
+
+    /// Some providers, including OpenRouter, emit a `rate_limits` envelope with
+    /// every subscription field set to null. It is a telemetry placeholder, not
+    /// an account quota snapshot, and must not replace the last real snapshot.
+    public var isUsable: Bool {
+        !windows.isEmpty
+            || credits != nil
+            || !planType.isEmpty && planType != "unknown"
+            || limitName.map { !$0.isEmpty } == true
+            || rateLimitReachedType != nil
+    }
 }
 
 public enum SubscriptionReader {
     /// Returns already-parsed quota data without opening any rollout files.
     public static func latestCached(from sessions: [SessionMetric]) -> SubscriptionSnapshot? {
-        sessions.compactMap(\.subscription).max { $0.observedAt < $1.observedAt }
+        sessions.compactMap(\.subscription).filter(\.isUsable).max { $0.observedAt < $1.observedAt }
     }
 
     /// Reads only the tail of recent rollouts. Quota snapshots are emitted by Codex with
@@ -142,16 +153,18 @@ public enum SubscriptionReader {
                   let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
                   let payload = object["payload"] as? [String: Any],
                   let limits = payload["rate_limits"] as? [String: Any] else { continue }
-            return snapshot(from: limits, timestamp: object["timestamp"] as? String)
+            if let snapshot = snapshot(from: limits, timestamp: object["timestamp"] as? String) {
+                return snapshot
+            }
         }
         return nil
     }
 
-    static func snapshot(from value: [String: Any], timestamp: String?) -> SubscriptionSnapshot {
+    static func snapshot(from value: [String: Any], timestamp: String?) -> SubscriptionSnapshot? {
         snapshot(from: value, observedAt: parseDate(timestamp) ?? .now)
     }
 
-    static func snapshot(from value: [String: Any], observedAt: Date) -> SubscriptionSnapshot {
+    static func snapshot(from value: [String: Any], observedAt: Date) -> SubscriptionSnapshot? {
         let windows = ["primary", "secondary", "individual_limit"].compactMap { key -> UsageQuotaWindow? in
             guard let window = value[key] as? [String: Any],
                   let used = number(window["used_percent"]),
@@ -169,7 +182,7 @@ public enum SubscriptionReader {
                 balance: $0["balance"] as? String
             )
         }
-        return SubscriptionSnapshot(
+        let snapshot = SubscriptionSnapshot(
             planType: value["plan_type"] as? String ?? "unknown",
             limitID: value["limit_id"] as? String ?? "codex",
             limitName: value["limit_name"] as? String,
@@ -178,6 +191,7 @@ public enum SubscriptionReader {
             rateLimitReachedType: value["rate_limit_reached_type"] as? String,
             observedAt: observedAt
         )
+        return snapshot.isUsable ? snapshot : nil
     }
 
     private static func parseDate(_ value: String?) -> Date? {

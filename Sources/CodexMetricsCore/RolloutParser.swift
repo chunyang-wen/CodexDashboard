@@ -17,7 +17,9 @@ struct RolloutEnrichment: Codable, Sendable {
 }
 
 struct CachedRollout: Codable, Sendable {
-    static let currentParserVersion = 9
+    // v10 rejects provider quota envelopes whose fields are all null, notably
+    // the placeholder emitted by OpenRouter.
+    static let currentParserVersion = 10
 
     let fileSize: Int64
     let modifiedAt: Date
@@ -368,8 +370,8 @@ enum RolloutParser {
         switch event {
         case "token_count":
             if let limits = payload["rate_limits"] as? [String: Any] {
-                let candidate = SubscriptionReader.snapshot(from: limits, observedAt: timestamp)
-                if result.subscription.map({ $0.observedAt < candidate.observedAt }) ?? true {
+                if let candidate = SubscriptionReader.snapshot(from: limits, observedAt: timestamp),
+                   result.subscription.map({ $0.observedAt < candidate.observedAt }) ?? true {
                     result.subscription = candidate
                 }
             }

@@ -721,6 +721,7 @@ public actor HistoricalStore {
     }
 
     public func recordSubscription(_ snapshot: SubscriptionSnapshot) throws {
+        guard snapshot.isUsable else { return }
         let existing = try subscriptionSnapshot()
         if let existing, existing.observedAt > snapshot.observedAt || existing == snapshot { return }
         if let database { try database.storeSubscription(snapshot) }

@@ -382,7 +382,13 @@ final class DashboardStore: ObservableObject {
             let codexHome = self.codexHome
             // The status item should reflect quota immediately; do not make
             // it wait for the much heavier session merge and index load.
-            let storedSubscription = try? await historicalStore.subscriptionSnapshot()
+            let storedSubscription: SubscriptionSnapshot?
+            do {
+                let candidate = try await historicalStore.subscriptionSnapshot()
+                storedSubscription = candidate?.isUsable == true ? candidate : nil
+            } catch {
+                storedSubscription = nil
+            }
             _ = acceptSubscription(storedSubscription)
             var hadStoredHistory = false
             let indexed = (try? await Task.detached(priority: .userInitiated) {
@@ -407,7 +413,7 @@ final class DashboardStore: ObservableObject {
             refreshPricing()
             let cachedSubscription = ([
                 storedSubscription,
-                sessions.compactMap(\.subscription).max { $0.observedAt < $1.observedAt }
+                sessions.compactMap(\.subscription).filter(\.isUsable).max { $0.observedAt < $1.observedAt }
             ].compactMap { $0 }).max { $0.observedAt < $1.observedAt }
             if acceptSubscription(cachedSubscription) {
                 scheduleAnalyticsRefresh()
@@ -887,7 +893,7 @@ final class DashboardStore: ObservableObject {
     /// still being appended. Never let a refresh regress the menu-bar snapshot.
     @discardableResult
     private func acceptSubscription(_ candidate: SubscriptionSnapshot?) -> Bool {
-        guard let candidate else { return false }
+        guard let candidate, candidate.isUsable else { return false }
         if let current = subscription, candidate.observedAt < current.observedAt {
             return false
         }

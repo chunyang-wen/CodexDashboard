@@ -824,6 +824,25 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(snapshot).observedAt.timeIntervalSince1970, 1_786_854_937.995, accuracy: 0.001)
     }
 
+    func testSubscriptionReaderIgnoresProviderPlaceholderQuota() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let line = #"{"timestamp":"2026-08-22T02:02:59.827Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":null,"secondary":null,"credits":null,"individual_limit":null,"plan_type":null,"rate_limit_reached_type":null}}}"#
+        try Data((line + "\n").utf8).write(to: file)
+
+        XCTAssertNil(SubscriptionReader.latest(in: file.path))
+    }
+
+    func testSubscriptionReaderSkipsNewestPlaceholderForOlderQuota() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let valid = #"{"timestamp":"2026-08-22T02:00:00.000Z","payload":{"rate_limits":{"secondary":{"used_percent":40,"window_minutes":10080,"resets_at":1787803180},"plan_type":"plus"}}}"#
+        let placeholder = #"{"timestamp":"2026-08-22T02:02:59.827Z","payload":{"rate_limits":{"primary":null,"secondary":null,"credits":null,"plan_type":null}}}"#
+        try Data((valid + "\n" + placeholder + "\n").utf8).write(to: file)
+
+        XCTAssertEqual(SubscriptionReader.latest(in: file.path)?.windows.first?.usedPercent, 40)
+    }
+
     func testRolloutParserPersistsQuotaSnapshotWithEnrichment() throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: file) }
@@ -835,6 +854,15 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(enrichment.subscription?.displayPlan, "Plus")
         XCTAssertEqual(enrichment.subscription?.windows.first?.usedPercent, 33)
         XCTAssertEqual(try XCTUnwrap(enrichment.subscription).observedAt.timeIntervalSince1970, 1_786_854_937.995, accuracy: 0.001)
+    }
+
+    func testRolloutParserDoesNotPersistProviderPlaceholderQuota() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let line = #"{"timestamp":"2026-08-22T02:02:59.827Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":10,"total_tokens":110}},"rate_limits":{"limit_id":"codex","primary":null,"secondary":null,"credits":null,"individual_limit":null,"plan_type":null,"rate_limit_reached_type":null}}}"#
+        try Data((line + "\n").utf8).write(to: file)
+
+        XCTAssertNil(RolloutParser.parse(path: file.path).subscription)
     }
 
     func testCachedSubscriptionLookupDoesNotRequireRolloutFiles() {
@@ -1094,4 +1122,3 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertNil(nonExistent)
     }
 }
-
