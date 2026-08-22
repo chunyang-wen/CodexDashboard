@@ -251,6 +251,7 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var range: Range = .month
     @Published private(set) var codexHome: URL
     @Published private(set) var refreshInterval: TimeInterval
+    private let defaults: UserDefaults
     private var loadTask: Task<Void, Never>?
     private var enrichmentTask: Task<Void, Never>?
     private var pricingTask: Task<Void, Never>?
@@ -277,11 +278,13 @@ final class DashboardStore: ObservableObject {
     init(userHome: URL = FileManager.default.homeDirectoryForCurrentUser, defaults: UserDefaults = .standard) {
         self.userHome = userHome
         self.historicalStore = HistoricalStore(userHome: userHome)
+        self.defaults = defaults
         let savedPath = defaults.string(forKey: "codexDataPath")
         codexHome = savedPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
             ?? userHome.appendingPathComponent(".codex", isDirectory: true)
         let savedInterval = defaults.object(forKey: "metricsRefreshInterval") as? Double
         refreshInterval = savedInterval ?? 60
+        range = Range(rawValue: defaults.string(forKey: "dashboardRange") ?? "") ?? .month
     }
 
     var isBusy: Bool { isLoading || isEnriching }
@@ -827,6 +830,7 @@ final class DashboardStore: ObservableObject {
     func updateRange(_ newRange: Range) {
         rangeRefreshTask?.cancel()
         guard newRange != range else { return }
+        defaults.set(newRange.rawValue, forKey: "dashboardRange")
         rangeRefreshTask = Task { [weak self] in
             // A short delay crosses the current AppKit/SwiftUI run-loop turn.
             try? await Task.sleep(for: .milliseconds(1))

@@ -4,6 +4,14 @@
         <title>CodexDashboard</title>
         <item>
             <title>0.1.0</title>
+            <pubDate>Sat, 22 Aug 2026 18:53:12 +0800</pubDate>
+            <sparkle:version>2</sparkle:version>
+            <sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.1/CodexDashboard-0.1.1.zip" length="7291058" type="application/octet-stream" sparkle:edSignature="YoyqadctJtVe2r8OrA/PwjCkAtZO0abA10wATHG9rDLFtZCMTOcWM0/cpzFT478qSRbmsUfK2ehB6VMx9gOgDQ=="/>
+        </item>
+        <item>
+            <title>0.1.0</title>
             <pubDate>Sat, 22 Aug 2026 16:41:06 +0800</pubDate>
             <sparkle:version>1</sparkle:version>
             <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>

@@ -160,6 +160,7 @@ private struct AnalyticsUpdateOverlay: View {
 
 struct OverviewView: View {
     @EnvironmentObject private var store: DashboardStore
+    @AppStorage("overviewActivityMetric") private var activityMetric = "Tokens"
     @State private var selectedPeriodStart: Date?
     private let columns = [GridItem(.adaptive(minimum: 190), spacing: 12)]
 
@@ -206,6 +207,7 @@ struct OverviewView: View {
                 ActivityChart(
                     periods: store.trendPeriods,
                     granularity: store.range.granularity,
+                    metric: $activityMetric,
                     selectedPeriodStart: $selectedPeriodStart
                 )
                 HStack(alignment: .top, spacing: 16) {
@@ -289,7 +291,7 @@ struct ActivityChart: View {
     let allowsPeriodSelection: Bool
     @Binding var selectedPeriodStart: Date?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var metric: String
+    @Binding private var metric: String
     @State private var hoveredPeriod: PeriodMetric?
     @State private var hoveredScrollEdge: ScrollEdge?
     @State private var scrollPosition = 0.0
@@ -303,6 +305,7 @@ struct ActivityChart: View {
         initialMetric: String = "Tokens",
         showsMetricPicker: Bool = true,
         allowsPeriodSelection: Bool = true,
+        metric: Binding<String>? = nil,
         selectedPeriodStart: Binding<Date?> = .constant(nil)
     ) {
         self.periods = periods
@@ -311,8 +314,8 @@ struct ActivityChart: View {
         self.subtitle = subtitle
         self.showsMetricPicker = showsMetricPicker
         self.allowsPeriodSelection = allowsPeriodSelection
+        _metric = metric ?? .constant(initialMetric)
         _selectedPeriodStart = selectedPeriodStart
-        _metric = State(initialValue: initialMetric)
     }
 
     private var visiblePeriodCount: Double { Double(min(30, max(1, periods.count))) }
@@ -806,8 +809,16 @@ private enum ProjectTreeSelection: Hashable {
 struct ProjectsView: View {
     @EnvironmentObject private var store: DashboardStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage("projectActivityMetric") private var activityMetric = "Tokens"
     @State private var expandedProjects = Set<String>()
     @State private var selection: ProjectTreeSelection?
+    @State private var searchText = ""
+
+    private var visibleProjects: [ProjectMetric] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return store.allProjects }
+        return store.allProjects.filter { $0.name.localizedCaseInsensitiveContains(query) }
+    }
 
     var body: some View {
         HSplitView {
@@ -817,6 +828,7 @@ struct ProjectsView: View {
                 .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
         }
         .navigationTitle("Projects")
+        .searchable(text: $searchText, placement: .toolbar, prompt: "Search projects")
         .onAppear { selectInitialProject() }
         .onChange(of: store.allProjects.map(\.id)) { _, _ in selectInitialProject() }
     }
@@ -824,7 +836,7 @@ struct ProjectsView: View {
     private var projectTree: some View {
         ScrollView {
             LazyVStack(spacing: 5) {
-                ForEach(store.allProjects) { project in
+                ForEach(visibleProjects) { project in
                     VStack(spacing: 3) {
                         HStack(spacing: 7) {
                             Button { toggle(project.id) } label: {
@@ -873,6 +885,12 @@ struct ProjectsView: View {
                     systemImage: "folder",
                     description: Text("No Codex projects or sessions are available yet.")
                 )
+            } else if visibleProjects.isEmpty {
+                ContentUnavailableView(
+                    "No matching projects",
+                    systemImage: "magnifyingglass",
+                    description: Text("Try a different project name.")
+                )
             }
         }
     }
@@ -890,6 +908,7 @@ struct ProjectsView: View {
                     pricing: store.pricing,
                     indexed: store.projectAggregate(path: path),
                     periods: store.projectPeriods(path: path, granularity: store.range.granularity),
+                    activityMetric: $activityMetric,
                     sessionIndexes: Dictionary(uniqueKeysWithValues: project.sessions.compactMap { session in
                         store.indexedSession(session.id).map { (session.id, $0) }
                     })
@@ -996,6 +1015,7 @@ private struct ProjectDetailView: View {
     let pricing: PricingHistory
     let indexed: MetricsIndexAggregate
     let periods: [PeriodMetric]
+    @Binding var activityMetric: String
     let sessionIndexes: [String: IndexedSessionMetrics]
     let onSelectSession: (SessionSummary) -> Void
 
@@ -1014,7 +1034,7 @@ private struct ProjectDetailView: View {
                     ToolCallsMetricCard(calls: indexed.toolCalls, tools: indexed.tools, detail: "\(indexed.tools.count) tools · \(rangeLabel)")
                     SkillCallsMetricCard(calls: indexed.skillCalls, skills: indexed.skills, detail: "\(indexed.skills.count) skills · \(rangeLabel)")
                 }
-                ActivityChart(periods: periods, granularity: granularity)
+                ActivityChart(periods: periods, granularity: granularity, metric: $activityMetric)
                 VStack(alignment: .leading, spacing: 12) {
                     SectionHeader(title: "Recent sessions", subtitle: "Sessions stay scoped to this project.")
                     ForEach(project.sessions.sorted { $0.updatedAt > $1.updatedAt }.prefix(8)) { session in
