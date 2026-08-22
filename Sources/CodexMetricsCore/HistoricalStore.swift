@@ -49,9 +49,13 @@ final class MetricsDatabase: @unchecked Sendable {
             CREATE TABLE IF NOT EXISTS historical_session (
                 id TEXT PRIMARY KEY,
                 updated_at REAL NOT NULL,
-                metric BLOB NOT NULL
+                metric BLOB NOT NULL,
+                summary BLOB
             )
             """)
+        if !tableHasColumn("historical_session", named: "summary") {
+            try execute("ALTER TABLE historical_session ADD COLUMN summary BLOB")
+        }
         try execute("""
             CREATE TABLE IF NOT EXISTS source_session_index (
                 source_key TEXT NOT NULL,
@@ -169,21 +173,38 @@ final class MetricsDatabase: @unchecked Sendable {
     }
 
     func historicalSessionSummaries() throws -> [SessionSummary] {
-        try lockedThrowing {
-            guard let statement = prepare("SELECT metric FROM historical_session ORDER BY updated_at DESC") else { throw databaseError() }
+        let rows: [(id: String, summary: SessionSummary?)] = try lockedThrowing {
+            guard let statement = prepare("SELECT id, summary FROM historical_session ORDER BY updated_at DESC") else { throw databaseError() }
             defer { sqlite3_finalize(statement) }
             let decoder = Self.decoder()
-            var result: [SessionSummary] = []
+            var result: [(id: String, summary: SessionSummary?)] = []
             while sqlite3_step(statement) == SQLITE_ROW {
-                guard let encoded = data(statement, 0) else { continue }
-                if let summary = try? decoder.decode(SessionSummary.self, from: encoded) {
-                    result.append(summary)
-                } else if let full = try? decoder.decode(SessionMetric.self, from: encoded) {
-                    result.append(full.summary)
+                guard let idBytes = sqlite3_column_text(statement, 0) else { continue }
+                let id = String(cString: idBytes)
+                let summary = data(statement, 1).flatMap {
+                    try? decoder.decode(SessionSummary.self, from: $0)
                 }
+                result.append((id, summary))
             }
             return result
         }
+
+        var result: [SessionSummary] = []
+        var backfill: [(String, Data)] = []
+        let encoder = Self.encoder()
+        for row in rows {
+            if let summary = row.summary {
+                result.append(summary)
+            } else if let full = try historicalSession(id: row.id) {
+                let summary = full.summary
+                result.append(summary)
+                backfill.append((row.id, try encoder.encode(summary)))
+            }
+        }
+        if !backfill.isEmpty {
+            try storeHistoricalSummaries(backfill)
+        }
+        return result
     }
 
     func historicalSessionCount() throws -> Int {
@@ -198,19 +219,40 @@ final class MetricsDatabase: @unchecked Sendable {
     func upsertHistoricalSessions(_ sessions: [SessionMetric]) throws {
         guard !sessions.isEmpty else { return }
         let encoder = Self.encoder()
-        let encoded = try sessions.map { ($0, try encoder.encode($0)) }
+        let encoded = try sessions.map {
+            ($0, try encoder.encode($0), try encoder.encode($0.summary))
+        }
         try transaction {
             guard let statement = prepare("""
-                INSERT INTO historical_session(id, updated_at, metric) VALUES(?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at, metric=excluded.metric
+                INSERT INTO historical_session(id, updated_at, metric, summary) VALUES(?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    updated_at=excluded.updated_at, metric=excluded.metric, summary=excluded.summary
                 """) else { throw databaseError() }
             defer { sqlite3_finalize(statement) }
-            for (session, bytes) in encoded {
+            for (session, bytes, summaryBytes) in encoded {
                 sqlite3_reset(statement)
                 sqlite3_clear_bindings(statement)
                 bind(session.id, to: statement, at: 1)
                 sqlite3_bind_double(statement, 2, session.updatedAt.timeIntervalSince1970)
                 bind(bytes, to: statement, at: 3)
+                bind(summaryBytes, to: statement, at: 4)
+                guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError() }
+            }
+        }
+    }
+
+    private func storeHistoricalSummaries(_ summaries: [(String, Data)]) throws {
+        try transaction {
+            guard let statement = prepare("""
+                UPDATE historical_session SET summary = ?
+                WHERE id = ? AND summary IS NULL
+                """) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            for (id, bytes) in summaries {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                bind(bytes, to: statement, at: 1)
+                bind(id, to: statement, at: 2)
                 guard sqlite3_step(statement) == SQLITE_DONE else { throw databaseError() }
             }
         }

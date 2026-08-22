@@ -239,6 +239,7 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var enrichedSessions = 0
     @Published private(set) var enrichmentTotal = 0
     @Published private(set) var subscription: SubscriptionSnapshot?
+    @Published private(set) var bankedResets: BankedResetSnapshot?
     @Published private(set) var account: CodexAccountSnapshot?
     @Published private(set) var pricing: PricingHistory = .bundled
     @Published private(set) var pricingSource = "Bundled fallback"
@@ -256,6 +257,7 @@ final class DashboardStore: ObservableObject {
     private var analyticsTask: Task<Void, Never>?
     private var rangeRefreshTask: Task<Void, Never>?
     private var backgroundRefreshTask: Task<Void, Never>?
+    private var bankedResetTask: Task<Void, Never>?
     private var sourceWatcher: CodexSourceWatcher?
     private var loadID = UUID()
     private var enrichmentID = UUID()
@@ -438,6 +440,7 @@ final class DashboardStore: ObservableObject {
             account = await Task.detached(priority: .utility) {
                 CodexAccountReader.read(from: codexHome)
             }.value
+            refreshBankedResets(from: codexHome)
         }
     }
 
@@ -485,6 +488,7 @@ final class DashboardStore: ObservableObject {
                 self.account = await Task.detached(priority: .utility) {
                     CodexAccountReader.read(from: codexHome)
                 }.value
+                self.refreshBankedResets(from: codexHome)
                 guard !Task.isCancelled, self.loadID == requestID else { return }
                 await self.startBackgroundRefreshIfNeeded()
             } catch {
@@ -926,11 +930,24 @@ final class DashboardStore: ObservableObject {
         return true
     }
 
+    private func refreshBankedResets(from codexHome: URL) {
+        bankedResetTask?.cancel()
+        bankedResetTask = Task { [weak self] in
+            let snapshot = await Task.detached(priority: .utility) {
+                await BankedResetReader.latest(from: codexHome)
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            self.bankedResets = snapshot
+        }
+    }
+
     func updateCodexHome(_ url: URL) {
         let standardized = url.standardizedFileURL
         guard standardized != codexHome else { return }
         codexHome = standardized
         subscription = nil
+        bankedResetTask?.cancel()
+        bankedResets = nil
         account = nil
         quotaWeekAnalytics = .empty
         metricsIndex = .empty

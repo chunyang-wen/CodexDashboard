@@ -107,7 +107,8 @@ public struct SubscriptionSnapshot: Codable, Hashable, Sendable {
     }
 
     public var displayPlan: String {
-        planType.replacingOccurrences(of: "_", with: " ").capitalized
+        if planType.caseInsensitiveCompare("api") == .orderedSame { return "API" }
+        return planType.replacingOccurrences(of: "_", with: " ").capitalized
     }
 
     /// Some providers, including OpenRouter, emit a `rate_limits` envelope with
@@ -182,8 +183,23 @@ public enum SubscriptionReader {
                 balance: $0["balance"] as? String
             )
         }
+        // A custom provider may omit plan_type while still reporting useful
+        // quota windows. Keep that snapshot and label it API. A completely
+        // empty rate_limits envelope is only a provider placeholder, though;
+        // do not turn it into a durable fake subscription snapshot.
+        let hasReportedQuota = !windows.isEmpty
+            || credits != nil
+            || (value["limit_name"] as? String)?.isEmpty == false
+            || value["rate_limit_reached_type"] as? String != nil
+        let reportedPlanType = (value["plan_type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasMeaningfulPlan = reportedPlanType.map {
+            !$0.isEmpty && $0.caseInsensitiveCompare("unknown") != .orderedSame
+        } ?? false
+        guard hasReportedQuota || hasMeaningfulPlan else { return nil }
+        let displayPlanType = hasMeaningfulPlan ? reportedPlanType! : "API"
+
         let snapshot = SubscriptionSnapshot(
-            planType: value["plan_type"] as? String ?? "unknown",
+            planType: displayPlanType,
             limitID: value["limit_id"] as? String ?? "codex",
             limitName: value["limit_name"] as? String,
             windows: windows,
@@ -209,5 +225,128 @@ public enum SubscriptionReader {
 
     private static func integer(_ value: Any?) -> Int? {
         number(value).map(Int.init)
+    }
+}
+
+public struct BankedResetCredit: Codable, Hashable, Sendable, Identifiable {
+    public let id: String
+    public let status: String
+    public let grantedAt: Date
+    public let expiresAt: Date?
+    public let title: String?
+    public let description: String?
+
+    public init(
+        id: String,
+        status: String,
+        grantedAt: Date,
+        expiresAt: Date?,
+        title: String?,
+        description: String?
+    ) {
+        self.id = id
+        self.status = status
+        self.grantedAt = grantedAt
+        self.expiresAt = expiresAt
+        self.title = title
+        self.description = description
+    }
+}
+
+public struct BankedResetSnapshot: Codable, Hashable, Sendable {
+    public let availableCount: Int
+    public let credits: [BankedResetCredit]?
+    public let observedAt: Date
+
+    public init(availableCount: Int, credits: [BankedResetCredit]?, observedAt: Date = .now) {
+        self.availableCount = max(0, availableCount)
+        self.credits = credits
+        self.observedAt = observedAt
+    }
+}
+
+public enum BankedResetReader {
+    /// Fetches the OpenAI reset bank as read-only account metadata. This uses
+    /// the same account credentials Codex already stores locally, but never
+    /// writes or logs the token and never attempts to redeem a reset.
+    public static func latest(from codexHome: URL) async -> BankedResetSnapshot? {
+        guard let credentials = credentials(from: codexHome),
+              let url = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits") else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 10
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("codex-1", forHTTPHeaderField: "OpenAI-Beta")
+        request.setValue("Codex Dashboard", forHTTPHeaderField: "originator")
+        if let accountID = credentials.accountID {
+            request.setValue(accountID, forHTTPHeaderField: "ChatGPT-Account-ID")
+        }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode),
+                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return nil
+            }
+            return snapshot(from: object)
+        } catch {
+            // The menu bar should remain useful when the account endpoint is
+            // unavailable, rate-limited, or the user is using an API provider.
+            return nil
+        }
+    }
+
+    static func snapshot(from object: [String: Any], observedAt: Date = .now) -> BankedResetSnapshot? {
+        let availableCount = integer(object["available_count"] ?? object["availableCount"])
+        let rawCredits = object["credits"] as? [[String: Any]]
+        let credits = rawCredits?.compactMap { credit(from: $0) }
+        guard let availableCount, availableCount >= 0 else { return nil }
+        return BankedResetSnapshot(
+            availableCount: availableCount,
+            credits: rawCredits == nil ? nil : credits,
+            observedAt: observedAt
+        )
+    }
+
+    private static func credentials(from codexHome: URL) -> (accessToken: String, accountID: String?)? {
+        let authURL = codexHome.appendingPathComponent("auth.json")
+        guard let data = try? Data(contentsOf: authURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tokens = root["tokens"] as? [String: Any],
+              let accessToken = tokens["access_token"] as? String,
+              !accessToken.isEmpty else { return nil }
+        return (accessToken, tokens["account_id"] as? String)
+    }
+
+    private static func credit(from object: [String: Any]) -> BankedResetCredit? {
+        guard let id = object["id"] as? String,
+              let status = object["status"] as? String,
+              let grantedAt = date(object["granted_at"] ?? object["grantedAt"]) else { return nil }
+        return BankedResetCredit(
+            id: id,
+            status: status,
+            grantedAt: grantedAt,
+            expiresAt: date(object["expires_at"] ?? object["expiresAt"]),
+            title: object["title"] as? String,
+            description: object["description"] as? String
+        )
+    }
+
+    private static func date(_ value: Any?) -> Date? {
+        if let number = value as? NSNumber { return Date(timeIntervalSince1970: number.doubleValue) }
+        guard let string = value as? String else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: string) ?? ISO8601DateFormatter().date(from: string)
+    }
+
+    private static func integer(_ value: Any?) -> Int? {
+        if let number = value as? NSNumber { return number.intValue }
+        if let string = value as? String { return Int(string) }
+        return nil
     }
 }

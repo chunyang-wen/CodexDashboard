@@ -645,6 +645,11 @@ private struct MenuBarDashboardView: View {
                     }
                 }
 
+                if let bankedResets = store.bankedResets, bankedResets.availableCount > 0 {
+                    sectionDivider
+                    bankedResetSection(bankedResets)
+                }
+
                 sectionDivider
                 usageTrend
 
@@ -730,6 +735,52 @@ private struct MenuBarDashboardView: View {
         if let plan = store.subscription?.displayPlan { return "ChatGPT \(plan)" }
         if let plan = store.account?.planType { return "ChatGPT \(plan.capitalized)" }
         return "Plan not reported"
+    }
+
+    private func bankedResetSection(_ snapshot: BankedResetSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Banked resets", systemImage: "arrow.counterclockwise.circle.fill")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(snapshot.availableCount.formatted())
+                    .font(.title2.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.teal)
+            }
+
+            if let credits = snapshot.credits, !credits.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(credits.prefix(3)) { credit in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(credit.title ?? "Codex reset")
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
+                            if let expiresAt = credit.expiresAt {
+                                Text("Expires \(expiresAt, style: .relative)")
+                            } else {
+                                Text("No expiry reported")
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                Text("Available to use when needed")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let credits = snapshot.credits,
+               snapshot.availableCount > credits.count {
+                Text("OpenAI reports \(snapshot.availableCount - credits.count) more reset\(snapshot.availableCount - credits.count == 1 ? "" : "s") available.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .combine)
     }
 
     private func quotaRow(_ window: UsageQuotaWindow) -> some View {

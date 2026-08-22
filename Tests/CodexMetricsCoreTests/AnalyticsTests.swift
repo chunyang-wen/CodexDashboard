@@ -964,6 +964,35 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(snapshot).observedAt.timeIntervalSince1970, 1_786_854_937.995, accuracy: 0.001)
     }
 
+    func testSubscriptionReaderLabelsCustomProviderQuotaAsAPI() {
+        let snapshot = SubscriptionReader.snapshot(
+            from: [
+                "secondary": [
+                    "used_percent": 12,
+                    "window_minutes": 10_080,
+                    "resets_at": 1_800_000_000
+                ]
+            ],
+            observedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        XCTAssertEqual(snapshot?.displayPlan, "API")
+        XCTAssertEqual(snapshot?.windows.first?.remainingPercent, 88)
+
+        let explicitUnknown = SubscriptionReader.snapshot(
+            from: [
+                "plan_type": "unknown",
+                "secondary": [
+                    "used_percent": 12,
+                    "window_minutes": 10_080,
+                    "resets_at": 1_800_000_000
+                ]
+            ],
+            observedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        XCTAssertEqual(explicitUnknown?.displayPlan, "API")
+    }
+
     func testSubscriptionReaderIgnoresProviderPlaceholderQuota() throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: file) }
@@ -981,6 +1010,33 @@ final class AnalyticsTests: XCTestCase {
         try Data((valid + "\n" + placeholder + "\n").utf8).write(to: file)
 
         XCTAssertEqual(SubscriptionReader.latest(in: file.path)?.windows.first?.usedPercent, 40)
+    }
+
+    func testBankedResetReaderParsesCountAndExpiryDetails() throws {
+        let snapshot = BankedResetReader.snapshot(
+            from: [
+                "available_count": 2,
+                "credits": [
+                    [
+                        "id": "reset-1",
+                        "status": "available",
+                        "granted_at": "2026-08-20T12:00:00Z",
+                        "expires_at": "2026-09-19T12:00:00Z",
+                        "title": "Full reset (Weekly + 5 hr)"
+                    ]
+                ]
+            ],
+            observedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        XCTAssertEqual(snapshot?.availableCount, 2)
+        XCTAssertEqual(snapshot?.credits?.count, 1)
+        XCTAssertEqual(snapshot?.credits?.first?.title, "Full reset (Weekly + 5 hr)")
+        XCTAssertEqual(
+            try XCTUnwrap(snapshot?.credits?.first?.expiresAt?.timeIntervalSince1970),
+            1_789_819_200,
+            accuracy: 0.001
+        )
     }
 
     func testRolloutParserPersistsQuotaSnapshotWithEnrichment() throws {
@@ -1356,12 +1412,63 @@ final class AnalyticsTests: XCTestCase {
         _ = try await store.record([sample])
         await store.releaseMemory()
 
+        let databaseURL = home.appendingPathComponent(
+            "Library/Application Support/CodexDashboard/metrics-v1.sqlite"
+        )
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        var statement: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_prepare_v2(
+                database,
+                "SELECT length(summary) FROM historical_session WHERE id = 'on-demand-1'",
+                -1,
+                &statement,
+                nil
+            ),
+            SQLITE_OK
+        )
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertGreaterThan(sqlite3_column_int(statement, 0), 0)
+        sqlite3_finalize(statement)
+
+        // Simulate a database created before compact summaries were introduced.
+        XCTAssertEqual(
+            sqlite3_exec(
+                database,
+                "UPDATE historical_session SET summary = NULL WHERE id = 'on-demand-1'",
+                nil,
+                nil,
+                nil
+            ),
+            SQLITE_OK
+        )
+        if let database { sqlite3_close(database) }
+
         // Test fetching summaries without loading full SessionMetric objects into memory
         let summaries = try await store.sessionSummaries()
         XCTAssertEqual(summaries.count, 1)
         XCTAssertEqual(summaries.first?.id, "on-demand-1")
         XCTAssertEqual(summaries.first?.displayTitle, "On Demand Test")
         XCTAssertEqual(summaries.first?.toolCalls, 3)
+
+        database = nil
+        statement = nil
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        XCTAssertEqual(
+            sqlite3_prepare_v2(
+                database,
+                "SELECT length(summary) FROM historical_session WHERE id = 'on-demand-1'",
+                -1,
+                &statement,
+                nil
+            ),
+            SQLITE_OK
+        )
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertGreaterThan(sqlite3_column_int(statement, 0), 0)
+        sqlite3_finalize(statement)
+        if let database { sqlite3_close(database) }
 
         // Test fetching single session on demand from SQLite
         let fetched = try await store.session(withID: "on-demand-1")
