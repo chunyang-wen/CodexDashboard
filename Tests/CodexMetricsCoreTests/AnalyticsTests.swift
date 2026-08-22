@@ -3,6 +3,42 @@ import SQLite3
 @testable import CodexMetricsCore
 
 final class AnalyticsTests: XCTestCase {
+    func testMenuBarSnapshotAndSessionCountLoadWithoutHydratedArchive() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = HistoricalStore(userHome: home)
+        let session = SessionMetric(
+            id: "compact", rolloutPath: "/tmp/compact.jsonl", projectPath: "/tmp/project",
+            title: "Compact", source: "app", provider: "openai", createdAt: .now,
+            updatedAt: .now, model: "gpt-5.6-luna", reasoningEffort: nil,
+            gitBranch: nil, cliVersion: nil, archived: false,
+            usage: TokenUsage(input: 10, output: 2), enrichmentAvailable: true
+        )
+        _ = try await store.record([session])
+        let snapshotDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = MenuBarMetricsSnapshot(generatedAt: snapshotDate, days: [
+            MenuBarDayMetrics(
+                day: snapshotDate,
+                usage: session.usage,
+                estimatedCost: 1.25,
+                toolCalls: 3,
+                skillCalls: 1,
+                sessions: 1,
+                activeRuntime: 4
+            )
+        ])
+        try await store.recordMenuBarMetrics(snapshot)
+        await store.releaseMemory()
+
+        let hydratedCount = try await store.sessionCount()
+        await store.releaseMemory()
+        let storedCount = try await store.storedSessionCount()
+        let restoredSnapshot = try await store.menuBarMetricsSnapshot()
+        XCTAssertEqual(hydratedCount, 1)
+        XCTAssertEqual(storedCount, 1)
+        XCTAssertEqual(restoredSnapshot, snapshot)
+    }
+
     func testTokenUsageDoesNotDoubleCountReasoning() {
         let usage = TokenUsage(input: 100, cachedInput: 60, output: 20, reasoningOutput: 8)
         XCTAssertEqual(usage.total, 120)
@@ -986,4 +1022,76 @@ final class AnalyticsTests: XCTestCase {
         let sessions = try CodexStore(codexHome: codexHome, userHome: home).loadIndexedSessions()
         XCTAssertEqual(sessions.map(\.id), ["fallback-session"])
     }
+
+    func testHistoricalStoreReleaseMemoryFlushesCaches() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let store = HistoricalStore(userHome: home)
+        let sample = SessionMetric(
+            id: "mem-test-1", rolloutPath: "/tmp/mem.jsonl", projectPath: "/tmp/project",
+            title: "Memory Test", source: "cli", provider: "openai",
+            createdAt: .distantPast, updatedAt: .now, model: "gpt-4o",
+            reasoningEffort: nil, gitBranch: nil, cliVersion: nil,
+            archived: false, usage: .init(input: 100, output: 50, total: 150),
+            enrichmentAvailable: true
+        )
+
+        let count = try await store.record([sample])
+        XCTAssertEqual(count, 1)
+
+        let index = try await store.metricsIndex(for: [sample])
+        XCTAssertEqual(index.sessions.count, 1)
+
+        // Calling releaseMemory should reset in-memory caches and SQLite connection pages
+        await store.releaseMemory()
+
+        // Re-reading count or index should succeed on-demand without error
+        let storedCount = try await store.storedSessionCount()
+        XCTAssertEqual(storedCount, 1)
+
+        let storedPricing = try await store.storedPricingHistory()
+        XCTAssertFalse(storedPricing.schedules.isEmpty)
+    }
+
+    func testHistoricalStoreSessionOnDemandFetchAndSummaries() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let store = HistoricalStore(userHome: home)
+        let sample = SessionMetric(
+            id: "on-demand-1", rolloutPath: "/tmp/sample.jsonl", projectPath: "/tmp/project",
+            title: "On Demand Test", source: "cli", provider: "openai",
+            createdAt: .distantPast, updatedAt: .now, model: "gpt-4o",
+            reasoningEffort: nil, gitBranch: nil, cliVersion: nil,
+            archived: false, usage: .init(input: 100, output: 50, total: 150),
+            turns: [TurnMetric(completedAt: .now, duration: 2.5, timeToFirstToken: 0.2, completed: true)],
+            toolCalls: 3,
+            enrichmentAvailable: true
+        )
+
+        _ = try await store.record([sample])
+        await store.releaseMemory()
+
+        // Test fetching summaries without loading full SessionMetric objects into memory
+        let summaries = try await store.sessionSummaries()
+        XCTAssertEqual(summaries.count, 1)
+        XCTAssertEqual(summaries.first?.id, "on-demand-1")
+        XCTAssertEqual(summaries.first?.displayTitle, "On Demand Test")
+        XCTAssertEqual(summaries.first?.toolCalls, 3)
+
+        // Test fetching single session on demand from SQLite
+        let fetched = try await store.session(withID: "on-demand-1")
+        XCTAssertNotNil(fetched)
+        XCTAssertEqual(fetched?.id, "on-demand-1")
+        XCTAssertEqual(fetched?.turns.count, 1)
+        XCTAssertEqual(fetched?.turns.first?.duration, 2.5)
+
+        // Non-existent session returns nil
+        let nonExistent = try await store.session(withID: "non-existent")
+        XCTAssertNil(nonExistent)
+    }
 }
+

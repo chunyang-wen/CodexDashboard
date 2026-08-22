@@ -121,18 +121,19 @@ final class CodexSourceWatcher: @unchecked Sendable {
         )
 
         for index in paths.indices {
+            let classification = classifier.classify(paths[index])
+            guard classification != .irrelevant else { continue }
             batch.latestEventID = max(batch.latestEventID, UInt64(eventIDs[index]))
             if flags[index] & recoveryFlags != 0 {
                 batch.requiresReconciliation = true
             }
-            switch classifier.classify(paths[index]) {
+            switch classification {
             case .rollout(let path): batch.rolloutPaths.insert(path)
             case .index: batch.indexChanged = true
             case .irrelevant: break
             }
         }
-        guard batch.latestEventID > 0,
-              batch.requiresReconciliation || batch.indexChanged || !batch.rolloutPaths.isEmpty else { return }
+        guard batch.requiresReconciliation || batch.indexChanged || !batch.rolloutPaths.isEmpty else { return }
         continuation.yield(batch)
     }
 

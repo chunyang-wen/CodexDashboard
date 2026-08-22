@@ -21,6 +21,7 @@ final class MetricsDatabase: @unchecked Sendable {
         sqlite3_busy_timeout(handle, 2_000)
         try execute("PRAGMA journal_mode=WAL")
         try execute("PRAGMA synchronous=NORMAL")
+        try execute("PRAGMA cache_size=-2000")
         try execute("""
             CREATE TABLE IF NOT EXISTS rollout_checkpoint (
                 path TEXT PRIMARY KEY,
@@ -129,6 +130,43 @@ final class MetricsDatabase: @unchecked Sendable {
         }
     }
 
+    func historicalSession(id: String) throws -> SessionMetric? {
+        try lockedThrowing {
+            guard let statement = prepare("SELECT metric FROM historical_session WHERE id = ?") else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            bind(id, to: statement, at: 1)
+            guard sqlite3_step(statement) == SQLITE_ROW, let encoded = data(statement, 0) else { return nil }
+            return try Self.decoder().decode(SessionMetric.self, from: encoded)
+        }
+    }
+
+    func historicalSessionSummaries() throws -> [SessionSummary] {
+        try lockedThrowing {
+            guard let statement = prepare("SELECT metric FROM historical_session ORDER BY updated_at DESC") else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            let decoder = Self.decoder()
+            var result: [SessionSummary] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let encoded = data(statement, 0) else { continue }
+                if let summary = try? decoder.decode(SessionSummary.self, from: encoded) {
+                    result.append(summary)
+                } else if let full = try? decoder.decode(SessionMetric.self, from: encoded) {
+                    result.append(full.summary)
+                }
+            }
+            return result
+        }
+    }
+
+    func historicalSessionCount() throws -> Int {
+        try lockedThrowing {
+            guard let statement = prepare("SELECT COUNT(*) FROM historical_session") else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_step(statement) == SQLITE_ROW else { throw databaseError() }
+            return Int(sqlite3_column_int64(statement, 0))
+        }
+    }
+
     func upsertHistoricalSessions(_ sessions: [SessionMetric]) throws {
         guard !sessions.isEmpty else { return }
         let encoder = Self.encoder()
@@ -164,6 +202,14 @@ final class MetricsDatabase: @unchecked Sendable {
 
     func storeSubscription(_ subscription: SubscriptionSnapshot) throws {
         try storeMetadata(subscription, key: "subscription")
+    }
+
+    func menuBarMetrics() throws -> MenuBarMetricsSnapshot? {
+        try metadata(MenuBarMetricsSnapshot.self, key: "menu_bar_metrics")
+    }
+
+    func storeMenuBarMetrics(_ snapshot: MenuBarMetricsSnapshot) throws {
+        try storeMetadata(snapshot, key: "menu_bar_metrics")
     }
 
     func sourceEventID(for key: String) throws -> UInt64? {
@@ -323,6 +369,16 @@ final class MetricsDatabase: @unchecked Sendable {
         }
     }
 
+    func releaseMemory() {
+        locked {
+            guard let handle else { return }
+            _ = sqlite3_db_release_memory(handle)
+            _ = sqlite3_exec(handle, "PRAGMA shrink_memory", nil, nil, nil)
+            _ = sqlite3_wal_checkpoint_v2(handle, nil, SQLITE_CHECKPOINT_PASSIVE, nil, nil)
+        }
+        _ = sqlite3_release_memory(Int32.max)
+    }
+
     private func transaction(_ body: () throws -> Void) throws {
         try lockedThrowing {
             try executeUnlocked("BEGIN IMMEDIATE")
@@ -447,7 +503,15 @@ public actor HistoricalStore {
     }
 
     public func pricingHistory() throws -> PricingHistory {
-        try load().pricing.merging(.bundled)
+        if let archive { return archive.pricing.merging(.bundled) }
+        if let stored = try database?.pricing() { return stored.merging(.bundled) }
+        return try load().pricing.merging(.bundled)
+    }
+
+    /// Reads pricing without triggering legacy archive migration. Intended for
+    /// the small resident menu process; a refresh worker performs migration.
+    public func storedPricingHistory() throws -> PricingHistory {
+        (try database?.pricing() ?? .bundled).merging(.bundled)
     }
 
     public func mergedSessions(with indexed: [SessionMetric]) throws -> [SessionMetric] {
@@ -466,6 +530,67 @@ public actor HistoricalStore {
         let indexedIDs = Set(indexed.map(\.id))
         result.append(contentsOf: stored.filter { !indexedIDs.contains($0.id) })
         return result.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    public func mergedSessionSummaries(with indexed: [SessionMetric]) throws -> [SessionSummary] {
+        let storedSummaries = try sessionSummaries()
+        let storedByID = Dictionary(uniqueKeysWithValues: storedSummaries.map { ($0.id, $0) })
+        var result = indexed.map { session in
+            guard let historical = storedByID[session.id] else { return session.summary }
+            let canReuseEnrichment = historical.enrichmentAvailable
+                && historical.updatedAt >= session.updatedAt
+            return Self.combineSummaries(
+                historical,
+                session.summary,
+                enrichmentAvailable: canReuseEnrichment
+            )
+        }
+        let indexedIDs = Set(indexed.map(\.id))
+        result.append(contentsOf: storedSummaries.filter { !indexedIDs.contains($0.id) })
+        return result.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private static func combineSummaries(
+        _ historical: SessionSummary,
+        _ indexed: SessionSummary,
+        enrichmentAvailable: Bool
+    ) -> SessionSummary {
+        let enriched = enrichmentAvailable ? historical : indexed
+        let title = indexed.title.isEmpty ? historical.title : indexed.title
+        let originator = enriched.originator ?? indexed.originator
+        let updatedAt = max(historical.updatedAt, indexed.updatedAt)
+        let model = enriched.model ?? indexed.model
+        let reasoningEffort = enriched.reasoningEffort ?? indexed.reasoningEffort
+        let gitBranch = indexed.gitBranch ?? historical.gitBranch
+        let cliVersion = indexed.cliVersion ?? historical.cliVersion
+        let usage = enriched.usage.total > 0 ? enriched.usage : indexed.usage
+        let subscription = historical.subscription ?? indexed.subscription
+        return SessionSummary(
+            id: indexed.id,
+            rolloutPath: indexed.rolloutPath,
+            projectPath: indexed.projectPath,
+            title: title,
+            source: indexed.source,
+            originator: originator,
+            provider: indexed.provider,
+            createdAt: indexed.createdAt,
+            updatedAt: updatedAt,
+            model: model,
+            reasoningEffort: reasoningEffort,
+            gitBranch: gitBranch,
+            cliVersion: cliVersion,
+            archived: indexed.archived,
+            usage: usage,
+            toolCalls: enriched.toolCalls,
+            skillCalls: enriched.skillCalls,
+            userMessages: enriched.userMessages,
+            completedTurns: enriched.completedTurns,
+            abortedTurns: enriched.abortedTurns,
+            activeRuntime: enriched.activeRuntime,
+            averageTTFT: enriched.averageTTFT,
+            subscription: subscription,
+            enrichmentAvailable: enrichmentAvailable
+        )
     }
 
     @discardableResult
@@ -534,7 +659,55 @@ public actor HistoricalStore {
         return imported.sessions.count
     }
 
-    public func sessionCount() throws -> Int { try load().sessions.count }
+    public func sessionCount() throws -> Int {
+        if let database { return try database.historicalSessionCount() }
+        return try load().sessions.count
+    }
+
+    public func storedSessionCount() throws -> Int {
+        if let database { return try database.historicalSessionCount() }
+        return try load().sessions.count
+    }
+
+    public func requiresLegacyMigration() throws -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        return try database?.historicalSessionCount() == 0
+    }
+
+    public func menuBarMetricsSnapshot() throws -> MenuBarMetricsSnapshot? {
+        try database?.menuBarMetrics()
+    }
+
+    public func recordMenuBarMetrics(_ snapshot: MenuBarMetricsSnapshot) throws {
+        try database?.storeMenuBarMetrics(snapshot)
+    }
+
+    /// Drops decoded history and index values after a menu-bar refresh. SQLite
+    /// remains the source of truth, so the next dashboard load can hydrate them
+    /// again without keeping the largest object graphs resident while idle.
+    public func releaseMemory() {
+        archive = nil
+        metricsIndexCache = nil
+        metricsIndexContext = nil
+        database?.releaseMemory()
+    }
+
+    public func session(withID id: String) throws -> SessionMetric? {
+        if let memorySession = archive?.sessions.first(where: { $0.id == id }) {
+            return memorySession
+        }
+        return try database?.historicalSession(id: id)
+    }
+
+    public func sessionSummaries() throws -> [SessionSummary] {
+        if let archive {
+            return archive.sessions.map(\.summary)
+        }
+        if let database {
+            return try database.historicalSessionSummaries()
+        }
+        return try load().sessions.map(\.summary)
+    }
 
     public func sessions(withIDs ids: Set<String>) throws -> [SessionMetric] {
         try load().sessions.filter { ids.contains($0.id) }
@@ -568,6 +741,47 @@ public actor HistoricalStore {
 
     private func sourceEventKey(_ codexHome: URL) -> String {
         "source_event_id:\(codexHome.standardizedFileURL.path)"
+    }
+
+    /// Returns the cached or stored metrics index without loading full session histories into memory.
+    public func metricsIndex(
+        pricing: PricingHistory = .bundled,
+        calendar: Calendar = .current
+    ) throws -> MetricsIndexSnapshot {
+        struct Context: Codable {
+            let schemaVersion: Int
+            let timeZone: String
+            let pricing: PricingHistory
+        }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        encoder.outputFormatting = [.sortedKeys]
+        let context = try encoder.encode(Context(
+            schemaVersion: 1,
+            timeZone: calendar.timeZone.identifier,
+            pricing: pricing
+        ))
+
+        if metricsIndexCache == nil {
+            if let database {
+                let stored = try database.loadMetricIndex()
+                metricsIndexContext = stored.context
+                metricsIndexCache = MetricsIndexSnapshot(sessions: stored.sessions, days: stored.days)
+            } else {
+                metricsIndexCache = .empty
+            }
+        }
+        if metricsIndexContext == context, let cached = metricsIndexCache {
+            return cached
+        }
+        if let archive {
+            return try metricsIndex(for: archive.sessions, pricing: pricing, calendar: calendar)
+        }
+        if let database {
+            let stored = try database.historicalSessions()
+            return try metricsIndex(for: stored, pricing: pricing, calendar: calendar)
+        }
+        return .empty
     }
 
     /// Returns a durable incremental index. Only new or advanced sessions are rebuilt;

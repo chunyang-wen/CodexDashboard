@@ -1,11 +1,12 @@
 import AppKit
 import CodexMetricsCore
+import Darwin
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
 private struct DashboardAnalytics: Sendable {
-    let filteredSessions: [SessionMetric]
+    let filteredSessions: [SessionSummary]
     let allProjects: [ProjectMetric]
     let projects: [ProjectMetric]
     let usage: TokenUsage
@@ -36,7 +37,7 @@ private struct DashboardAnalytics: Sendable {
     )
 
     static func calculate(
-        sessions: [SessionMetric],
+        sessions: [SessionSummary],
         startDate: Date?,
         index: MetricsIndexSnapshot
     ) -> DashboardAnalytics {
@@ -105,8 +106,7 @@ private struct QuotaWeekAnalytics: Sendable {
     static let empty = QuotaWeekAnalytics(interval: nil, usage: .zero, estimatedCost: 0)
 
     static func calculate(
-        sessions: [SessionMetric],
-        pricing: PricingHistory,
+        index: MetricsIndexSnapshot,
         window: UsageQuotaWindow?
     ) -> QuotaWeekAnalytics {
         guard let window else { return .empty }
@@ -114,11 +114,102 @@ private struct QuotaWeekAnalytics: Sendable {
             start: window.resetsAt.addingTimeInterval(-TimeInterval(window.windowMinutes * 60)),
             end: window.resetsAt
         )
+        let agg = index.aggregate(in: interval)
         return QuotaWeekAnalytics(
             interval: interval,
-            usage: Analytics.totalUsage(sessions, in: interval),
-            estimatedCost: Analytics.totalEstimatedCost(sessions, pricing: pricing, in: interval)
+            usage: agg.usage,
+            estimatedCost: agg.estimatedCost
         )
+    }
+}
+
+struct MenuBarUsageAggregate: Sendable {
+    let usage: TokenUsage
+    let estimatedCost: Decimal
+    let toolCalls: Int
+    let skillCalls: Int
+}
+
+private struct MenuBarAnalytics: Sendable {
+    let days: [MenuBarDayMetrics]
+
+    static let empty = MenuBarAnalytics(days: [])
+
+    init(days: [MenuBarDayMetrics]) {
+        self.days = days
+    }
+
+    init(snapshot: MenuBarMetricsSnapshot) {
+        days = snapshot.days
+    }
+
+    var snapshot: MenuBarMetricsSnapshot {
+        MenuBarMetricsSnapshot(days: days)
+    }
+
+    static func calculate(index: MetricsIndexSnapshot, calendar: Calendar = .current) -> Self {
+        struct Bucket {
+            var usage = TokenUsage.zero
+            var estimatedCost = Decimal.zero
+            var toolCalls = 0
+            var skillCalls = 0
+            var sessionIDs = Set<String>()
+            var activeRuntime: TimeInterval = 0
+        }
+
+        // The popover only renders the current month and week. A short trailing
+        // window covers a week crossing a month boundary without retaining years
+        // of otherwise unused day records.
+        let cutoff = calendar.date(byAdding: .day, value: -45, to: calendar.startOfDay(for: .now)) ?? .distantPast
+        var buckets: [Date: Bucket] = [:]
+        for contribution in index.days where contribution.day >= cutoff {
+            let day = calendar.startOfDay(for: contribution.day)
+            var bucket = buckets[day, default: Bucket()]
+            bucket.usage = bucket.usage + contribution.usage
+            bucket.estimatedCost += contribution.estimatedCost
+            bucket.toolCalls += contribution.toolCalls
+            bucket.skillCalls += contribution.skillCalls
+            bucket.sessionIDs.insert(contribution.sessionID)
+            bucket.activeRuntime += contribution.activeRuntime
+            buckets[day] = bucket
+        }
+
+        return MenuBarAnalytics(days: buckets.map { day, bucket in
+            MenuBarDayMetrics(
+                day: day,
+                usage: bucket.usage,
+                estimatedCost: bucket.estimatedCost,
+                toolCalls: bucket.toolCalls,
+                skillCalls: bucket.skillCalls,
+                sessions: bucket.sessionIDs.count,
+                activeRuntime: bucket.activeRuntime
+            )
+        }.sorted { $0.day < $1.day })
+    }
+
+    func aggregate(in interval: DateInterval) -> MenuBarUsageAggregate {
+        days.lazy
+            .filter { interval.contains($0.day) }
+            .reduce(MenuBarUsageAggregate(usage: .zero, estimatedCost: 0, toolCalls: 0, skillCalls: 0)) {
+                MenuBarUsageAggregate(
+                    usage: $0.usage + $1.usage,
+                    estimatedCost: $0.estimatedCost + $1.estimatedCost,
+                    toolCalls: $0.toolCalls + $1.toolCalls,
+                    skillCalls: $0.skillCalls + $1.skillCalls
+                )
+            }
+    }
+
+    var periods: [PeriodMetric] {
+        days.map {
+            PeriodMetric(
+                start: $0.day,
+                usage: $0.usage,
+                sessions: $0.sessions,
+                activeRuntime: $0.activeRuntime,
+                estimatedCost: $0.estimatedCost
+            )
+        }
     }
 }
 
@@ -141,7 +232,7 @@ final class DashboardStore: ObservableObject {
         }
     }
 
-    @Published private(set) var sessions: [SessionMetric] = []
+    @Published private(set) var sessions: [SessionSummary] = []
     @Published private(set) var isLoading = false
     @Published private(set) var isEnriching = false
     @Published private(set) var isUpdatingAnalytics = false
@@ -169,18 +260,24 @@ final class DashboardStore: ObservableObject {
     private var loadID = UUID()
     private var enrichmentID = UUID()
     private var analyticsID = UUID()
-    private let historicalStore = HistoricalStore()
+    private var analyticsWorkerID = UUID()
+    private let userHome: URL
+    private let historicalStore: HistoricalStore
     private let dynamicPricingLoader = DynamicPricingLoader()
     private var analytics = DashboardAnalytics.empty
     private var todayAnalytics = DashboardAnalytics.empty
     private var quotaWeekAnalytics = QuotaWeekAnalytics.empty
+    private var menuBarAnalytics = MenuBarAnalytics.empty
     private var metricsIndex = MetricsIndexSnapshot.empty
     private var indexedSessionsByID: [String: IndexedSessionMetrics] = [:]
+    @Published private(set) var dashboardDataIsResident = false
 
-    init(defaults: UserDefaults = .standard) {
+    init(userHome: URL = FileManager.default.homeDirectoryForCurrentUser, defaults: UserDefaults = .standard) {
+        self.userHome = userHome
+        self.historicalStore = HistoricalStore(userHome: userHome)
         let savedPath = defaults.string(forKey: "codexDataPath")
         codexHome = savedPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
+            ?? userHome.appendingPathComponent(".codex", isDirectory: true)
         let savedInterval = defaults.object(forKey: "metricsRefreshInterval") as? Double
         refreshInterval = savedInterval ?? 60
     }
@@ -198,7 +295,7 @@ final class DashboardStore: ObservableObject {
         return codexHome.path.replacingOccurrences(of: home, with: "~", options: [.anchored])
     }
 
-    var filteredSessions: [SessionMetric] { analytics.filteredSessions }
+    var filteredSessions: [SessionSummary] { analytics.filteredSessions }
     /// The project/session hierarchy is structural and independent of chart aggregation.
     var allProjects: [ProjectMetric] { analytics.allProjects }
     var projects: [ProjectMetric] { analytics.projects }
@@ -250,8 +347,16 @@ final class DashboardStore: ObservableObject {
     func periodAggregate(in interval: DateInterval) -> MetricsIndexAggregate {
         metricsIndex.aggregate(in: interval)
     }
+    var menuBarDaily: [PeriodMetric] { menuBarAnalytics.periods }
+    func menuBarAggregate(in interval: DateInterval) -> MenuBarUsageAggregate {
+        menuBarAnalytics.aggregate(in: interval)
+    }
+    func sessionMetric(withID id: String) async throws -> SessionMetric? {
+        try await historicalStore.session(withID: id)
+    }
 
     func load() {
+        dashboardDataIsResident = true
         loadTask?.cancel()
         enrichmentTask?.cancel()
         sourceWatcher?.stop()
@@ -274,62 +379,111 @@ final class DashboardStore: ObservableObject {
                     isLoading = false
                 }
             }
+            let codexHome = self.codexHome
+            // The status item should reflect quota immediately; do not make
+            // it wait for the much heavier session merge and index load.
+            let storedSubscription = try? await historicalStore.subscriptionSnapshot()
+            _ = acceptSubscription(storedSubscription)
+            var hadStoredHistory = false
+            let indexed = (try? await Task.detached(priority: .userInitiated) {
+                try CodexStore(codexHome: codexHome).loadIndexedSessions()
+            }.value) ?? []
+            guard !Task.isCancelled, loadID == requestID else { return }
             do {
-                let codexHome = self.codexHome
-                var storedSubscription: SubscriptionSnapshot?
-                var hadStoredHistory = false
-                let indexed = try await Task.detached(priority: .userInitiated) {
-                    try CodexStore(codexHome: codexHome).loadIndexedSessions()
-                }.value
-                guard !Task.isCancelled, loadID == requestID else { return }
-                do {
-                    sessions = try await historicalStore.mergedSessions(with: indexed)
-                    pricing = try await historicalStore.pricingHistory()
-                    historySessionCount = try await historicalStore.sessionCount()
-                    hadStoredHistory = historySessionCount > 0
-                    storedSubscription = try? await historicalStore.subscriptionSnapshot()
-                } catch {
-                    sessions = indexed
-                    historyMessage = "Stored history could not be loaded: \(error.localizedDescription)"
-                }
+                let merged = try await historicalStore.mergedSessionSummaries(with: indexed)
+                sessions = merged
+                pricing = try await historicalStore.pricingHistory()
+                historySessionCount = try await historicalStore.sessionCount()
+                hadStoredHistory = historySessionCount > 0
+            } catch {
+                sessions = indexed.map(\.summary)
+                historyMessage = "Stored history could not be loaded: \(error.localizedDescription)"
+            }
+            scheduleAnalyticsRefresh()
+            await startBackgroundRefreshIfNeeded(reconcileIfCursorMissing: hadStoredHistory)
+            guard !Task.isCancelled, loadID == requestID else { return }
+            isLoading = false
+            startEnrichmentForAvailableHistory()
+            refreshPricing()
+            let cachedSubscription = ([
+                storedSubscription,
+                sessions.compactMap(\.subscription).max { $0.observedAt < $1.observedAt }
+            ].compactMap { $0 }).max { $0.observedAt < $1.observedAt }
+            if acceptSubscription(cachedSubscription) {
                 scheduleAnalyticsRefresh()
-                await startBackgroundRefreshIfNeeded(reconcileIfCursorMissing: hadStoredHistory)
-                guard !Task.isCancelled, loadID == requestID else { return }
-                isLoading = false
-                startEnrichmentForAvailableHistory()
-                refreshPricing()
-                let cachedSubscription = ([
-                    storedSubscription,
-                    SubscriptionReader.latestCached(from: sessions)
-                ].compactMap { $0 }).max { $0.observedAt < $1.observedAt }
-                if acceptSubscription(cachedSubscription) {
-                    scheduleAnalyticsRefresh()
+            }
+            // Older history does not contain parser-extracted quota snapshots.
+            // Keep the bounded tail scan as a one-time compatibility fallback;
+            // once a snapshot is persisted, future loads remain entirely in-memory.
+            let latestSubscription = if cachedSubscription == nil {
+                await Task.detached(priority: .utility) {
+                    SubscriptionReader.latest(from: indexed)
+                }.value
+            } else {
+                cachedSubscription
+            }
+            guard !Task.isCancelled, loadID == requestID else { return }
+            if acceptSubscription(latestSubscription) {
+                scheduleAnalyticsRefresh()
+            }
+            if let latestSubscription {
+                try? await historicalStore.recordSubscription(latestSubscription)
+            }
+            account = await Task.detached(priority: .utility) {
+                CodexAccountReader.read(from: codexHome)
+            }.value
+        }
+    }
+
+    func activateDashboard() {
+        guard !dashboardDataIsResident else { return }
+        load()
+    }
+
+    /// Loads only values that are safe to keep resident in the menu process.
+    /// Full sessions and the detailed metric index are never decoded here.
+    func loadMenuBar() {
+        guard !dashboardDataIsResident else { return }
+        loadTask?.cancel()
+        sourceWatcher?.stop()
+        sourceWatcher = nil
+        backgroundRefreshTask?.cancel()
+        backgroundRefreshTask = nil
+        let requestID = UUID()
+        loadID = requestID
+        isLoading = true
+        loadTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.loadID == requestID {
+                    self.loadTask = nil
+                    self.isLoading = false
                 }
-                // Older history does not contain parser-extracted quota snapshots.
-                // Keep the bounded tail scan as a one-time compatibility fallback;
-                // once a snapshot is persisted, future loads remain entirely in-memory.
-                let latestSubscription = if cachedSubscription == nil {
-                    await Task.detached(priority: .utility) {
-                        SubscriptionReader.latest(from: indexed)
-                    }.value
-                } else {
-                    cachedSubscription
+            }
+            do {
+                self.pricing = try await self.historicalStore.storedPricingHistory()
+                self.historySessionCount = try await self.historicalStore.storedSessionCount()
+                self.subscription = try await self.historicalStore.subscriptionSnapshot()
+                let requiresMigration = try await self.historicalStore.requiresLegacyMigration()
+                if requiresMigration {
+                    _ = await self.refreshMenuBarInBackground(changedPaths: [], requiresReconciliation: true)
+                    await self.reloadMenuBarSnapshot()
+                    self.pricing = try await self.historicalStore.storedPricingHistory()
+                } else if let snapshot = try await self.historicalStore.menuBarMetricsSnapshot() {
+                    self.menuBarAnalytics = MenuBarAnalytics(snapshot: snapshot)
+                } else if self.historySessionCount > 0 {
+                    _ = await self.refreshMenuBarInBackground(changedPaths: [], requiresReconciliation: true)
+                    await self.reloadMenuBarSnapshot()
                 }
-                guard !Task.isCancelled, loadID == requestID else { return }
-                if acceptSubscription(latestSubscription) {
-                    scheduleAnalyticsRefresh()
-                }
-                if let latestSubscription {
-                    try? await historicalStore.recordSubscription(latestSubscription)
-                }
-                account = await Task.detached(priority: .utility) {
+                let codexHome = self.codexHome
+                self.account = await Task.detached(priority: .utility) {
                     CodexAccountReader.read(from: codexHome)
                 }.value
+                guard !Task.isCancelled, self.loadID == requestID else { return }
+                await self.startBackgroundRefreshIfNeeded()
             } catch {
-                guard loadID == requestID else { return }
-                errorMessage = error.localizedDescription
-                isLoading = false
-                isEnriching = false
+                guard self.loadID == requestID else { return }
+                self.historyMessage = "Menu-bar metrics could not be loaded: \(error.localizedDescription)"
             }
         }
     }
@@ -396,12 +550,11 @@ final class DashboardStore: ObservableObject {
                     continue
                 }
 
-                let changedPaths = batch.requiresReconciliation
-                    ? Set(self.sessions.lazy.map(\.rolloutPath).filter { !$0.isEmpty })
-                    : batch.rolloutPaths
+                let changedPaths = batch.rolloutPaths
                 let succeeded = await self.refreshInBackground(
                     changedPaths: changedPaths,
-                    indexChanged: batch.indexChanged || batch.requiresReconciliation
+                    indexChanged: batch.indexChanged || batch.requiresReconciliation,
+                    requiresReconciliation: batch.requiresReconciliation
                 )
                 guard !Task.isCancelled else { return }
                 if succeeded {
@@ -418,38 +571,44 @@ final class DashboardStore: ObservableObject {
         }
     }
 
-    private func refreshInBackground(changedPaths: Set<String>, indexChanged: Bool) async -> Bool {
+    private func refreshInBackground(
+        changedPaths: Set<String>,
+        indexChanged: Bool,
+        requiresReconciliation: Bool
+    ) async -> Bool {
         guard !isLoading, !isEnriching else { return true }
+        if !dashboardDataIsResident {
+            return await refreshMenuBarInBackground(
+                changedPaths: changedPaths,
+                requiresReconciliation: requiresReconciliation
+            )
+        }
         do {
             let previousIDs = Set(sessions.map(\.id))
             var pathsNeedingEnrichment = changedPaths
-            if indexChanged {
+            if indexChanged || requiresReconciliation {
                 let existingByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
                 let codexHome = self.codexHome
-                let indexed = try await Task.detached(priority: .background) {
+                let indexed = (try? await Task.detached(priority: .background) {
                     try CodexStore(codexHome: codexHome).loadIndexedSessions()
-                }.value
+                }.value) ?? []
                 for session in indexed where !session.rolloutPath.isEmpty {
                     guard let existing = existingByID[session.id] else {
                         pathsNeedingEnrichment.insert(session.rolloutPath)
                         continue
                     }
-                    if existing.updatedAt != session.updatedAt || existing.rolloutPath != session.rolloutPath {
+                    if !existing.enrichmentAvailable || existing.updatedAt < session.updatedAt {
                         pathsNeedingEnrichment.insert(session.rolloutPath)
                     }
                 }
-                let merged = try await historicalStore.mergedSessions(with: indexed)
-                sessions = merged.map { session in
-                    guard let existing = existingByID[session.id],
-                          !pathsNeedingEnrichment.contains(session.rolloutPath) else { return session }
-                    return existing
-                }
+                let merged = try await historicalStore.mergedSessionSummaries(with: indexed)
+                sessions = merged
             }
             let candidates = sessions.filter { session in
-                pathsNeedingEnrichment.contains(session.rolloutPath) || !previousIDs.contains(session.id)
+                (pathsNeedingEnrichment.contains(session.rolloutPath) || !previousIDs.contains(session.id)) && !session.enrichmentAvailable
             }
             guard !candidates.isEmpty else {
-                if indexChanged { scheduleAnalyticsRefresh() }
+                if indexChanged || requiresReconciliation { scheduleAnalyticsRefresh() }
                 return true
             }
 
@@ -461,12 +620,10 @@ final class DashboardStore: ObservableObject {
             }
             guard !enriched.isEmpty else { return true }
             historySessionCount = try await historicalStore.record(enriched, pricing: pricing)
-            let persisted = try await historicalStore.sessions(withIDs: Set(enriched.map(\.id)))
-            let byID = Dictionary(uniqueKeysWithValues: persisted.map { ($0.id, $0) })
-            sessions = sessions.map { byID[$0.id] ?? $0 }
+            let enrichedByID = Dictionary(uniqueKeysWithValues: enriched.map { ($0.id, $0.summary) })
+            sessions = sessions.map { enrichedByID[$0.id] ?? $0 }
             scheduleAnalyticsRefresh()
-            let sessionSnapshot = sessions
-            let latestSubscription = SubscriptionReader.latestCached(from: sessionSnapshot)
+            let latestSubscription = enriched.compactMap(\.subscription).max { $0.observedAt < $1.observedAt }
             if acceptSubscription(latestSubscription) {
                 scheduleAnalyticsRefresh()
                 if let latestSubscription {
@@ -478,6 +635,78 @@ final class DashboardStore: ObservableObject {
             // Quiet refresh failures are isolated and retried with exponential backoff.
             return false
         }
+    }
+
+    /// Refreshes durable history and the small menu-bar projection without
+    /// assigning the full session graph to any long-lived app property.
+    private func refreshMenuBarInBackground(
+        changedPaths: Set<String>,
+        requiresReconciliation: Bool
+    ) async -> Bool {
+        return await performMenuBarRefreshInProcess(
+            changedPaths: changedPaths,
+            requiresReconciliation: requiresReconciliation
+        )
+    }
+
+    private func performMenuBarRefreshInProcess(
+        changedPaths: Set<String>,
+        requiresReconciliation: Bool
+    ) async -> Bool {
+        do {
+            let codexHome = self.codexHome
+            let indexed = (try? await Task.detached(priority: .background) {
+                try CodexStore(codexHome: codexHome).loadIndexedSessions()
+            }.value) ?? []
+            guard !Task.isCancelled, !dashboardDataIsResident else { return true }
+
+            let merged = try await historicalStore.mergedSessionSummaries(with: indexed)
+            let historicalIDs = Set(merged.lazy.filter(\.enrichmentAvailable).map(\.id))
+            let candidates = merged.filter { session in
+                (changedPaths.contains(session.rolloutPath) || !historicalIDs.contains(session.id)) && !session.enrichmentAvailable
+            }
+            var enriched: [SessionMetric] = []
+            if !candidates.isEmpty {
+                enriched.reserveCapacity(candidates.count)
+                for await progress in CodexStore(codexHome: codexHome).enrichmentStream(candidates) {
+                    guard !Task.isCancelled, !dashboardDataIsResident else { return true }
+                    enriched.append(progress.session)
+                }
+                if !enriched.isEmpty {
+                    historySessionCount = try await historicalStore.record(enriched, pricing: pricing)
+                }
+            }
+
+            let index = try await historicalStore.metricsIndex(pricing: pricing)
+            let compact = await Task.detached(priority: .background) {
+                MenuBarAnalytics.calculate(index: index)
+            }.value
+            guard !Task.isCancelled, !dashboardDataIsResident else { return true }
+            menuBarAnalytics = compact
+            try await historicalStore.recordMenuBarMetrics(compact.snapshot)
+
+            let latestSubscription = SubscriptionReader.latestCached(from: enriched.isEmpty ? indexed : enriched)
+            if acceptSubscription(latestSubscription), let latestSubscription {
+                try? await historicalStore.recordSubscription(latestSubscription)
+            }
+            await historicalStore.releaseMemory()
+            malloc_zone_pressure_relief(nil, 0)
+            return true
+        } catch {
+            await historicalStore.releaseMemory()
+            malloc_zone_pressure_relief(nil, 0)
+            return false
+        }
+    }
+
+    private func reloadMenuBarSnapshot() async {
+        if let snapshot = try? await historicalStore.menuBarMetricsSnapshot() {
+            menuBarAnalytics = MenuBarAnalytics(snapshot: snapshot)
+        }
+        if let snapshot = try? await historicalStore.subscriptionSnapshot() {
+            _ = acceptSubscription(snapshot)
+        }
+        historySessionCount = (try? await historicalStore.storedSessionCount()) ?? historySessionCount
     }
 
     private func startEnrichmentForAvailableHistory() {
@@ -509,26 +738,17 @@ final class DashboardStore: ObservableObject {
                 // chart. Batch results so parsing cannot outrun SwiftUI rendering.
                 if pending.count >= 50 || progress.completed == progress.total {
                     var updated = sessions
-                    for item in pending { updated[item.index] = item.session }
+                    for item in pending { updated[item.index] = item.session.summary }
                     do {
                         historySessionCount = try await historicalStore.record(
                             pending.map(\.session),
                             pricing: pricing
                         )
-                        let persisted = try await historicalStore.sessions(
-                            withIDs: Set(pending.map(\.session.id))
-                        )
-                        let persistedByID = Dictionary(uniqueKeysWithValues: persisted.map { ($0.id, $0) })
-                        for item in pending {
-                            if let preserved = persistedByID[item.session.id] {
-                                updated[item.index] = preserved
-                            }
-                        }
                     } catch {
                         historyMessage = "History could not be saved: \(error.localizedDescription)"
                     }
                     sessions = updated
-                    let latestSubscription = SubscriptionReader.latestCached(from: updated)
+                    let latestSubscription = pending.compactMap(\.session.subscription).max { $0.observedAt < $1.observedAt }
                     if acceptSubscription(latestSubscription), let latestSubscription {
                         try? await historicalStore.recordSubscription(latestSubscription)
                     }
@@ -538,10 +758,32 @@ final class DashboardStore: ObservableObject {
                     enrichmentTotal = progress.total
                 }
             }
+            if !pending.isEmpty {
+                var updated = sessions
+                for item in pending { updated[item.index] = item.session.summary }
+                do {
+                    historySessionCount = try await historicalStore.record(
+                        pending.map(\.session),
+                        pricing: pricing
+                    )
+                } catch {
+                    historyMessage = "History could not be saved: \(error.localizedDescription)"
+                }
+                sessions = updated
+                let latestSubscription = pending.compactMap(\.session.subscription).max { $0.observedAt < $1.observedAt }
+                if acceptSubscription(latestSubscription), let latestSubscription {
+                    try? await historicalStore.recordSubscription(latestSubscription)
+                }
+                scheduleAnalyticsRefresh()
+                pending.removeAll(keepingCapacity: true)
+            }
             guard !Task.isCancelled, enrichmentID == requestID else { return }
             isEnriching = false
             // Pick up sessions added while the current scan was running.
-            startEnrichmentForAvailableHistory()
+            let remaining = sessions.filter { !$0.enrichmentAvailable }
+            if !remaining.isEmpty && remaining.count < candidates.count {
+                startEnrichmentForAvailableHistory()
+            }
         }
     }
 
@@ -561,6 +803,7 @@ final class DashboardStore: ObservableObject {
     }
 
     private func scheduleAnalyticsRefresh() {
+        guard dashboardDataIsResident else { return }
         analyticsID = UUID()
 
         // Keep a single calculator alive and let it consume the newest snapshot.
@@ -569,11 +812,15 @@ final class DashboardStore: ObservableObject {
         // per enrichment batch to pile up in the background.
         guard analyticsTask == nil else { return }
         isUpdatingAnalytics = true
+        let workerID = UUID()
+        analyticsWorkerID = workerID
 
         analyticsTask = Task {
             defer {
-                analyticsTask = nil
-                isUpdatingAnalytics = false
+                if analyticsWorkerID == workerID {
+                    analyticsTask = nil
+                    isUpdatingAnalytics = false
+                }
             }
             while !Task.isCancelled {
                 let requestID = analyticsID
@@ -590,16 +837,10 @@ final class DashboardStore: ObservableObject {
                 let weeklyQuotaWindow = subscription?.windows.first { $0.windowMinutes == 10_080 }
                 let index: MetricsIndexSnapshot
                 do {
-                    index = try await historicalStore.metricsIndex(for: sessions, pricing: pricing)
+                    index = try await historicalStore.metricsIndex(pricing: pricing)
                 } catch {
                     historyMessage = "Metric index could not be saved: \(error.localizedDescription)"
-                    let records = await Task.detached(priority: .userInitiated) {
-                        sessions.map { MetricsIndexBuilder.build(session: $0, pricing: pricing) }
-                    }.value
-                    index = MetricsIndexSnapshot(
-                        sessions: records.map(\.session),
-                        days: records.flatMap(\.days)
-                    )
+                    index = .empty
                 }
                 let refreshed = await Task.detached(priority: .userInitiated) {
                     let selected = DashboardAnalytics.calculate(
@@ -612,8 +853,7 @@ final class DashboardStore: ObservableObject {
                         index: index
                     )
                     let quotaWeek = QuotaWeekAnalytics.calculate(
-                        sessions: sessions,
-                        pricing: pricing,
+                        index: index,
                         window: weeklyQuotaWindow
                     )
                     return (selected, today, quotaWeek)
@@ -633,6 +873,7 @@ final class DashboardStore: ObservableObject {
                 analytics = refreshed.0
                 todayAnalytics = refreshed.1
                 quotaWeekAnalytics = refreshed.2
+                menuBarAnalytics = MenuBarAnalytics.calculate(index: index)
                 metricsIndex = index
                 indexedSessionsByID = Dictionary(
                     uniqueKeysWithValues: index.sessions.map { ($0.sessionID, $0) }
@@ -665,7 +906,49 @@ final class DashboardStore: ObservableObject {
         metricsIndex = .empty
         indexedSessionsByID = [:]
         UserDefaults.standard.set(standardized.path, forKey: "codexDataPath")
-        load()
+        if dashboardDataIsResident { load() } else { loadMenuBar() }
+    }
+
+    /// Called when the dashboard window closes. The menu-bar UI only needs daily
+    /// totals and quota/account metadata, so release enriched sessions and all
+    /// dashboard-only projections until the dashboard is opened again.
+    func releaseDashboardMemory() {
+        guard dashboardDataIsResident else { return }
+        dashboardDataIsResident = false
+        loadTask?.cancel()
+        loadTask = nil
+        enrichmentTask?.cancel()
+        enrichmentTask = nil
+        analyticsTask?.cancel()
+        analyticsTask = nil
+        analyticsWorkerID = UUID()
+        rangeRefreshTask?.cancel()
+        rangeRefreshTask = nil
+        isLoading = false
+        isEnriching = false
+        isUpdatingAnalytics = false
+        enrichedSessions = 0
+        enrichmentTotal = 0
+        if !metricsIndex.days.isEmpty {
+            menuBarAnalytics = MenuBarAnalytics.calculate(index: metricsIndex)
+        }
+        sessions = []
+        analytics = .empty
+        todayAnalytics = .empty
+        quotaWeekAnalytics = .empty
+        metricsIndex = .empty
+        indexedSessionsByID = [:]
+        URLCache.shared.removeAllCachedResponses()
+        Task { [weak self] in
+            guard let self else { return }
+            await self.historicalStore.releaseMemory()
+            guard !self.dashboardDataIsResident else { return }
+            await self.startBackgroundRefreshIfNeeded()
+            // The dashboard's short-lived arrays can leave empty malloc pages in
+            // the process footprint. Return those pages now instead of waiting
+            // for system-wide memory pressure.
+            malloc_zone_pressure_relief(nil, 0)
+        }
     }
 
     func resetCodexHome() {
@@ -695,6 +978,7 @@ final class DashboardStore: ObservableObject {
             do {
                 try await historicalStore.export(to: destination)
                 historyMessage = "Exported \(historySessionCount.formatted()) sessions to \(destination.lastPathComponent)."
+                if !dashboardDataIsResident { await historicalStore.releaseMemory() }
             } catch {
                 historyMessage = "Export failed: \(error.localizedDescription)"
             }
@@ -703,7 +987,19 @@ final class DashboardStore: ObservableObject {
 
     func preserveAllHistory() {
         historyMessage = "Scanning all available rollouts; parsed metrics will be added to durable history."
-        startEnrichmentForAvailableHistory()
+        if dashboardDataIsResident {
+            startEnrichmentForAvailableHistory()
+        } else {
+            Task { [weak self] in
+                guard let self else { return }
+                if await self.refreshMenuBarInBackground(changedPaths: [], requiresReconciliation: true) {
+                    await self.reloadMenuBarSnapshot()
+                    self.historyMessage = "Durable history is up to date."
+                } else {
+                    self.historyMessage = "History scan failed."
+                }
+            }
+        }
     }
 
     func refreshPricing(force: Bool = false) {
@@ -722,6 +1018,10 @@ final class DashboardStore: ObservableObject {
                     ]))
                     scheduleAnalyticsRefresh()
                     try await historicalStore.recordPricing(pricing)
+                    if !dashboardDataIsResident,
+                       await refreshMenuBarInBackground(changedPaths: [], requiresReconciliation: true) {
+                        await reloadMenuBarSnapshot()
+                    }
                 }
                 pricingSource = snapshot.fromCache ? "models.dev cache" : "models.dev"
                 pricingUpdatedAt = snapshot.fetchedAt
@@ -742,7 +1042,8 @@ final class DashboardStore: ObservableObject {
             do {
                 let imported = try await historicalStore.importArchive(from: source)
                 historyMessage = "Imported \(imported.formatted()) sessions from \(source.lastPathComponent)."
-                load()
+                await historicalStore.releaseMemory()
+                if dashboardDataIsResident { load() } else { loadMenuBar() }
             } catch {
                 historyMessage = "Import failed: \(error.localizedDescription)"
             }

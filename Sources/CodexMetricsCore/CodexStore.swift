@@ -132,6 +132,30 @@ public final class CodexStore: @unchecked Sendable {
         }
     }
 
+    public func enrichmentStream(_ sessions: [SessionSummary]) -> AsyncStream<EnrichmentProgress> {
+        let minimal = sessions.map { summary in
+            SessionMetric(
+                id: summary.id,
+                rolloutPath: summary.rolloutPath,
+                projectPath: summary.projectPath,
+                title: summary.title,
+                source: summary.source,
+                originator: summary.originator,
+                provider: summary.provider,
+                createdAt: summary.createdAt,
+                updatedAt: summary.updatedAt,
+                model: summary.model,
+                reasoningEffort: summary.reasoningEffort,
+                gitBranch: summary.gitBranch,
+                cliVersion: summary.cliVersion,
+                archived: summary.archived,
+                usage: summary.usage,
+                enrichmentAvailable: summary.enrichmentAvailable
+            )
+        }
+        return enrichmentStream(minimal)
+    }
+
     private func enrichSessions(
         _ sessions: [SessionMetric],
         progress: (@Sendable (EnrichmentProgress) -> Void)?
@@ -142,8 +166,34 @@ public final class CodexStore: @unchecked Sendable {
         sessionLoop: for (index, session) in sessions.enumerated() {
             if currentTaskIsCancelled { break }
             guard !session.rolloutPath.isEmpty, FileManager.default.fileExists(atPath: session.rolloutPath) else {
-                enriched.append(session)
-                progress?(.init(session: session, completed: index + 1, total: sessions.count))
+                let completedSession = SessionMetric(
+                    id: session.id,
+                    rolloutPath: session.rolloutPath,
+                    projectPath: session.projectPath,
+                    title: session.title,
+                    source: session.source,
+                    originator: session.originator,
+                    provider: session.provider,
+                    createdAt: session.createdAt,
+                    updatedAt: session.updatedAt,
+                    model: session.model,
+                    reasoningEffort: session.reasoningEffort,
+                    gitBranch: session.gitBranch,
+                    cliVersion: session.cliVersion,
+                    archived: session.archived,
+                    usage: session.usage,
+                    usageEvents: session.usageEvents,
+                    turns: session.turns,
+                    toolCalls: session.toolCalls,
+                    toolCallEvents: session.toolCallEvents,
+                    skillCallEvents: session.skillCallEvents,
+                    userMessages: session.userMessages,
+                    abortedTurns: session.abortedTurns,
+                    subscription: session.subscription,
+                    enrichmentAvailable: true
+                )
+                enriched.append(completedSession)
+                progress?(.init(session: completedSession, completed: index + 1, total: sessions.count))
                 continue
             }
             let details: RolloutEnrichment

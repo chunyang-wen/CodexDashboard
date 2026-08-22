@@ -246,6 +246,48 @@ public struct MetricsIndexSnapshot: Sendable {
     }
 }
 
+/// Compact persisted projection consumed by the always-running menu-bar process.
+/// It deliberately excludes per-session, model, tool-name, and timing detail.
+public struct MenuBarDayMetrics: Codable, Hashable, Sendable {
+    public let day: Date
+    public let usage: TokenUsage
+    public let estimatedCost: Decimal
+    public let toolCalls: Int
+    public let skillCalls: Int
+    public let sessions: Int
+    public let activeRuntime: TimeInterval
+
+    public init(
+        day: Date,
+        usage: TokenUsage,
+        estimatedCost: Decimal,
+        toolCalls: Int,
+        skillCalls: Int,
+        sessions: Int,
+        activeRuntime: TimeInterval
+    ) {
+        self.day = day
+        self.usage = usage
+        self.estimatedCost = estimatedCost
+        self.toolCalls = toolCalls
+        self.skillCalls = skillCalls
+        self.sessions = sessions
+        self.activeRuntime = activeRuntime
+    }
+}
+
+public struct MenuBarMetricsSnapshot: Codable, Hashable, Sendable {
+    public let generatedAt: Date
+    public let days: [MenuBarDayMetrics]
+
+    public init(generatedAt: Date = .now, days: [MenuBarDayMetrics]) {
+        self.generatedAt = generatedAt
+        self.days = days
+    }
+
+    public static let empty = MenuBarMetricsSnapshot(generatedAt: .distantPast, days: [])
+}
+
 public enum MetricsIndexBuilder {
     private struct DailyBuilder {
         var usage = TokenUsage.zero
