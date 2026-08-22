@@ -540,6 +540,7 @@ final class DashboardStore: ObservableObject {
 
             var iterator = watcher.events.makeAsyncIterator()
             var failures = 0
+            var lastRefreshAt = Date.distantPast
             while !Task.isCancelled {
                 if pending == nil {
                     pending = await iterator.next()
@@ -556,6 +557,18 @@ final class DashboardStore: ObservableObject {
                     continue
                 }
 
+                // The old polling worker naturally limited refreshes to one
+                // pass per configured interval. FSEvents is event-driven and
+                // can deliver several file-level batches much sooner, so keep
+                // the same disk-I/O budget explicitly while retaining precise
+                // change detection.
+                let minimumInterval = max(0.25, self.refreshInterval)
+                let elapsed = Date.now.timeIntervalSince(lastRefreshAt)
+                if elapsed < minimumInterval {
+                    try? await Task.sleep(for: .seconds(minimumInterval - elapsed))
+                    guard !Task.isCancelled else { return }
+                }
+
                 let changedPaths = batch.rolloutPaths
                 let succeeded = await self.refreshInBackground(
                     changedPaths: changedPaths,
@@ -563,6 +576,7 @@ final class DashboardStore: ObservableObject {
                     requiresReconciliation: batch.requiresReconciliation
                 )
                 guard !Task.isCancelled else { return }
+                lastRefreshAt = .now
                 if succeeded {
                     try? await self.historicalStore.recordSourceEventID(batch.latestEventID, for: codexHome)
                     pending = nil
@@ -626,6 +640,7 @@ final class DashboardStore: ObservableObject {
             }
             guard !enriched.isEmpty else { return true }
             historySessionCount = try await historicalStore.record(enriched, pricing: pricing)
+            _ = try await historicalStore.updateMetricsIndex(for: enriched, pricing: pricing)
             let enrichedByID = Dictionary(uniqueKeysWithValues: enriched.map { ($0.id, $0.summary) })
             sessions = sessions.map { enrichedByID[$0.id] ?? $0 }
             scheduleAnalyticsRefresh()
@@ -680,6 +695,7 @@ final class DashboardStore: ObservableObject {
                 }
                 if !enriched.isEmpty {
                     historySessionCount = try await historicalStore.record(enriched, pricing: pricing)
+                    _ = try await historicalStore.updateMetricsIndex(for: enriched, pricing: pricing)
                 }
             }
 
@@ -750,6 +766,10 @@ final class DashboardStore: ObservableObject {
                             pending.map(\.session),
                             pricing: pricing
                         )
+                        _ = try await historicalStore.updateMetricsIndex(
+                            for: pending.map(\.session),
+                            pricing: pricing
+                        )
                     } catch {
                         historyMessage = "History could not be saved: \(error.localizedDescription)"
                     }
@@ -770,6 +790,10 @@ final class DashboardStore: ObservableObject {
                 do {
                     historySessionCount = try await historicalStore.record(
                         pending.map(\.session),
+                        pricing: pricing
+                    )
+                    _ = try await historicalStore.updateMetricsIndex(
+                        for: pending.map(\.session),
                         pricing: pricing
                     )
                 } catch {

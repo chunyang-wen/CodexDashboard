@@ -28,6 +28,13 @@ final class AnalyticsTests: XCTestCase {
             )
         ])
         try await store.recordMenuBarMetrics(snapshot)
+        let databaseURL = home.appendingPathComponent("Library/Application Support/CodexDashboard/metrics-v1.sqlite")
+        let walURL = URL(fileURLWithPath: databaseURL.path + "-wal")
+        let databaseBefore = try Data(contentsOf: databaseURL)
+        let walBefore = try Data(contentsOf: walURL)
+        try await store.recordMenuBarMetrics(MenuBarMetricsSnapshot(days: snapshot.days))
+        XCTAssertEqual(try Data(contentsOf: databaseURL), databaseBefore)
+        XCTAssertEqual(try Data(contentsOf: walURL), walBefore)
         await store.releaseMemory()
 
         let hydratedCount = try await store.sessionCount()
@@ -775,6 +782,21 @@ final class AnalyticsTests: XCTestCase {
         }
         XCTAssertEqual(cached.usage.total, 10)
         XCTAssertEqual(offset, 6)
+
+        cache.store(RolloutEnrichment(usage: TokenUsage(total: 20)), for: file.path, parsedBytes: 13)
+        guard case .append(_, let deferredOffset) = RolloutCache(home: home).lookup(file.path) else {
+            return XCTFail("An actively changing rollout should retain its previous checkpoint")
+        }
+        XCTAssertEqual(deferredOffset, 6)
+
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: -MetricsPersistencePolicy.activeRolloutQuietPeriod - 1)],
+            ofItemAtPath: file.path
+        )
+        cache.store(RolloutEnrichment(usage: TokenUsage(total: 20)), for: file.path, parsedBytes: 13)
+        guard case .complete = RolloutCache(home: home).lookup(file.path) else {
+            return XCTFail("A quiet rollout should persist its latest checkpoint")
+        }
     }
 
     func testRolloutCacheRejectsSameSizeFileReplacement() throws {
@@ -965,6 +987,46 @@ final class AnalyticsTests: XCTestCase {
 
         XCTAssertEqual(try Data(contentsOf: databaseURL), databaseBefore)
         XCTAssertEqual(try Data(contentsOf: walURL), walBefore)
+    }
+
+    func testHistoricalStoreDefersRecentlyModifiedRollout() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let rollout = home.appendingPathComponent("active.jsonl")
+        try Data("active\n".utf8).write(to: rollout)
+
+        let store = HistoricalStore(userHome: home)
+        let first = SessionMetric(
+            id: "active", rolloutPath: rollout.path, projectPath: "/tmp/project", title: "Active",
+            source: "app", provider: "openai", createdAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 200), model: "gpt-test", reasoningEffort: nil,
+            gitBranch: nil, cliVersion: nil, archived: false, usage: TokenUsage(total: 10),
+            enrichmentAvailable: true
+        )
+        _ = try await store.record([first])
+
+        let active = SessionMetric(
+            id: first.id, rolloutPath: first.rolloutPath, projectPath: first.projectPath, title: first.title,
+            source: first.source, provider: first.provider, createdAt: first.createdAt,
+            updatedAt: Date(timeIntervalSince1970: 300), model: first.model, reasoningEffort: nil,
+            gitBranch: nil, cliVersion: nil, archived: false, usage: TokenUsage(total: 20),
+            usageEvents: [UsageEvent(date: Date(timeIntervalSince1970: 300), usage: TokenUsage(total: 20))],
+            enrichmentAvailable: true
+        )
+        _ = try await store.record([active])
+        let deferred = try await store.session(withID: first.id)
+        XCTAssertEqual(deferred?.usage.total, 10)
+        let liveIndex = try await store.updateMetricsIndex(for: [active])
+        XCTAssertEqual(liveIndex.aggregate().usage.total, 20)
+
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: -MetricsPersistencePolicy.activeRolloutQuietPeriod - 1)],
+            ofItemAtPath: rollout.path
+        )
+        _ = try await store.record([active])
+        let settled = try await store.session(withID: first.id)
+        XCTAssertEqual(settled?.usage.total, 20)
     }
 
     func testHistoricalStorePersistsNewestSubscriptionWithoutRegressing() async throws {

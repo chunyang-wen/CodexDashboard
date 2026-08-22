@@ -1,5 +1,14 @@
 import Foundation
 
+/// Active rollout files are appended frequently while a turn is streaming. Their
+/// parsed enrichment contains the complete history of the rollout, so writing it
+/// on every filesystem event creates large write amplification. A short quiet
+/// period lets the parser keep serving live data while persisting only a settled
+/// checkpoint.
+enum MetricsPersistencePolicy {
+    static let activeRolloutQuietPeriod: TimeInterval = 120
+}
+
 struct RolloutEnrichment: Codable, Sendable {
     var parserVersion: Int?
     var usage: TokenUsage = .zero
@@ -119,6 +128,14 @@ final class RolloutCache {
     func store(_ enrichment: RolloutEnrichment, for path: String, parsedBytes: UInt64) {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
               let modified = attributes[.modificationDate] as? Date else { return }
+        let existing = database?.rollout(for: path) ?? entries[path]
+        // Keep the previous checkpoint while Codex is actively appending. The
+        // next pass will resume from it, and the complete enrichment will be
+        // checkpointed once the rollout has been quiet for a short period.
+        if existing != nil,
+           Date.now.timeIntervalSince(modified) < MetricsPersistencePolicy.activeRolloutQuietPeriod {
+            return
+        }
         var versionedEnrichment = enrichment
         versionedEnrichment.parserVersion = CachedRollout.currentParserVersion
         let cached = CachedRollout(

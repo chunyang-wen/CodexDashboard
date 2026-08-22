@@ -604,8 +604,16 @@ public actor HistoricalStore {
             let combined = existing.map {
                 Self.combine($0, session, enrichmentAvailable: true)
             } ?? session
-            byID[session.id] = combined
-            if combined != existing { changed.append(combined) }
+            guard combined != existing else { continue }
+
+            // Do not replace a potentially large historical blob while its
+            // source JSONL is still being appended. Keep the durable copy at
+            // the previous settled checkpoint; the next refresh will retry and
+            // persist the latest complete enrichment after the quiet period.
+            if Self.shouldPersist(combined, existing: existing) {
+                byID[session.id] = combined
+                changed.append(combined)
+            }
         }
         let mergedPricing = current.pricing.merging(pricing).merging(.bundled)
         archive = HistoricalArchive(
@@ -626,6 +634,17 @@ public actor HistoricalStore {
             metricsIndexContext = nil
         }
         return byID.count
+    }
+
+    private static func shouldPersist(_ session: SessionMetric, existing: SessionMetric?) -> Bool {
+        guard existing != nil else { return true }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: session.rolloutPath),
+              let modified = attributes[.modificationDate] as? Date else {
+            // Synthetic/imported sessions and unavailable source files should
+            // retain the existing eager persistence behavior.
+            return true
+        }
+        return Date.now.timeIntervalSince(modified) >= MetricsPersistencePolicy.activeRolloutQuietPeriod
     }
 
     public func export(to destination: URL) throws {
@@ -688,6 +707,12 @@ public actor HistoricalStore {
     }
 
     public func recordMenuBarMetrics(_ snapshot: MenuBarMetricsSnapshot) throws {
+        // generatedAt changes on every refresh; compare the actual compact
+        // metrics so an unchanged snapshot does not create another SQLite/WAL
+        // transaction.
+        if let existing = try database?.menuBarMetrics(), existing.days == snapshot.days {
+            return
+        }
         try database?.storeMenuBarMetrics(snapshot)
     }
 
@@ -792,6 +817,47 @@ public actor HistoricalStore {
             return try metricsIndex(for: stored, pricing: pricing, calendar: calendar)
         }
         return .empty
+    }
+
+    /// Incrementally replaces only the metric-index contribution for the
+    /// supplied sessions. This is intentionally separate from historical blob
+    /// persistence: an active rollout can update the compact index immediately
+    /// while its larger full-session archive remains at the last quiet checkpoint.
+    public func updateMetricsIndex(
+        for changedSessions: [SessionMetric],
+        pricing: PricingHistory = .bundled,
+        calendar: Calendar = .current
+    ) throws -> MetricsIndexSnapshot {
+        guard !changedSessions.isEmpty else {
+            return try metricsIndex(pricing: pricing, calendar: calendar)
+        }
+
+        let current = try metricsIndex(pricing: pricing, calendar: calendar)
+        let existing = Dictionary(uniqueKeysWithValues: current.sessions.map { ($0.sessionID, $0) })
+        let changedRecords = changedSessions.compactMap { session -> (IndexedSessionMetrics, [IndexedDailyMetrics])? in
+            guard existing[session.id]?.sourceRevision != MetricsIndexBuilder.sourceRevision(for: session) else {
+                return nil
+            }
+            let built = MetricsIndexBuilder.build(session: session, pricing: pricing, calendar: calendar)
+            return (built.session, built.days)
+        }
+        guard !changedRecords.isEmpty else { return current }
+
+        let changedIDs = Set(changedRecords.map { $0.0.sessionID })
+        let snapshot = MetricsIndexSnapshot(
+            sessions: current.sessions.filter { !changedIDs.contains($0.sessionID) } + changedRecords.map { $0.0 },
+            days: current.days.filter { !changedIDs.contains($0.sessionID) } + changedRecords.flatMap { $0.1 }
+        )
+        if let database, let context = metricsIndexContext {
+            try database.updateMetricIndex(
+                changedRecords,
+                context: context,
+                reset: false,
+                removing: []
+            )
+        }
+        metricsIndexCache = snapshot
+        return snapshot
     }
 
     /// Returns a durable incremental index. Only new or advanced sessions are rebuilt;
