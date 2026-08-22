@@ -1126,37 +1126,102 @@ private struct SessionDetailView: View {
 
 struct ModelsView: View {
     @EnvironmentObject private var store: DashboardStore
+    @State private var modelPage = 0
+
+    private let modelPageSize = 10
+
+    private var modelPageCount: Int {
+        max(1, Int(ceil(Double(store.models.count) / Double(modelPageSize))))
+    }
+
+    private var visibleModels: [ModelMetric] {
+        let safePage = min(modelPage, modelPageCount - 1)
+        return Array(store.models.dropFirst(safePage * modelPageSize).prefix(modelPageSize))
+    }
+
+    private var modelPageSummary: String {
+        guard !store.models.isEmpty else { return "0 models" }
+        let safePage = min(modelPage, modelPageCount - 1)
+        let start = safePage * modelPageSize
+        let end = min(start + modelPageSize, store.models.count)
+        return "\(start + 1)–\(end) of \(store.models.count) models"
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                SectionHeader(title: "Model portfolio", subtitle: "Compare volume, runtime, cache behavior, and API-equivalent cost.")
-                Chart(store.models.prefix(12)) { model in
+                let chartModels = Array(store.models.prefix(12))
+                SectionHeader(
+                    title: "Model portfolio",
+                    subtitle: chartModels.count < store.models.count
+                        ? "The chart shows the top \(chartModels.count) models by token volume; the full list is below."
+                        : "Compare volume, runtime, cache behavior, and API-equivalent cost."
+                )
+                Chart(chartModels) { model in
                     BarMark(x: .value("Tokens", model.usage.total), y: .value("Model", model.model))
                         .foregroundStyle(.purple.gradient)
                         .annotation(position: .trailing) { Text(MetricFormatters.compactNumber(model.usage.total)).font(.caption).foregroundStyle(.secondary) }
                 }.frame(height: 420)
+                SectionHeader(title: "All models", subtitle: "Every indexed model appears in this table, including low-volume models.")
                 Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 12) {
                     GridRow {
                         Text("Model")
                         Text("Sessions")
+                        MetricHelpLabel(title: "Tokens", definition: .totalTokens)
                         MetricHelpLabel(title: "Cache hit", definition: .cacheHitRate)
                         MetricHelpLabel(title: "Runtime", definition: .agentRuntime)
                         MetricHelpLabel(title: "Est. cost", definition: .estimatedCost)
                     }
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    Divider().gridCellColumns(5)
-                    ForEach(store.models) { model in
+                    Divider().gridCellColumns(6)
+                    ForEach(visibleModels) { model in
                         GridRow {
                             Text(model.model).fontWeight(.medium)
                             Text(model.sessions.formatted()).monospacedDigit()
+                            Text(MetricFormatters.compactNumber(model.usage.total)).monospacedDigit()
                             Text((model.usage.cacheHitRate * 100).formatted(.percent.scale(1).precision(.fractionLength(1)))).monospacedDigit()
                             Text(MetricFormatters.duration(model.activeRuntime)).monospacedDigit()
                             Text(MetricFormatters.currency(model.estimatedCost)).monospacedDigit()
                         }
                     }
+
+                    Divider().gridCellColumns(6)
+                    GridRow {
+                        HStack(spacing: 12) {
+                            Text(modelPageSummary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button {
+                                modelPage = max(0, modelPage - 1)
+                            } label: {
+                                Label("Previous page", systemImage: "chevron.left")
+                                    .labelStyle(.iconOnly)
+                            }
+                            .disabled(modelPage == 0)
+                            .help("Previous page")
+                            Text("Page \(min(modelPage + 1, modelPageCount)) of \(modelPageCount)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                            Button {
+                                modelPage = min(modelPageCount - 1, modelPage + 1)
+                            } label: {
+                                Label("Next page", systemImage: "chevron.right")
+                                    .labelStyle(.iconOnly)
+                            }
+                            .disabled(modelPage >= modelPageCount - 1)
+                            .help("Next page")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .gridCellColumns(6)
+                    }
                 }
             }.padding(28)
-        }.navigationTitle("Models")
+        }
+        .navigationTitle("Models")
+        .onChange(of: store.models.map(\.id)) { _, _ in
+            modelPage = min(modelPage, modelPageCount - 1)
+        }
     }
 }
 
