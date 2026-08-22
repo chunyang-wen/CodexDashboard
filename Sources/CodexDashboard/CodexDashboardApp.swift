@@ -23,7 +23,7 @@ final class AppUpdater: ObservableObject {
 }
 
 @MainActor
-private final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency SPUUpdaterDelegate, @preconcurrency SPUStandardUserDriverDelegate {
+private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
     private var updaterController: SPUStandardUpdaterController!
 
     nonisolated var supportsGentleScheduledUpdateReminders: Bool {

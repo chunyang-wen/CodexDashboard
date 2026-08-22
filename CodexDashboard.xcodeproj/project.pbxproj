@@ -8,7 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		64486C0E3039979500BD3175 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 64486C0D3039979500BD3175 /* Sparkle */; };
-		64486C103039A9F800BD3175 /* Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 64486C0F3039A9F800BD3175 /* Info.plist */; };
 		A10000000000000000000001 /* Analytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* Analytics.swift */; };
 		A10000000000000000000002 /* CodexStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* CodexStore.swift */; };
 		A10000000000000000000003 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* Models.swift */; };
@@ -356,7 +355,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				64486C103039A9F800BD3175 /* Info.plist in Resources */,
 				A60000000000000000000001 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
