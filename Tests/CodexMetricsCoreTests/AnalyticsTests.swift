@@ -570,6 +570,34 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(restored.aggregate(projectPath: "/tmp/b").usage, originalB.usage)
     }
 
+    func testRecordingNewSessionInvalidatesCachedMetricIndex() async throws {
+        let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: userHome) }
+        let date = Date(timeIntervalSince1970: 1_785_542_400)
+        func session(id: String, model: String) -> SessionMetric {
+            let usage = TokenUsage(input: 100, output: 10, total: 110)
+            return SessionMetric(
+                id: id, rolloutPath: "/tmp/\(id).jsonl", projectPath: "/tmp/project",
+                title: "", source: "app", provider: "openrouter", createdAt: date,
+                updatedAt: date, model: model, reasoningEffort: nil, gitBranch: nil,
+                cliVersion: nil, archived: false, usage: usage,
+                usageEvents: [UsageEvent(date: date, usage: usage, model: model)],
+                enrichmentAvailable: true
+            )
+        }
+
+        let store = HistoricalStore(userHome: userHome)
+        let first = session(id: "first", model: "gpt-5.6-luna")
+        _ = try await store.record([first])
+        _ = try await store.metricsIndex()
+        let second = session(id: "second", model: "stealth/ox-alpha")
+        _ = try await store.record([second])
+
+        let refreshed = try await store.metricsIndex()
+        XCTAssertEqual(refreshed.sessions.count, 2)
+        XCTAssertTrue(refreshed.aggregate().models.contains { $0.model == "stealth/ox-alpha" })
+    }
+
     func testMetricIndexAggregateUsesAnEndExclusivePeriodWithoutRescanningSessions() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

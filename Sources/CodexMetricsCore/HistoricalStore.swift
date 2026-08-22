@@ -616,6 +616,15 @@ public actor HistoricalStore {
             changedSessions: changed,
             pricingChanged: mergedPricing != current.pricing
         )
+        if !changed.isEmpty || mergedPricing != current.pricing {
+            // A dashboard analytics pass may have already populated this cache
+            // before a newly enriched provider session was recorded. Force the
+            // next pass to rebuild from the updated durable history.
+            // Keep a non-nil empty marker so metricsIndex() does not reload the
+            // stale SQLite index before noticing the invalidated context.
+            metricsIndexCache = .empty
+            metricsIndexContext = nil
+        }
         return byID.count
     }
 
@@ -758,7 +767,7 @@ public actor HistoricalStore {
         encoder.dateEncodingStrategy = .millisecondsSince1970
         encoder.outputFormatting = [.sortedKeys]
         let context = try encoder.encode(Context(
-            schemaVersion: 1,
+            schemaVersion: 2,
             timeZone: calendar.timeZone.identifier,
             pricing: pricing
         ))
@@ -801,7 +810,7 @@ public actor HistoricalStore {
         encoder.dateEncodingStrategy = .millisecondsSince1970
         encoder.outputFormatting = [.sortedKeys]
         let context = try encoder.encode(Context(
-            schemaVersion: 1,
+            schemaVersion: 2,
             timeZone: calendar.timeZone.identifier,
             pricing: pricing
         ))
