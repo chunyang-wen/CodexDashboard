@@ -22,7 +22,7 @@ enum MetricDefinition {
         case .totalTokens:
             "Final cumulative tokens reported by Codex for each session. Exact when a token_count event or indexed total exists."
         case .tokenComposition:
-            "Input is prompt tokens processed; cached input is a subset served from prompt cache. Output is generated tokens; reasoning is a subset of output. Subsets are not added again."
+            "The chart shows each category as a share of total tokens. Input is split into uncached, cached, and cache-write prompt tokens; reasoning is a subset of output and is not added again."
         case .agentRuntime:
             "Sum of duration_ms from completed turns. Includes tool execution and model waiting inside a turn; excludes time between turns."
         case .sessionSpan:

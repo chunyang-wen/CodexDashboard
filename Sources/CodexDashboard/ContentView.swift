@@ -979,7 +979,7 @@ private struct ProjectTreeRow: View {
             Image(systemName: "folder.fill").foregroundStyle(.blue)
             VStack(alignment: .leading, spacing: 2) {
                 Text(project.name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                Text("\(project.sessionCount) sessions · \(MetricFormatters.compactNumber(project.usage.total)) tokens")
+                Text("\(project.sessionCount) sessions · \(MetricFormatters.compactNumber(project.usage.total)) tokens · \((project.usage.cacheHitRate * 100).formatted(.number.precision(.fractionLength(1))))% cache hit")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 8)
@@ -996,7 +996,7 @@ private struct SessionTreeRow: View {
             Image(systemName: "bubble.left.and.text.bubble.right.fill").font(.caption).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.displayTitle).font(.subheadline).lineLimit(1)
-                Text("\(session.model ?? "Unknown") · \(MetricFormatters.compactNumber(session.usage.total)) tokens")
+                Text("\(session.model ?? "Unknown") · \(MetricFormatters.compactNumber(session.usage.total)) tokens · \((session.usage.cacheHitRate * 100).formatted(.number.precision(.fractionLength(1))))% cache hit")
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 6)
@@ -1029,6 +1029,7 @@ private struct ProjectDetailView: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), spacing: 12)], spacing: 12) {
                     MetricCard(title: "Sessions", value: project.sessionCount.formatted(), detail: "\(rangedSessions.count) in \(rangeLabel)", icon: "bubble.left.and.text.bubble.right.fill", tint: .blue)
                     MetricCard(title: "Tokens", value: MetricFormatters.compactNumber(indexed.usage.total), detail: "\((indexed.usage.cacheHitRate * 100).formatted(.number.precision(.fractionLength(1))))% cached · \(rangeLabel)", icon: "text.word.spacing", tint: .purple, definition: .totalTokens)
+                    MetricCard(title: "Cache hit rate", value: indexed.usage.cacheHitRate.formatted(.percent.precision(.fractionLength(1))), detail: "Cached input / total input · \(rangeLabel)", icon: "arrow.triangle.2.circlepath", tint: .teal, definition: .cacheHitRate)
                     MetricCard(title: "Agent runtime", value: MetricFormatters.duration(indexed.activeRuntime), detail: "Completed turns · \(rangeLabel)", icon: "clock.fill", tint: .orange, definition: .agentRuntime)
                     MetricCard(title: "Equivalent cost", value: indexed.costCoverage > 0 ? MetricFormatters.currency(indexed.estimatedCost) : "—", detail: "\((indexed.costCoverage * 100).formatted(.number.precision(.fractionLength(0))))% coverage · \(rangeLabel)", icon: "dollarsign", tint: .green, definition: .estimatedCost)
                     ToolCallsMetricCard(calls: indexed.toolCalls, tools: indexed.tools, detail: "\(indexed.tools.count) tools · \(rangeLabel)")
@@ -1048,6 +1049,8 @@ private struct ProjectDetailView: View {
                                 Spacer()
                                 VStack(alignment: .trailing, spacing: 2) {
                                     Text(MetricFormatters.compactNumber(session.usage.total)).monospacedDigit()
+                                    Text(session.usage.cacheHitRate.formatted(.percent.precision(.fractionLength(1))) + " cache hit")
+                                        .font(.caption).foregroundStyle(.teal).monospacedDigit()
                                     let sessionCost = sessionIndexes[session.id]?.estimatedCost
                                         ?? (pricing.estimate(usage: session.usage, model: session.model, on: session.updatedAt) ?? 0)
                                     let sessionCoverage = sessionIndexes[session.id].map { indexed in
@@ -1112,14 +1115,8 @@ private struct SessionDetailView: View {
                     SkillCallsMetricCard(calls: session.skillCallEvents?.count ?? 0, skills: skills, detail: "\(skills.count) skills · click for cost")
                 }
                 VStack(alignment: .leading, spacing: 14) {
-                    SectionHeader(title: "Token composition", subtitle: "Cached and reasoning values are subsets of input and output.", definition: .tokenComposition)
-                    Chart {
-                        BarMark(x: .value("Tokens", session.usage.uncachedInput), y: .value("Type", "Uncached input")).foregroundStyle(.blue)
-                        BarMark(x: .value("Tokens", session.usage.cachedInput), y: .value("Type", "Cached input")).foregroundStyle(.cyan)
-                        BarMark(x: .value("Tokens", session.usage.output), y: .value("Type", "Output")).foregroundStyle(.purple)
-                        BarMark(x: .value("Tokens", session.usage.reasoningOutput), y: .value("Type", "Reasoning")).foregroundStyle(.pink)
-                    }
-                    .frame(height: 190)
+                    SectionHeader(title: "Token composition", subtitle: "Input is split into uncached, cached, and cache-write tokens; reasoning is a subset of output.", definition: .tokenComposition)
+                    TokenCompositionView(usage: session.usage)
                 }
                 .padding(18).background(.background.secondary, in: RoundedRectangle(cornerRadius: 16))
                 Grid(alignment: .leading, horizontalSpacing: 22, verticalSpacing: 11) {
@@ -1141,6 +1138,212 @@ private struct SessionDetailView: View {
             Text(label).foregroundStyle(.secondary)
             Text(value).textSelection(.enabled)
         }
+    }
+
+}
+
+private struct TokenCompositionSegment: Identifiable {
+    let id: String
+    let title: String
+    let value: Int64
+    let color: Color
+}
+
+private struct TokenCompositionView: View {
+    let usage: TokenUsage
+
+    private var inputSegments: [TokenCompositionSegment] {
+        [
+            .init(id: "uncached", title: "Uncached", value: usage.uncachedInput, color: .blue),
+            .init(id: "cached", title: "Cached", value: usage.cachedInput, color: .cyan),
+            .init(id: "cache-write", title: "Cache write", value: usage.cacheWriteInput, color: .orange)
+        ]
+    }
+
+    private var outputSegments: [TokenCompositionSegment] {
+        [
+            .init(id: "output", title: "Output", value: usage.output, color: .purple),
+            .init(id: "reasoning", title: "Reasoning", value: usage.reasoningOutput, color: .pink)
+        ]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            TokenCompositionGroup(
+                title: "INPUT",
+                total: usage.input,
+                grandTotal: usage.total,
+                segments: inputSegments,
+                showsNestedLegend: false
+            )
+            TokenCompositionGroup(
+                title: "OUTPUT",
+                total: usage.output,
+                grandTotal: usage.total,
+                segments: outputSegments,
+                showsNestedLegend: true
+            )
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct TokenCompositionGroup: View {
+    let title: String
+    let total: Int64
+    let grandTotal: Int64
+    let segments: [TokenCompositionSegment]
+    let showsNestedLegend: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Text(title)
+                    .font(.caption.weight(.bold))
+                    .tracking(0.8)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(MetricFormatters.compactNumber(total)) tokens · \(percentage(total, of: grandTotal)) of total")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            if showsNestedLegend {
+                NestedTokenBar(total: total, nested: segments.last?.value ?? 0, baseColor: segments.first?.color ?? .purple, nestedColor: segments.last?.color ?? .pink)
+                TokenNestedLegend(segment: segments.last ?? .init(id: "reasoning", title: "Reasoning", value: 0, color: .pink), percentage: fraction(segments.last?.value ?? 0, of: total))
+            } else {
+                SegmentedTokenBar(segments: segments, total: total)
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: segments.count),
+                    alignment: .leading,
+                    spacing: 8
+                ) {
+                    ForEach(segments) { segment in
+                        TokenCompositionLegend(segment: segment, percentage: fraction(segment.value, of: total))
+                    }
+                }
+            }
+        }
+    }
+
+    private func percentage(_ value: Int64, of denominator: Int64) -> String {
+        guard denominator > 0 else { return "—" }
+        return (Double(value) / Double(denominator)).formatted(.percent.precision(.fractionLength(1)))
+    }
+
+    private func fraction(_ value: Int64, of denominator: Int64) -> Double {
+        guard denominator > 0 else { return 0 }
+        return min(1, max(0, Double(value) / Double(denominator)))
+    }
+}
+
+private struct SegmentedTokenBar: View {
+    let segments: [TokenCompositionSegment]
+    let total: Int64
+
+    var body: some View {
+        GeometryReader { proxy in
+            let gap = CGFloat(max(0, segments.count - 1))
+            let availableWidth = max(0, proxy.size.width - gap)
+            HStack(spacing: 1) {
+                ForEach(segments) { segment in
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(segment.color.gradient)
+                        .frame(width: availableWidth * fraction(segment.value), height: 28)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(height: 28)
+        .background(.quaternary.opacity(0.42), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(.separator.opacity(0.38)))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Segmented token bar")
+        .accessibilityValue(segments.map { "\($0.title) \($0.value)" }.joined(separator: ", "))
+    }
+
+    private func fraction(_ value: Int64) -> Double {
+        guard total > 0 else { return 0 }
+        return min(1, max(0, Double(value) / Double(total)))
+    }
+}
+
+private struct NestedTokenBar: View {
+    let total: Int64
+    let nested: Int64
+    let baseColor: Color
+    let nestedColor: Color
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(baseColor.gradient)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(nestedColor.gradient)
+                    .frame(width: proxy.size.width * fraction)
+            }
+        }
+        .frame(height: 28)
+        .background(.quaternary.opacity(0.42), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(.separator.opacity(0.38)))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Output bar with reasoning subset")
+        .accessibilityValue("Output \(total) tokens, reasoning \(nested) tokens")
+    }
+
+    private var fraction: Double {
+        guard total > 0 else { return 0 }
+        return min(1, max(0, Double(nested) / Double(total)))
+    }
+}
+
+private struct TokenNestedLegend: View {
+    let segment: TokenCompositionSegment
+    let percentage: Double
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Rectangle()
+                .fill(segment.color.opacity(0.55))
+                .frame(width: 18, height: 1)
+            Circle()
+                .fill(segment.color)
+                .frame(width: 7, height: 7)
+            Text("\(segment.title): \(MetricFormatters.compactNumber(segment.value)) · \(percentage.formatted(.percent.precision(.fractionLength(1)))) output")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Rectangle()
+                .fill(segment.color.opacity(0.55))
+                .frame(height: 1)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct TokenCompositionLegend: View {
+    let segment: TokenCompositionSegment
+    let percentage: Double
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Circle()
+                .fill(segment.color)
+                .frame(width: 7, height: 7)
+                .padding(.top, 4)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(segment.title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text("\(MetricFormatters.compactNumber(segment.value)) · \(percentage.formatted(.percent.precision(.fractionLength(1))))")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 
