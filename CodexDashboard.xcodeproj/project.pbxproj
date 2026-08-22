@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		64486C0E3039979500BD3175 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 64486C0D3039979500BD3175 /* Sparkle */; };
 		A10000000000000000000001 /* Analytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* Analytics.swift */; };
 		A10000000000000000000002 /* CodexStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* CodexStore.swift */; };
 		A10000000000000000000003 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* Models.swift */; };
@@ -114,6 +115,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A50000000000000000000001 /* CodexMetricsCore.framework in Frameworks */,
+				64486C0E3039979500BD3175 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -332,6 +334,7 @@
 			);
 			mainGroup = F10000000000000000000001;
 			packageReferences = (
+				64486C0C3039979500BD3175 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			productRefGroup = F10000000000000000000007 /* Products */;
 			projectDirPath = "";
@@ -511,6 +514,7 @@
 				DEVELOPMENT_TEAM = 4LK28PK96X;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Sources/CodexDashboard/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Codex Dashboard";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -536,6 +540,7 @@
 				DEVELOPMENT_TEAM = 4LK28PK96X;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Sources/CodexDashboard/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Codex Dashboard";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -659,6 +664,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		64486C0C3039979500BD3175 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.9.6;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		64486C0D3039979500BD3175 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 64486C0C3039979500BD3175 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = F00000000000000000000001 /* Project object */;
 }

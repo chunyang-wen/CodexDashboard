@@ -1,0 +1,14 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>CodexDashboard</title>
+        <item>
+            <title>0.1.0</title>
+            <pubDate>Sat, 22 Aug 2026 16:41:06 +0800</pubDate>
+            <sparkle:version>1</sparkle:version>
+            <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.0/CodexDashboard-0.1.0.zip" length="7281178" type="application/octet-stream" sparkle:edSignature="vXaH5nU/kPB3FTC+0PThrGvWcM0tjgjdgq7EW0KSrNR/mMPP4B+BPupkafRCD1HzDvByDXOpATlDISO26jI3DQ=="/>
+        </item>
+    </channel>
+</rss>

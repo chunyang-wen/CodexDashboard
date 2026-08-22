@@ -1,15 +1,51 @@
 import AppKit
 import CodexMetricsCore
 import ServiceManagement
+import Sparkle
 import SwiftUI
 
 @MainActor
-private final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppUpdater: ObservableObject {
+    static let shared = AppUpdater()
+
+    private(set) var updaterController: SPUStandardUpdaterController?
+
+    private init() {}
+
+    func configure(controller: SPUStandardUpdaterController) {
+        self.updaterController = controller
+    }
+
+    func checkForUpdates() {
+        AppActivationPolicy.showDockIcon()
+        updaterController?.checkForUpdates(nil)
+    }
+}
+
+@MainActor
+private final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency SPUUpdaterDelegate, @preconcurrency SPUStandardUserDriverDelegate {
+    private var updaterController: SPUStandardUpdaterController!
+
+    nonisolated var supportsGentleScheduledUpdateReminders: Bool {
+        true
+    }
+
+    nonisolated func feedURLString(for updater: SPUUpdater) -> String? {
+        "https://chunyang-wen.github.io/CodexDashboard/appcast.xml"
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        updaterController = SPUStandardUpdaterController(
+            startingUpdater: true,
+            updaterDelegate: self,
+            userDriverDelegate: self
+        )
+        AppUpdater.shared.configure(controller: updaterController)
+
         NSApp.setActivationPolicy(.regular)
         AppActivationPolicy.bringWindowToFront(identifier: .dashboard)
 
@@ -255,6 +291,11 @@ private struct CodexDashboardApplication: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 820)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    AppUpdater.shared.checkForUpdates()
+                }
+            }
             CommandGroup(after: .newItem) {
                 Button("Refresh Metrics") { store.load() }
                     .keyboardShortcut("r", modifiers: .command)
@@ -1461,9 +1502,27 @@ private struct DashboardSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section("Updates") {
+                LabeledContent("Software Update") {
+                    Button("Check for Updates…") {
+                        AppUpdater.shared.checkForUpdates()
+                    }
+                }
+                LabeledContent("Current Version") {
+                    Text(appVersionDescription)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .formStyle(.grouped)
         .padding(4)
+    }
+
+    private var appVersionDescription: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
+        return "Version \(version) (\(build))"
     }
 
     private var quotaIconPreviewWindows: [UsageQuotaWindow] {

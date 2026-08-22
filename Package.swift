@@ -9,6 +9,9 @@ let package = Package(
         .executable(name: "codex-metrics", targets: ["CodexMetricsCLI"]),
         .executable(name: "CodexDashboard", targets: ["CodexDashboard"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.4")
+    ],
     targets: [
         .target(
             name: "CodexMetricsCore",
@@ -20,7 +23,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "CodexDashboard",
-            dependencies: ["CodexMetricsCore"],
+            dependencies: [
+                "CodexMetricsCore",
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             exclude: ["Assets.xcassets"]
         ),
         .testTarget(
