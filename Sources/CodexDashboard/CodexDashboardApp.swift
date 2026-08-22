@@ -31,7 +31,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrenc
     }
 
     nonisolated func feedURLString(for updater: SPUUpdater) -> String? {
-        "https://chunyang-wen.github.io/CodexDashboard/appcast.xml"
+        "https://www.chunyangwen.com/CodexDashboard/appcast.xml"
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
