@@ -34,13 +34,55 @@ public final class CodexStore: @unchecked Sendable {
 
     /// Loads the compact Codex index without scanning rollout JSONL files.
     public func loadIndexedSessions() throws -> [SessionMetric] {
+        // Keep a durable mirror of the source index. After the first successful
+        // load, normal starts and FSEvent refreshes read only newly inserted rows
+        // or the small inclusive updated-at tail instead of scanning all threads.
+        if let cache = try? MetricsDatabase(userHome: userHome) {
+            return try loadIndexedSessions(using: cache)
+        }
+        return try loadIndexedSessionsWithoutCache()
+    }
+
+    private func loadIndexedSessions(using cache: MetricsDatabase) throws -> [SessionMetric] {
+        let sourceKey = codexHome.standardizedFileURL.path
+        let checkpoint = try cache.sourceIndexCheckpoint(for: sourceKey)
         let databaseURLs = try locateDatabases()
         var lastFailure: DatabaseReadFailure?
         for (candidateIndex, databaseURL) in databaseURLs.enumerated() {
             let attemptCount = candidateIndex == 0 ? 6 : 2
             for attempt in 0..<attemptCount {
                 do {
-                    return try readIndexedSessions(from: databaseURL)
+                    let delta = try readIndexedSessions(from: databaseURL, after: checkpoint)
+                    let nextCheckpoint = MetricsDatabase.SourceIndexCheckpoint(
+                        maxRowID: max(checkpoint?.maxRowID ?? 0, delta.maxRowID),
+                        maxUpdatedAt: max(checkpoint?.maxUpdatedAt ?? 0, delta.maxUpdatedAt)
+                    )
+                    try cache.updateSourceIndex(
+                        sourceKey: sourceKey,
+                        sessions: delta.sessions,
+                        checkpoint: nextCheckpoint
+                    )
+                    return try cache.sourceSessions(for: sourceKey)
+                } catch let failure as DatabaseReadFailure {
+                    lastFailure = failure
+                    guard failure.isTransient, attempt < attemptCount - 1 else { break }
+                    Thread.sleep(forTimeInterval: 0.05 * pow(2, Double(attempt)))
+                }
+            }
+        }
+        throw lastFailure?.publicError ?? CodexStoreError.openFailed("Unknown error")
+    }
+
+    private func loadIndexedSessionsWithoutCache() throws -> [SessionMetric] {
+        let databaseURLs = try locateDatabases()
+        var lastFailure: DatabaseReadFailure?
+        for (candidateIndex, databaseURL) in databaseURLs.enumerated() {
+            let attemptCount = candidateIndex == 0 ? 6 : 2
+            for attempt in 0..<attemptCount {
+                do {
+                    return try readIndexedSessions(from: databaseURL, after: nil).sessions
+                        .map(\.metric)
+                        .sorted { $0.updatedAt > $1.updatedAt }
                 } catch let failure as DatabaseReadFailure {
                     lastFailure = failure
                     guard failure.isTransient, attempt < attemptCount - 1 else { break }
@@ -53,7 +95,16 @@ public final class CodexStore: @unchecked Sendable {
         throw lastFailure?.publicError ?? CodexStoreError.openFailed("Unknown error")
     }
 
-    private func readIndexedSessions(from databaseURL: URL) throws -> [SessionMetric] {
+    private struct SourceIndexDelta {
+        let sessions: [(metric: SessionMetric, sourceUpdatedAt: Int64)]
+        let maxRowID: Int64
+        let maxUpdatedAt: Int64
+    }
+
+    private func readIndexedSessions(
+        from databaseURL: URL,
+        after checkpoint: MetricsDatabase.SourceIndexCheckpoint?
+    ) throws -> SourceIndexDelta {
         var database: OpaquePointer?
         let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
         let openResult = sqlite3_open_v2(databaseURL.path, &database, flags, nil)
@@ -70,7 +121,19 @@ public final class CodexStore: @unchecked Sendable {
         let columns = try tableColumns(database)
         let names = ["id", "rollout_path", "cwd", "title", "source", "model_provider", "created_at", "updated_at", "tokens_used", "model", "reasoning_effort", "git_branch", "cli_version", "archived"]
         let selections = names.map { columns.contains($0) ? $0 : "NULL AS \($0)" }.joined(separator: ", ")
-        let sql = "SELECT \(selections) FROM threads ORDER BY updated_at DESC"
+        let sql: String
+        if checkpoint == nil {
+            sql = "SELECT rowid, \(selections) FROM threads"
+        } else {
+            // Keep the two high-water predicates as separate UNION branches.
+            // SQLite can then use its rowid and updated_at indexes independently;
+            // a single OR predicate degrades to a complete updated_at index scan.
+            sql = """
+                SELECT rowid, \(selections) FROM threads WHERE rowid > ?
+                UNION
+                SELECT rowid, \(selections) FROM threads WHERE updated_at >= ?
+                """
+        }
         var statement: OpaquePointer?
         let prepareResult = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
         guard prepareResult == SQLITE_OK, let statement else {
@@ -81,26 +144,38 @@ public final class CodexStore: @unchecked Sendable {
         }
         defer { sqlite3_finalize(statement) }
 
-        var sessions: [SessionMetric] = []
+        if let checkpoint {
+            sqlite3_bind_int64(statement, 1, checkpoint.maxRowID)
+            sqlite3_bind_int64(statement, 2, checkpoint.maxUpdatedAt)
+        }
+
+        var sessions: [(metric: SessionMetric, sourceUpdatedAt: Int64)] = []
+        var maxRowID = checkpoint?.maxRowID ?? 0
+        var maxUpdatedAt = checkpoint?.maxUpdatedAt ?? 0
         var stepResult = sqlite3_step(statement)
         while stepResult == SQLITE_ROW {
-            let total = int(statement, 8)
-            sessions.append(SessionMetric(
-                id: text(statement, 0) ?? UUID().uuidString,
-                rolloutPath: text(statement, 1) ?? "",
-                projectPath: normalizedPath(text(statement, 2) ?? "Unknown"),
-                title: text(statement, 3) ?? "",
-                source: text(statement, 4) ?? "unknown",
-                provider: text(statement, 5) ?? "unknown",
-                createdAt: Date(timeIntervalSince1970: Double(int(statement, 6))),
-                updatedAt: Date(timeIntervalSince1970: Double(int(statement, 7))),
-                model: text(statement, 9),
-                reasoningEffort: text(statement, 10),
-                gitBranch: text(statement, 11),
-                cliVersion: text(statement, 12),
-                archived: int(statement, 13) != 0,
+            let rowID = int(statement, 0)
+            let sourceUpdatedAt = int(statement, 8)
+            maxRowID = max(maxRowID, rowID)
+            maxUpdatedAt = max(maxUpdatedAt, sourceUpdatedAt)
+            let total = int(statement, 9)
+            let metric = SessionMetric(
+                id: text(statement, 1) ?? UUID().uuidString,
+                rolloutPath: text(statement, 2) ?? "",
+                projectPath: normalizedPath(text(statement, 3) ?? "Unknown"),
+                title: text(statement, 4) ?? "",
+                source: text(statement, 5) ?? "unknown",
+                provider: text(statement, 6) ?? "unknown",
+                createdAt: Date(timeIntervalSince1970: Double(int(statement, 7))),
+                updatedAt: Date(timeIntervalSince1970: Double(sourceUpdatedAt)),
+                model: text(statement, 10),
+                reasoningEffort: text(statement, 11),
+                gitBranch: text(statement, 12),
+                cliVersion: text(statement, 13),
+                archived: int(statement, 14) != 0,
                 usage: .init(total: total)
-            ))
+            )
+            sessions.append((metric, sourceUpdatedAt))
             stepResult = sqlite3_step(statement)
         }
         guard stepResult == SQLITE_DONE else {
@@ -109,7 +184,7 @@ public final class CodexStore: @unchecked Sendable {
                 message: String(cString: sqlite3_errmsg(database))
             )
         }
-        return sessions
+        return SourceIndexDelta(sessions: sessions, maxRowID: maxRowID, maxUpdatedAt: maxUpdatedAt)
     }
 
     /// Enriches indexed sessions with token breakdown and turn timing. This may scan large files;

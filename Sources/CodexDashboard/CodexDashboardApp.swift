@@ -768,7 +768,7 @@ private struct MenuBarDashboardView: View {
                     Button {
                         showQuotaAlertMarker = true
                     } label: {
-                        Text("Set alert marker")
+                        Text("Set attention marker")
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.red)

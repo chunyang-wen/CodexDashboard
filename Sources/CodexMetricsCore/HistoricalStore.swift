@@ -1,6 +1,12 @@
 import Foundation
 import SQLite3
 
+private struct MetricsIndexContext: Codable {
+    let schemaVersion: Int
+    let timeZone: String
+    let pricing: PricingHistory
+}
+
 /// Private transactional store shared by rollout checkpoints and durable metrics.
 /// It stores only Codable metric values; rollout conversation content never enters it.
 final class MetricsDatabase: @unchecked Sendable {
@@ -47,6 +53,22 @@ final class MetricsDatabase: @unchecked Sendable {
             )
             """)
         try execute("""
+            CREATE TABLE IF NOT EXISTS source_session_index (
+                source_key TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                source_updated_at INTEGER NOT NULL,
+                metric BLOB NOT NULL,
+                PRIMARY KEY(source_key, session_id)
+            )
+            """)
+        try execute("""
+            CREATE TABLE IF NOT EXISTS source_index_checkpoint (
+                source_key TEXT PRIMARY KEY,
+                max_row_id INTEGER NOT NULL,
+                max_updated_at INTEGER NOT NULL
+            )
+            """)
+        try execute("""
             CREATE TABLE IF NOT EXISTS metric_session_index (
                 session_id TEXT PRIMARY KEY,
                 source_revision TEXT NOT NULL,
@@ -59,6 +81,12 @@ final class MetricsDatabase: @unchecked Sendable {
                 day REAL NOT NULL,
                 metric BLOB NOT NULL,
                 PRIMARY KEY(session_id, day)
+            )
+            """)
+        try execute("""
+            CREATE TABLE IF NOT EXISTS menu_bar_daily (
+                day REAL PRIMARY KEY,
+                metric BLOB NOT NULL
             )
             """)
         try execute("""
@@ -188,6 +216,90 @@ final class MetricsDatabase: @unchecked Sendable {
         }
     }
 
+    struct SourceIndexCheckpoint: Equatable, Sendable {
+        let maxRowID: Int64
+        let maxUpdatedAt: Int64
+    }
+
+    func sourceIndexCheckpoint(for sourceKey: String) throws -> SourceIndexCheckpoint? {
+        try lockedThrowing {
+            guard let statement = prepare("SELECT max_row_id, max_updated_at FROM source_index_checkpoint WHERE source_key = ?") else {
+                throw databaseError()
+            }
+            defer { sqlite3_finalize(statement) }
+            bind(sourceKey, to: statement, at: 1)
+            guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+            return SourceIndexCheckpoint(
+                maxRowID: sqlite3_column_int64(statement, 0),
+                maxUpdatedAt: sqlite3_column_int64(statement, 1)
+            )
+        }
+    }
+
+    /// Advances the durable mirror of Codex's thread table. The inclusive
+    /// updated-at tail is deliberately reread by the source query, while the
+    /// WHERE clause below prevents unchanged tail rows from touching SQLite/WAL.
+    func updateSourceIndex(
+        sourceKey: String,
+        sessions: [(metric: SessionMetric, sourceUpdatedAt: Int64)],
+        checkpoint: SourceIndexCheckpoint
+    ) throws {
+        let encoder = Self.encoder()
+        let encoded = try sessions.map { ($0.metric, $0.sourceUpdatedAt, try encoder.encode($0.metric)) }
+        try transaction {
+            guard let upsert = prepare("""
+                INSERT INTO source_session_index(source_key, session_id, source_updated_at, metric)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(source_key, session_id) DO UPDATE SET
+                    source_updated_at=excluded.source_updated_at, metric=excluded.metric
+                WHERE source_session_index.source_updated_at != excluded.source_updated_at
+                   OR source_session_index.metric != excluded.metric
+                """),
+                let storeCheckpoint = prepare("""
+                INSERT INTO source_index_checkpoint(source_key, max_row_id, max_updated_at)
+                VALUES(?, ?, ?)
+                ON CONFLICT(source_key) DO UPDATE SET
+                    max_row_id=excluded.max_row_id, max_updated_at=excluded.max_updated_at
+                WHERE source_index_checkpoint.max_row_id != excluded.max_row_id
+                   OR source_index_checkpoint.max_updated_at != excluded.max_updated_at
+                """) else { throw databaseError() }
+            defer {
+                sqlite3_finalize(upsert)
+                sqlite3_finalize(storeCheckpoint)
+            }
+            for (session, updatedAt, bytes) in encoded {
+                sqlite3_reset(upsert)
+                sqlite3_clear_bindings(upsert)
+                bind(sourceKey, to: upsert, at: 1)
+                bind(session.id, to: upsert, at: 2)
+                sqlite3_bind_int64(upsert, 3, updatedAt)
+                bind(bytes, to: upsert, at: 4)
+                guard sqlite3_step(upsert) == SQLITE_DONE else { throw databaseError() }
+            }
+            bind(sourceKey, to: storeCheckpoint, at: 1)
+            sqlite3_bind_int64(storeCheckpoint, 2, checkpoint.maxRowID)
+            sqlite3_bind_int64(storeCheckpoint, 3, checkpoint.maxUpdatedAt)
+            guard sqlite3_step(storeCheckpoint) == SQLITE_DONE else { throw databaseError() }
+        }
+    }
+
+    func sourceSessions(for sourceKey: String) throws -> [SessionMetric] {
+        try lockedThrowing {
+            guard let statement = prepare("SELECT metric FROM source_session_index WHERE source_key = ? ORDER BY source_updated_at DESC") else {
+                throw databaseError()
+            }
+            defer { sqlite3_finalize(statement) }
+            bind(sourceKey, to: statement, at: 1)
+            let decoder = Self.decoder()
+            var result: [SessionMetric] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let bytes = data(statement, 0) else { continue }
+                result.append(try decoder.decode(SessionMetric.self, from: bytes))
+            }
+            return result
+        }
+    }
+
     func pricing() throws -> PricingHistory? {
         try metadata(PricingHistory.self, key: "pricing")
     }
@@ -205,11 +317,77 @@ final class MetricsDatabase: @unchecked Sendable {
     }
 
     func menuBarMetrics() throws -> MenuBarMetricsSnapshot? {
-        try metadata(MenuBarMetricsSnapshot.self, key: "menu_bar_metrics")
+        let days: [MenuBarDayMetrics] = try lockedThrowing {
+            guard let statement = prepare("SELECT metric FROM menu_bar_daily ORDER BY day") else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            let decoder = Self.decoder()
+            var result: [MenuBarDayMetrics] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let bytes = data(statement, 0) else { continue }
+                result.append(try decoder.decode(MenuBarDayMetrics.self, from: bytes))
+            }
+            return result
+        }
+        if !days.isEmpty {
+            let generatedAt = try metadata(Date.self, key: "menu_bar_generated_at") ?? .distantPast
+            return MenuBarMetricsSnapshot(generatedAt: generatedAt, days: days)
+        }
+        // Compatibility read for databases created before the per-day projection.
+        return try metadata(MenuBarMetricsSnapshot.self, key: "menu_bar_metrics")
     }
 
     func storeMenuBarMetrics(_ snapshot: MenuBarMetricsSnapshot) throws {
-        try storeMetadata(snapshot, key: "menu_bar_metrics")
+        let encoder = Self.encoder()
+        let encoded = try snapshot.days.map { ($0, try encoder.encode($0)) }
+        let generatedAt = try encoder.encode(snapshot.generatedAt)
+        try transaction {
+            guard let select = prepare("SELECT day, metric FROM menu_bar_daily"),
+                  let delete = prepare("DELETE FROM menu_bar_daily WHERE day = ?"),
+                  let upsert = prepare("""
+                    INSERT INTO menu_bar_daily(day, metric) VALUES(?, ?)
+                    ON CONFLICT(day) DO UPDATE SET metric=excluded.metric
+                    WHERE menu_bar_daily.metric != excluded.metric
+                    """),
+                  let metadata = prepare("""
+                    INSERT INTO metadata(key, value) VALUES('menu_bar_generated_at', ?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                    """) else { throw databaseError() }
+            defer {
+                sqlite3_finalize(select)
+                sqlite3_finalize(delete)
+                sqlite3_finalize(upsert)
+                sqlite3_finalize(metadata)
+            }
+            var stored: [Double: MenuBarDayMetrics] = [:]
+            var step = sqlite3_step(select)
+            let decoder = Self.decoder()
+            while step == SQLITE_ROW {
+                if let bytes = data(select, 1),
+                   let metric = try? decoder.decode(MenuBarDayMetrics.self, from: bytes) {
+                    stored[sqlite3_column_double(select, 0)] = metric
+                }
+                step = sqlite3_step(select)
+            }
+            guard step == SQLITE_DONE else { throw databaseError() }
+            let replacementDays = Set(snapshot.days.map { $0.day.timeIntervalSince1970 })
+            for day in stored.keys where !replacementDays.contains(day) {
+                sqlite3_reset(delete)
+                sqlite3_clear_bindings(delete)
+                sqlite3_bind_double(delete, 1, day)
+                guard sqlite3_step(delete) == SQLITE_DONE else { throw databaseError() }
+            }
+            for (day, bytes) in encoded {
+                let key = day.day.timeIntervalSince1970
+                guard stored[key] != day else { continue }
+                sqlite3_reset(upsert)
+                sqlite3_clear_bindings(upsert)
+                sqlite3_bind_double(upsert, 1, key)
+                bind(bytes, to: upsert, at: 2)
+                guard sqlite3_step(upsert) == SQLITE_DONE else { throw databaseError() }
+            }
+            bind(generatedAt, to: metadata, at: 1)
+            guard sqlite3_step(metadata) == SQLITE_DONE else { throw databaseError() }
+        }
     }
 
     func sourceEventID(for key: String) throws -> UInt64? {
@@ -288,16 +466,26 @@ final class MetricsDatabase: @unchecked Sendable {
                 try executeUnlocked("DELETE FROM metric_session_index")
             }
             guard let deleteDays = prepare("DELETE FROM metric_daily_index WHERE session_id = ?"),
+                  let existingDays = prepare("SELECT day, metric FROM metric_daily_index WHERE session_id = ?"),
+                  let deleteDay = prepare("DELETE FROM metric_daily_index WHERE session_id = ? AND day = ?"),
                   let deleteSession = prepare("DELETE FROM metric_session_index WHERE session_id = ?"),
                   let upsertSession = prepare("""
                     INSERT INTO metric_session_index(session_id, source_revision, metric) VALUES(?, ?, ?)
                     ON CONFLICT(session_id) DO UPDATE SET source_revision=excluded.source_revision, metric=excluded.metric
+                    WHERE metric_session_index.source_revision != excluded.source_revision
+                       OR metric_session_index.metric != excluded.metric
                     """),
-                  let insertDay = prepare("INSERT INTO metric_daily_index(session_id, day, metric) VALUES(?, ?, ?)") else {
+                  let insertDay = prepare("""
+                    INSERT INTO metric_daily_index(session_id, day, metric) VALUES(?, ?, ?)
+                    ON CONFLICT(session_id, day) DO UPDATE SET metric=excluded.metric
+                    WHERE metric_daily_index.metric != excluded.metric
+                    """) else {
                 throw databaseError()
             }
             defer {
                 sqlite3_finalize(deleteDays)
+                sqlite3_finalize(existingDays)
+                sqlite3_finalize(deleteDay)
                 sqlite3_finalize(deleteSession)
                 sqlite3_finalize(upsertSession)
                 sqlite3_finalize(insertDay)
@@ -316,10 +504,28 @@ final class MetricsDatabase: @unchecked Sendable {
 
             for record in encoded {
                 let summary = record.summary
-                sqlite3_reset(deleteDays)
-                sqlite3_clear_bindings(deleteDays)
-                bind(summary.sessionID, to: deleteDays, at: 1)
-                guard sqlite3_step(deleteDays) == SQLITE_DONE else { throw databaseError() }
+                let replacementDays = Set(record.days.map { $0.0.day.timeIntervalSince1970 })
+                sqlite3_reset(existingDays)
+                sqlite3_clear_bindings(existingDays)
+                bind(summary.sessionID, to: existingDays, at: 1)
+                var storedDays: [Double: IndexedDailyMetrics] = [:]
+                var step = sqlite3_step(existingDays)
+                while step == SQLITE_ROW {
+                    let day = sqlite3_column_double(existingDays, 0)
+                    if let bytes = data(existingDays, 1),
+                       let metric = try? Self.decoder().decode(IndexedDailyMetrics.self, from: bytes) {
+                        storedDays[day] = metric
+                    }
+                    step = sqlite3_step(existingDays)
+                }
+                guard step == SQLITE_DONE else { throw databaseError() }
+                for day in storedDays.keys where !replacementDays.contains(day) {
+                    sqlite3_reset(deleteDay)
+                    sqlite3_clear_bindings(deleteDay)
+                    bind(summary.sessionID, to: deleteDay, at: 1)
+                    sqlite3_bind_double(deleteDay, 2, day)
+                    guard sqlite3_step(deleteDay) == SQLITE_DONE else { throw databaseError() }
+                }
 
                 sqlite3_reset(upsertSession)
                 sqlite3_clear_bindings(upsertSession)
@@ -329,6 +535,8 @@ final class MetricsDatabase: @unchecked Sendable {
                 guard sqlite3_step(upsertSession) == SQLITE_DONE else { throw databaseError() }
 
                 for (day, bytes) in record.days {
+                    let dayKey = day.day.timeIntervalSince1970
+                    guard storedDays[dayKey] != day else { continue }
                     sqlite3_reset(insertDay)
                     sqlite3_clear_bindings(insertDay)
                     bind(summary.sessionID, to: insertDay, at: 1)
@@ -624,14 +832,11 @@ public actor HistoricalStore {
             changedSessions: changed,
             pricingChanged: mergedPricing != current.pricing
         )
-        if !changed.isEmpty || mergedPricing != current.pricing {
-            // A dashboard analytics pass may have already populated this cache
-            // before a newly enriched provider session was recorded. Force the
-            // next pass to rebuild from the updated durable history.
-            // Keep a non-nil empty marker so metricsIndex() does not reload the
-            // stale SQLite index before noticing the invalidated context.
-            metricsIndexCache = .empty
-            metricsIndexContext = nil
+        if !changed.isEmpty {
+            // Keep the durable projection in step with the changed history rows.
+            // Invalidating the whole cache here used to turn every 50-session
+            // enrichment batch into a full historical index rebuild.
+            _ = try updateMetricsIndex(for: changed, pricing: mergedPricing)
         }
         return byID.count
     }
@@ -783,19 +988,15 @@ public actor HistoricalStore {
         pricing: PricingHistory = .bundled,
         calendar: Calendar = .current
     ) throws -> MetricsIndexSnapshot {
-        struct Context: Codable {
-            let schemaVersion: Int
-            let timeZone: String
-            let pricing: PricingHistory
-        }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .millisecondsSince1970
         encoder.outputFormatting = [.sortedKeys]
-        let context = try encoder.encode(Context(
+        let contextValue = MetricsIndexContext(
             schemaVersion: 2,
             timeZone: calendar.timeZone.identifier,
             pricing: pricing
-        ))
+        )
+        let context = try encoder.encode(contextValue)
 
         if metricsIndexCache == nil {
             if let database {
@@ -807,6 +1008,12 @@ public actor HistoricalStore {
             }
         }
         if metricsIndexContext == context, let cached = metricsIndexCache {
+            return cached
+        }
+        if let cached = metricsIndexCache,
+           canAdvanceMetricsIndexContext(to: contextValue, current: cached) {
+            try database?.updateMetricIndex([], context: context, reset: false, removing: [])
+            metricsIndexContext = context
             return cached
         }
         if let archive {
@@ -828,14 +1035,39 @@ public actor HistoricalStore {
         pricing: PricingHistory = .bundled,
         calendar: Calendar = .current
     ) throws -> MetricsIndexSnapshot {
-        guard !changedSessions.isEmpty else {
+        struct Context: Codable {
+            let schemaVersion: Int
+            let timeZone: String
+            let pricing: PricingHistory
+        }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        encoder.outputFormatting = [.sortedKeys]
+        let context = try encoder.encode(Context(
+            schemaVersion: 2,
+            timeZone: calendar.timeZone.identifier,
+            pricing: pricing
+        ))
+
+        // Hydrate the cache from SQLite once, without decoding session histories.
+        if metricsIndexCache == nil {
+            if let database {
+                let stored = try database.loadMetricIndex()
+                metricsIndexContext = stored.context
+                metricsIndexCache = MetricsIndexSnapshot(sessions: stored.sessions, days: stored.days)
+            } else {
+                metricsIndexCache = .empty
+            }
+        }
+        guard metricsIndexContext == context, let current = metricsIndexCache else {
+            // Pricing/timezone/schema changed: the full rebuild path owns this.
             return try metricsIndex(pricing: pricing, calendar: calendar)
         }
 
-        let current = try metricsIndex(pricing: pricing, calendar: calendar)
-        let existing = Dictionary(uniqueKeysWithValues: current.sessions.map { ($0.sessionID, $0) })
+        // Compare only the supplied sessions against their stored contributions.
+        let existingByID = Dictionary(uniqueKeysWithValues: current.sessions.map { ($0.sessionID, $0) })
         let changedRecords = changedSessions.compactMap { session -> (IndexedSessionMetrics, [IndexedDailyMetrics])? in
-            guard existing[session.id]?.sourceRevision != MetricsIndexBuilder.sourceRevision(for: session) else {
+            guard existingByID[session.id]?.sourceRevision != MetricsIndexBuilder.sourceRevision(for: session) else {
                 return nil
             }
             let built = MetricsIndexBuilder.build(session: session, pricing: pricing, calendar: calendar)
@@ -848,7 +1080,7 @@ public actor HistoricalStore {
             sessions: current.sessions.filter { !changedIDs.contains($0.sessionID) } + changedRecords.map { $0.0 },
             days: current.days.filter { !changedIDs.contains($0.sessionID) } + changedRecords.flatMap { $0.1 }
         )
-        if let database, let context = metricsIndexContext {
+        if let database {
             try database.updateMetricIndex(
                 changedRecords,
                 context: context,
@@ -867,19 +1099,15 @@ public actor HistoricalStore {
         pricing: PricingHistory = .bundled,
         calendar: Calendar = .current
     ) throws -> MetricsIndexSnapshot {
-        struct Context: Codable {
-            let schemaVersion: Int
-            let timeZone: String
-            let pricing: PricingHistory
-        }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .millisecondsSince1970
         encoder.outputFormatting = [.sortedKeys]
-        let context = try encoder.encode(Context(
+        let contextValue = MetricsIndexContext(
             schemaVersion: 2,
             timeZone: calendar.timeZone.identifier,
             pricing: pricing
-        ))
+        )
+        let context = try encoder.encode(contextValue)
 
         if metricsIndexCache == nil {
             if let database {
@@ -891,7 +1119,11 @@ public actor HistoricalStore {
             }
         }
 
-        let reset = metricsIndexContext != context
+        let contextCanAdvance = canAdvanceMetricsIndexContext(
+            to: contextValue,
+            current: metricsIndexCache ?? .empty
+        )
+        let reset = metricsIndexContext != context && !contextCanAdvance
         let current = reset ? .empty : (metricsIndexCache ?? .empty)
         let validIDs = Set(sessions.map(\.id))
         let existing = Dictionary(uniqueKeysWithValues: current.sessions.map { ($0.sessionID, $0) })
@@ -923,6 +1155,28 @@ public actor HistoricalStore {
         metricsIndexContext = context
         metricsIndexCache = snapshot
         return snapshot
+    }
+
+    /// An appended rate card whose effective date is later than every indexed
+    /// session cannot change any stored cost. Advance only the context marker;
+    /// future/changed sessions will naturally use the new schedule.
+    private func canAdvanceMetricsIndexContext(
+        to next: MetricsIndexContext,
+        current: MetricsIndexSnapshot
+    ) -> Bool {
+        guard let encoded = metricsIndexContext else { return false }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        guard let previous = try? decoder.decode(MetricsIndexContext.self, from: encoded),
+              previous.schemaVersion == next.schemaVersion,
+              previous.timeZone == next.timeZone else { return false }
+        let previousSchedules = Set(previous.pricing.schedules)
+        let nextSchedules = Set(next.pricing.schedules)
+        guard previousSchedules.isSubset(of: nextSchedules) else { return false }
+        let additions = nextSchedules.subtracting(previousSchedules)
+        guard !additions.isEmpty else { return true }
+        let latestIndexedDate = current.sessions.map(\.updatedAt).max() ?? .distantPast
+        return additions.allSatisfy { $0.effectiveAt > latestIndexedDate }
     }
 
     public func recordPricing(_ pricing: PricingHistory) throws {

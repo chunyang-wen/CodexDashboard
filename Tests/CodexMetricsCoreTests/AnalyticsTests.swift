@@ -430,6 +430,42 @@ final class AnalyticsTests: XCTestCase {
         )
     }
 
+    func testFuturePricingScheduleAdvancesContextWithoutResettingIndex() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let eventDate = Date(timeIntervalSince1970: 1_785_542_400)
+        let usage = TokenUsage(input: 1_000, output: 100)
+        let session = SessionMetric(
+            id: "priced", rolloutPath: "/tmp/priced.jsonl", projectPath: "/tmp/project",
+            title: "", source: "app", provider: "openai", createdAt: eventDate,
+            updatedAt: eventDate, model: "gpt-5.6-luna", reasoningEffort: nil,
+            gitBranch: nil, cliVersion: nil, archived: false, usage: usage,
+            usageEvents: [UsageEvent(date: eventDate, usage: usage, model: "gpt-5.6-luna")],
+            enrichmentAvailable: true
+        )
+        let store = HistoricalStore(userHome: home)
+        let original = try await store.metricsIndex(for: [session], pricing: .bundled)
+
+        let databaseURL = home.appendingPathComponent("Library/Application Support/CodexDashboard/metrics-v1.sqlite")
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(database, """
+            CREATE TRIGGER reject_pricing_reset BEFORE DELETE ON metric_daily_index
+            BEGIN SELECT RAISE(FAIL, 'pricing reset historical index'); END;
+            """, nil, nil, nil), SQLITE_OK)
+        if let database { sqlite3_close(database) }
+
+        let future = PricingSchedule(
+            effectiveAt: eventDate.addingTimeInterval(86_400),
+            prices: PricingRegistry.current.prices,
+            source: "test"
+        )
+        let advancedPricing = PricingHistory.bundled.merging(PricingHistory(schedules: [future]))
+        let advanced = try await store.metricsIndex(pricing: advancedPricing)
+        XCTAssertEqual(advanced.sessions, original.sessions)
+        XCTAssertEqual(advanced.days, original.days)
+    }
+
     func testHistoricalStoreSurvivesExportAndImport() async throws {
         let firstHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let secondHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -577,6 +613,51 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(restored.aggregate(projectPath: "/tmp/b").usage, originalB.usage)
     }
 
+    func testGrowingSessionDoesNotRewriteUnchangedDailyContributions() async throws {
+        let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: userHome) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let firstDay = Date(timeIntervalSince1970: 1_785_542_400)
+        let secondDay = firstDay.addingTimeInterval(86_400)
+        let firstUsage = TokenUsage(input: 100, output: 10)
+        let secondUsage = TokenUsage(input: 200, output: 20)
+        func session(events: [UsageEvent], updatedAt: Date) -> SessionMetric {
+            SessionMetric(
+                id: "growing", rolloutPath: "/tmp/growing.jsonl", projectPath: "/tmp/project",
+                title: "", source: "app", provider: "openai", createdAt: firstDay,
+                updatedAt: updatedAt, model: "gpt-5.6-luna", reasoningEffort: nil,
+                gitBranch: nil, cliVersion: nil, archived: false,
+                usage: events.reduce(.zero) { $0 + $1.usage }, usageEvents: events,
+                enrichmentAvailable: true
+            )
+        }
+
+        let firstEvent = UsageEvent(date: firstDay, usage: firstUsage, model: "gpt-5.6-luna")
+        let store = HistoricalStore(userHome: userHome)
+        _ = try await store.metricsIndex(for: [session(events: [firstEvent], updatedAt: firstDay)], calendar: calendar)
+
+        // Fail the test if SQLite attempts to UPDATE the settled first day.
+        let databaseURL = userHome.appendingPathComponent("Library/Application Support/CodexDashboard/metrics-v1.sqlite")
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        let triggerSQL = """
+            CREATE TRIGGER reject_old_day_rewrite BEFORE UPDATE ON metric_daily_index
+            WHEN OLD.session_id = 'growing' AND OLD.day = \(firstDay.timeIntervalSince1970)
+            BEGIN SELECT RAISE(FAIL, 'old day rewritten'); END;
+            """
+        XCTAssertEqual(sqlite3_exec(database, triggerSQL, nil, nil, nil), SQLITE_OK)
+        if let database { sqlite3_close(database) }
+
+        let secondEvent = UsageEvent(date: secondDay, usage: secondUsage, model: "gpt-5.6-luna")
+        let updated = try await store.updateMetricsIndex(
+            for: [session(events: [firstEvent, secondEvent], updatedAt: secondDay)],
+            calendar: calendar
+        )
+        XCTAssertEqual(updated.days.count, 2)
+        XCTAssertEqual(updated.aggregate().usage, firstUsage + secondUsage)
+    }
+
     func testRecordingNewSessionInvalidatesCachedMetricIndex() async throws {
         let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: userHome) }
@@ -597,6 +678,15 @@ final class AnalyticsTests: XCTestCase {
         let first = session(id: "first", model: "gpt-5.6-luna")
         _ = try await store.record([first])
         _ = try await store.metricsIndex()
+        let databaseURL = userHome.appendingPathComponent("Library/Application Support/CodexDashboard/metrics-v1.sqlite")
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(database, """
+            CREATE TRIGGER reject_existing_index_delete BEFORE DELETE ON metric_daily_index
+            WHEN OLD.session_id = 'first'
+            BEGIN SELECT RAISE(FAIL, 'existing index was reset'); END;
+            """, nil, nil, nil), SQLITE_OK)
+        if let database { sqlite3_close(database) }
         let second = session(id: "second", model: "stealth/ox-alpha")
         _ = try await store.record([second])
 
@@ -1139,6 +1229,41 @@ final class AnalyticsTests: XCTestCase {
 
         let sessions = try CodexStore(codexHome: codexHome, userHome: home).loadIndexedSessions()
         XCTAssertEqual(sessions.map(\.id), ["fallback-session"])
+    }
+
+    func testCodexStoreIncrementallyMirrorsNewAndUpdatedThreadRows() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexHome = home.appendingPathComponent(".codex", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let sourceURL = codexHome.appendingPathComponent("state_5.sqlite")
+        var source: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(sourceURL.path, &source), SQLITE_OK)
+        defer { if let source { sqlite3_close(source) } }
+        XCTAssertEqual(sqlite3_exec(source, """
+            CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, cwd TEXT, title TEXT,
+                source TEXT, model_provider TEXT, created_at INTEGER, updated_at INTEGER,
+                tokens_used INTEGER, model TEXT, reasoning_effort TEXT, git_branch TEXT,
+                cli_version TEXT, archived INTEGER);
+            INSERT INTO threads VALUES ('first', '/tmp/first.jsonl', '/tmp/a', 'First',
+                'app', 'openai', 90, 100, 10, NULL, NULL, NULL, '', 0);
+            """, nil, nil, nil), SQLITE_OK)
+
+        let store = CodexStore(codexHome: codexHome, userHome: home)
+        XCTAssertEqual(try store.loadIndexedSessions().map(\.id), ["first"])
+
+        // The new row deliberately shares the checkpoint timestamp. rowid is the
+        // second high-water mark, so it is still discovered without a full scan.
+        XCTAssertEqual(sqlite3_exec(source, """
+            INSERT INTO threads VALUES ('second', '/tmp/second.jsonl', '/tmp/b', 'Second',
+                'app', 'openai', 95, 100, 20, NULL, NULL, NULL, '', 0);
+            UPDATE threads SET title = 'First updated', updated_at = 101 WHERE id = 'first';
+            """, nil, nil, nil), SQLITE_OK)
+
+        let refreshed = try store.loadIndexedSessions()
+        XCTAssertEqual(Set(refreshed.map(\.id)), ["first", "second"])
+        XCTAssertEqual(refreshed.first { $0.id == "first" }?.title, "First updated")
+        XCTAssertEqual(refreshed.first { $0.id == "second" }?.usage.total, 20)
     }
 
     func testHistoricalStoreReleaseMemoryFlushesCaches() async throws {
