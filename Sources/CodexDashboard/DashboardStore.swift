@@ -570,11 +570,23 @@ final class DashboardStore: ObservableObject {
             var iterator = watcher.events.makeAsyncIterator()
             var failures = 0
             var lastRefreshAt = Date.distantPast
+            var deferredEventID: UInt64?
             while !Task.isCancelled {
                 if pending == nil {
                     pending = await iterator.next()
                 }
                 guard let batch = pending else { return }
+
+                // Codex can touch state_5.sqlite (including its WAL/SHM files)
+                // without creating or using a session. Do not turn that idle
+                // housekeeping into a full source-index read and merge. Keep
+                // the event ID in memory and commit it only alongside the next
+                // real refresh, so an idle night also avoids cursor writes.
+                if !batch.hasSessionActivity {
+                    deferredEventID = max(deferredEventID ?? 0, batch.latestEventID)
+                    pending = nil
+                    continue
+                }
 
                 let process = ProcessInfo.processInfo
                 if self.isLoading || self.isEnriching
@@ -607,7 +619,9 @@ final class DashboardStore: ObservableObject {
                 guard !Task.isCancelled else { return }
                 lastRefreshAt = .now
                 if succeeded {
-                    try? await self.historicalStore.recordSourceEventID(batch.latestEventID, for: codexHome)
+                    let committedEventID = max(deferredEventID ?? 0, batch.latestEventID)
+                    try? await self.historicalStore.recordSourceEventID(committedEventID, for: codexHome)
+                    deferredEventID = nil
                     pending = nil
                     failures = 0
                 } else {

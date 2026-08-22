@@ -8,6 +8,13 @@ struct CodexSourceChangeBatch: Sendable {
     var requiresReconciliation: Bool
     var latestEventID: UInt64
 
+    /// A rollout file is the direct signal that a session was created or used.
+    /// Index-only events can also be emitted for SQLite housekeeping while the
+    /// user is idle, so they must not by themselves wake the metrics pipeline.
+    var hasSessionActivity: Bool {
+        requiresReconciliation || !rolloutPaths.isEmpty
+    }
+
     mutating func merge(_ other: CodexSourceChangeBatch) {
         rolloutPaths.formUnion(other.rolloutPaths)
         indexChanged = indexChanged || other.indexChanged

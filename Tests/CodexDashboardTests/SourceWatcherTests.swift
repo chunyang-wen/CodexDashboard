@@ -3,6 +3,28 @@ import Foundation
 import XCTest
 
 final class SourceWatcherTests: XCTestCase {
+    func testIndexOnlyBatchDoesNotCountAsSessionActivity() {
+        let batch = CodexSourceChangeBatch(
+            rolloutPaths: [],
+            indexChanged: true,
+            requiresReconciliation: false,
+            latestEventID: 1
+        )
+
+        XCTAssertFalse(batch.hasSessionActivity)
+    }
+
+    func testRecoveryBatchCountsAsSessionActivity() {
+        let batch = CodexSourceChangeBatch(
+            rolloutPaths: [],
+            indexChanged: false,
+            requiresReconciliation: true,
+            latestEventID: 1
+        )
+
+        XCTAssertTrue(batch.hasSessionActivity)
+    }
+
     func testWatcherReportsRolloutAndIndexChanges() async throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let sessions = home.appendingPathComponent("sessions/2026/08/21", isDirectory: true)
