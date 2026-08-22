@@ -1119,6 +1119,37 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(settled?.usage.total, 20)
     }
 
+    func testMetricsIndexKeepsIndexedUsageWhenEnrichedProviderHasNoTokenTimeline() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let updatedAt = Date(timeIntervalSince1970: 1_787_356_800) // 2026-08-22 00:00:00 UTC
+        let usage = TokenUsage(total: 338_638)
+        let session = SessionMetric(
+            id: "custom-provider", rolloutPath: "/tmp/custom-provider.jsonl",
+            projectPath: "/tmp/project", title: "Custom provider",
+            source: "app", provider: "openrouter",
+            createdAt: updatedAt.addingTimeInterval(-60), updatedAt: updatedAt,
+            model: "stealth/ox-alpha", reasoningEffort: nil, gitBranch: nil,
+            cliVersion: nil, archived: false, usage: usage,
+            turns: [
+                TurnMetric(
+                    completedAt: updatedAt, duration: 2, timeToFirstToken: nil,
+                    completed: true
+                )
+            ],
+            enrichmentAvailable: true
+        )
+
+        let built = MetricsIndexBuilder.build(session: session, calendar: calendar)
+        let snapshot = MetricsIndexSnapshot(sessions: [built.session], days: built.days)
+
+        XCTAssertEqual(built.session.usage.total, usage.total)
+        XCTAssertEqual(built.days.count, 1)
+        XCTAssertEqual(built.days.first?.usage.total, usage.total)
+        XCTAssertEqual(snapshot.aggregate(since: updatedAt).usage.total, usage.total)
+        XCTAssertEqual(built.session.models.first?.model, "stealth/ox-alpha")
+    }
+
     func testHistoricalStorePersistsNewestSubscriptionWithoutRegressing() async throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: home) }
@@ -1287,8 +1318,15 @@ final class AnalyticsTests: XCTestCase {
         let index = try await store.metricsIndex(for: [sample])
         XCTAssertEqual(index.sessions.count, 1)
 
-        // Calling releaseMemory should reset in-memory caches and SQLite connection pages
+        let databaseURL = home.appendingPathComponent(
+            "Library/Application Support/CodexDashboard/metrics-v1.sqlite"
+        )
+        let databaseBeforeRelease = try Data(contentsOf: databaseURL)
+
+        // Releasing memory must not checkpoint the WAL into the main database.
+        // On APFS that tiny checkpoint can be accounted as a full-file write.
         await store.releaseMemory()
+        XCTAssertEqual(try Data(contentsOf: databaseURL), databaseBeforeRelease)
 
         // Re-reading count or index should succeed on-demand without error
         let storedCount = try await store.storedSessionCount()

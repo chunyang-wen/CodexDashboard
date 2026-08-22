@@ -582,7 +582,12 @@ final class MetricsDatabase: @unchecked Sendable {
             guard let handle else { return }
             _ = sqlite3_db_release_memory(handle)
             _ = sqlite3_exec(handle, "PRAGMA shrink_memory", nil, nil, nil)
-            _ = sqlite3_wal_checkpoint_v2(handle, nil, SQLITE_CHECKPOINT_PASSIVE, nil, nil)
+            // Do not force a WAL checkpoint here. This method runs after every
+            // menu-bar refresh, and on APFS a passive checkpoint of even a tiny
+            // WAL can be accounted as an almost full-database physical write.
+            // SQLite's normal automatic checkpointing keeps the WAL bounded;
+            // releasing decoded/cache memory does not require durable pages to
+            // be copied back to the main database immediately.
         }
         _ = sqlite3_release_memory(Int32.max)
     }
@@ -804,6 +809,15 @@ public actor HistoricalStore {
     @discardableResult
     public func record(_ sessions: [SessionMetric], pricing: PricingHistory = .bundled) throws -> Int {
         guard !sessions.isEmpty else { return 0 }
+        if archive == nil, let database {
+            var needsLegacyMigration = false
+            if FileManager.default.fileExists(atPath: url.path) {
+                needsLegacyMigration = try database.historicalSessionCount() == 0
+            }
+            if !needsLegacyMigration {
+                return try recordIncrementally(sessions, pricing: pricing, database: database)
+            }
+        }
         let current = try load()
         var byID = Dictionary(uniqueKeysWithValues: current.sessions.map { ($0.id, $0) })
         var changed: [SessionMetric] = []
@@ -839,6 +853,39 @@ public actor HistoricalStore {
             _ = try updateMetricsIndex(for: changed, pricing: mergedPricing)
         }
         return byID.count
+    }
+
+    /// The menu-bar refresh normally changes one active session. Loading every
+    /// historical blob just to discover that the active rollout is still too
+    /// fresh to persist creates a large transient object graph on every event.
+    /// Merge only the supplied rows while the archive is not already resident.
+    private func recordIncrementally(
+        _ sessions: [SessionMetric],
+        pricing: PricingHistory,
+        database: MetricsDatabase
+    ) throws -> Int {
+        var changed: [SessionMetric] = []
+        for session in sessions where session.enrichmentAvailable {
+            let existing = try database.historicalSession(id: session.id)
+            let combined = existing.map {
+                Self.combine($0, session, enrichmentAvailable: true)
+            } ?? session
+            guard combined != existing, Self.shouldPersist(combined, existing: existing) else {
+                continue
+            }
+            changed.append(combined)
+        }
+
+        let storedPricing = (try database.pricing() ?? .bundled).merging(.bundled)
+        let mergedPricing = storedPricing.merging(pricing).merging(.bundled)
+        try database.upsertHistoricalSessions(changed)
+        if mergedPricing != storedPricing {
+            try database.storePricing(mergedPricing)
+        }
+        if !changed.isEmpty {
+            _ = try updateMetricsIndex(for: changed, pricing: mergedPricing)
+        }
+        return try database.historicalSessionCount()
     }
 
     private static func shouldPersist(_ session: SessionMetric, existing: SessionMetric?) -> Bool {
@@ -992,7 +1039,7 @@ public actor HistoricalStore {
         encoder.dateEncodingStrategy = .millisecondsSince1970
         encoder.outputFormatting = [.sortedKeys]
         let contextValue = MetricsIndexContext(
-            schemaVersion: 2,
+            schemaVersion: 3,
             timeZone: calendar.timeZone.identifier,
             pricing: pricing
         )
@@ -1044,7 +1091,7 @@ public actor HistoricalStore {
         encoder.dateEncodingStrategy = .millisecondsSince1970
         encoder.outputFormatting = [.sortedKeys]
         let context = try encoder.encode(Context(
-            schemaVersion: 2,
+            schemaVersion: 3,
             timeZone: calendar.timeZone.identifier,
             pricing: pricing
         ))
@@ -1103,7 +1150,7 @@ public actor HistoricalStore {
         encoder.dateEncodingStrategy = .millisecondsSince1970
         encoder.outputFormatting = [.sortedKeys]
         let contextValue = MetricsIndexContext(
-            schemaVersion: 2,
+            schemaVersion: 3,
             timeZone: calendar.timeZone.identifier,
             pricing: pricing
         )

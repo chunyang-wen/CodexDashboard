@@ -13,7 +13,7 @@
 | Reasoning output | `reasoning_output_tokens` | A diagnostic subset of output |
 | Cache hit rate | cached input / input | Indicates prompt reuse and potential cost efficiency |
 
-For trend and selected-range totals, consecutive cumulative token events are differenced and the delta is assigned to the event timestamp and active model. If a counter resets, the new value is treated as a fresh delta. While enrichment is still running, indexed sessions temporarily fall back to their last-update time and indexed total.
+For trend and selected-range totals, consecutive cumulative token events are differenced and the delta is assigned to the event timestamp and active model. If a counter resets, the new value is treated as a fresh delta. While enrichment is still running, or when a custom provider does not emit a token timeline, indexed sessions fall back to their last-update time and indexed total.
 
 ## Time and responsiveness
 

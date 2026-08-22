@@ -329,6 +329,29 @@ public enum MetricsIndexBuilder {
             buckets[key] = bucket
         }
 
+        // Some custom model providers update `threads.tokens_used` but do not
+        // emit Codex's cumulative token_count timeline. Enrichment can still
+        // succeed for turns and tools in that case, so preserve the indexed
+        // total and attribute it to the session's latest activity day. Without
+        // this fallback, marking the session enriched turns nonzero provider
+        // usage into zero in the dashboard and menu bar.
+        if session.usageEvents.isEmpty, session.usage.total > 0 {
+            let key = day(session.updatedAt)
+            let model = session.model ?? "Unknown"
+            let cost = pricing.estimate(usage: session.usage, model: model, on: session.updatedAt) ?? 0
+            var bucket = buckets[key, default: DailyBuilder()]
+            bucket.usage = bucket.usage + session.usage
+            bucket.cost += cost
+            if pricing.price(for: model, on: session.updatedAt) != nil, session.usage.input > 0 {
+                bucket.coveredTokens += session.usage.total
+            }
+            var modelBucket = bucket.models[model] ?? (.zero, 0, 0)
+            modelBucket.0 = modelBucket.0 + session.usage
+            modelBucket.2 += cost
+            bucket.models[model] = modelBucket
+            buckets[key] = bucket
+        }
+
         for turn in session.turns where turn.completed {
             let key = day(turn.completedAt)
             let model = session.model ?? "Unknown"
