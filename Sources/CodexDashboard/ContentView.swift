@@ -162,6 +162,7 @@ struct OverviewView: View {
     @EnvironmentObject private var store: DashboardStore
     @AppStorage("overviewActivityMetric") private var activityMetric = "Tokens"
     @State private var selectedPeriodStart: Date?
+    @State private var periodDetails = SQLProjectAggregate.empty
     private let columns = [GridItem(.adaptive(minimum: 190), spacing: 12)]
 
     private var currentPeriodStart: Date {
@@ -177,7 +178,6 @@ struct OverviewView: View {
     }
 
     var body: some View {
-        let periodDetails = store.periodAggregate(in: periodInterval(containing: effectivePeriodStart))
         let medianTurn = Analytics.percentile(periodDetails.turnDurations, 0.5)
         let p95Turn = Analytics.percentile(periodDetails.turnDurations, 0.95)
         let averageTTFT = periodDetails.firstTokenTimes.isEmpty
@@ -223,6 +223,16 @@ struct OverviewView: View {
         .navigationTitle("Overview")
         .onAppear { selectCurrentPeriod() }
         .onChange(of: store.range) { _, _ in selectCurrentPeriod() }
+        .task(id: "\(store.range.rawValue)-\(effectivePeriodStart.timeIntervalSinceReferenceDate)") {
+            periodDetails = .empty
+            let details = await store.periodAggregate(in: periodInterval(containing: effectivePeriodStart))
+            guard !Task.isCancelled else { return }
+            periodDetails = details
+        }
+        .onDisappear {
+            periodDetails = .empty
+            selectedPeriodStart = nil
+        }
     }
 
     private var selectedPeriodBadge: some View {
@@ -836,6 +846,10 @@ struct ProjectsView: View {
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search projects")
         .onAppear { selectInitialProject() }
         .onChange(of: store.allProjects.map(\.id)) { _, _ in selectInitialProject() }
+        .onDisappear {
+            selection = nil
+            expandedProjects.removeAll()
+        }
     }
 
     private var projectTree: some View {
@@ -905,26 +919,23 @@ struct ProjectsView: View {
         case .project(let path):
             if let project = store.allProjects.first(where: { $0.path == path }) {
                 let rangedSessions = store.filteredSessions.filter { $0.projectPath == path }
-                ProjectDetailView(
+                ProjectDetailLoaderView(
                     project: project,
                     rangedSessions: rangedSessions,
                     rangeLabel: "All time",
                     granularity: store.range.granularity,
                     pricing: store.pricing,
-                    indexed: store.projectAggregate(path: path),
-                    periods: store.cachedProjectPeriods(path: path, granularity: store.range.granularity),
                     activityMetric: $activityMetric,
-                    sessionIndexes: store.sessionIndexes(for: project)
                 ) { session in
                     expandedProjects.insert(project.id)
                     selection = .session(session.id)
                 }
-                .task(id: path) {
-                    await store.loadProjectAggregate(path: path)
-                }
             } else { selectionPlaceholder }
         case .session(let id):
-            SessionDetailLoaderView(sessionID: id)
+            SessionDetailLoaderView(
+                sessionID: id,
+                fallback: store.allProjects.flatMap(\.sessions).first { $0.id == id }
+            )
         case nil:
             selectionPlaceholder
         }
@@ -944,36 +955,133 @@ struct ProjectsView: View {
     private func selectInitialProject() {
         guard selection == nil, let first = store.allProjects.first else { return }
         selection = .project(first.id)
-        expandedProjects.insert(first.id)
+    }
+}
+
+private struct ProjectDetailLoaderView: View {
+    @EnvironmentObject private var store: DashboardStore
+    let project: ProjectMetric
+    let rangedSessions: [SessionSummary]
+    let rangeLabel: String
+    let granularity: PeriodGranularity
+    let pricing: PricingHistory
+    @Binding var activityMetric: String
+    let onSelectSession: (SessionSummary) -> Void
+    @State private var indexed: SQLProjectAggregate?
+    @State private var periods: [PeriodMetric] = []
+    @State private var sessionIndexes: [String: IndexedSessionCost] = [:]
+
+    private var summaryAggregate: SQLProjectAggregate {
+        let estimatedCost = project.sessions.reduce(Decimal.zero) { total, session in
+            total + (pricing.estimate(usage: session.usage, model: session.model, on: session.updatedAt) ?? 0)
+        }
+        return SQLProjectAggregate(
+            usage: project.usage,
+            estimatedCost: estimatedCost,
+            costCoverage: estimatedCost > 0 ? 1 : 0,
+            activeRuntime: project.activeRuntime,
+            toolCalls: project.sessions.reduce(0) { $0 + $1.toolCalls },
+            skillCalls: project.sessions.reduce(0) { $0 + $1.skillCalls },
+            activeDays: project.activeDays,
+            turnDurations: [],
+            firstTokenTimes: [],
+            tools: [],
+            skills: []
+        )
+    }
+
+    var body: some View {
+        ProjectDetailView(
+            project: project,
+            rangedSessions: rangedSessions,
+            rangeLabel: rangeLabel,
+            granularity: granularity,
+            pricing: pricing,
+            indexed: indexed ?? summaryAggregate,
+            periods: periods,
+            activityMetric: $activityMetric,
+            sessionIndexes: sessionIndexes,
+            onSelectSession: onSelectSession
+        )
+        .task(id: "\(project.path)-\(granularity.rawValue)") {
+            indexed = nil
+            periods.removeAll()
+            sessionIndexes.removeAll()
+            let aggregate = await store.loadProjectAggregate(path: project.path)
+            guard !Task.isCancelled else { return }
+            indexed = aggregate
+
+            let visibleSessions = project.sessions.sorted { $0.updatedAt > $1.updatedAt }.prefix(8)
+            let visibleIDs = Set(visibleSessions.map(\.id))
+            async let periodRows = store.projectPeriods(path: project.path, granularity: granularity)
+            async let indexedCosts = store.indexedSessionCosts(projectPath: project.path)
+
+            let allCosts = await indexedCosts
+            let costs = allCosts.filter { visibleIDs.contains($0.key) }
+            let loadedPeriods = await periodRows
+            guard !Task.isCancelled else { return }
+            sessionIndexes = costs
+            periods = loadedPeriods
+        }
     }
 }
 
 private struct SessionDetailLoaderView: View {
     @EnvironmentObject private var store: DashboardStore
     let sessionID: String
+    let fallback: SessionSummary?
     @State private var session: SessionMetric?
-    @State private var isLoading = true
+
+    private var fallbackMetric: SessionMetric? {
+        guard let fallback else { return nil }
+        let completedTurns = Array(repeating: true, count: fallback.completedTurns)
+        let abortedTurns = Array(repeating: false, count: fallback.abortedTurns)
+        let turns = (completedTurns + abortedTurns).map { completed in
+            TurnMetric(
+                completedAt: fallback.updatedAt,
+                duration: fallback.completedTurns > 0 ? fallback.activeRuntime / Double(fallback.completedTurns) : 0,
+                timeToFirstToken: fallback.averageTTFT,
+                completed: completed
+            )
+        }
+        return SessionMetric(
+            id: fallback.id,
+            rolloutPath: fallback.rolloutPath,
+            projectPath: fallback.projectPath,
+            title: fallback.title,
+            source: fallback.source,
+            originator: fallback.originator,
+            provider: fallback.provider,
+            createdAt: fallback.createdAt,
+            updatedAt: fallback.updatedAt,
+            model: fallback.model,
+            reasoningEffort: fallback.reasoningEffort,
+            gitBranch: fallback.gitBranch,
+            cliVersion: fallback.cliVersion,
+            archived: fallback.archived,
+            usage: fallback.usage,
+            turns: turns,
+            toolCalls: fallback.toolCalls,
+            userMessages: fallback.userMessages,
+            abortedTurns: fallback.abortedTurns,
+            subscription: fallback.subscription,
+            enrichmentAvailable: fallback.enrichmentAvailable
+        )
+    }
 
     var body: some View {
         Group {
-            if let session {
+            if let session = session ?? fallbackMetric {
                 SessionDetailView(session: session, pricing: store.pricing)
-            } else if isLoading {
-                VStack(spacing: 12) {
-                    ProgressView()
-                    Text("Loading session…")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ContentUnavailableView("Session Not Found", systemImage: "bubble.left.and.text.bubble.right", description: Text("The selected session could not be retrieved from history."))
             }
         }
         .task(id: sessionID) {
-            isLoading = true
-            session = try? await store.sessionMetric(withID: sessionID)
-            isLoading = false
+            session = nil
+            let loaded = try? await store.sessionMetric(withID: sessionID)
+            guard !Task.isCancelled else { return }
+            if let loaded { session = loaded }
         }
     }
 }

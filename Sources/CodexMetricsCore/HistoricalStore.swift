@@ -752,7 +752,8 @@ final class MetricsDatabase: @unchecked Sendable {
 
     func durationArrays(
         projectPath: String?,
-        since startDate: Date?
+        since startDate: Date?,
+        before endDate: Date?
     ) throws -> DurationArrays {
         try lockedThrowing {
             var sql = """
@@ -761,12 +762,14 @@ final class MetricsDatabase: @unchecked Sendable {
                 """
             if projectPath != nil { sql += " AND project_path = ?" }
             if startDate != nil { sql += " AND day >= ?" }
+            if endDate != nil { sql += " AND day < ?" }
 
             guard let statement = prepare(sql) else { throw databaseError() }
             defer { sqlite3_finalize(statement) }
             var index: Int32 = 1
             if let projectPath { bind(projectPath, to: statement, at: index); index += 1 }
             if let startDate { sqlite3_bind_double(statement, index, startDate.timeIntervalSince1970); index += 1 }
+            if let endDate { sqlite3_bind_double(statement, index, endDate.timeIntervalSince1970) }
 
             let decoder = Self.decoder()
             var result = DurationArrays()
@@ -1622,10 +1625,11 @@ public actor HistoricalStore {
 
     public func durationArrays(
         projectPath: String? = nil,
-        since startDate: Date? = nil
+        since startDate: Date? = nil,
+        before endDate: Date? = nil
     ) throws -> DurationArrays {
         guard let database else { return DurationArrays() }
-        return try database.durationArrays(projectPath: projectPath, since: startDate)
+        return try database.durationArrays(projectPath: projectPath, since: startDate, before: endDate)
     }
 
     public func sessionCost(sessionID: String) throws -> (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)? {
