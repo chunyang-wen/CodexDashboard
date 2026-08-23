@@ -4,6 +4,14 @@
         <title>CodexDashboard</title>
         <item>
             <title>0.1.5</title>
+            <description sparkle:format="html"><![CDATA[
+                <h3>What’s new</h3>
+                <ul>
+                    <li>Added a Maintenance action to rebuild the history index from saved sessions.</li>
+                    <li>Preserved cached-input metrics in rebuilt model breakdowns.</li>
+                    <li>Normalized subscription plan labels, including clearer handling for API and unknown plans.</li>
+                </ul>
+            ]]></description>
             <pubDate>Sun, 23 Aug 2026 19:07:57 +0800</pubDate>
             <sparkle:version>20260823190317</sparkle:version>
             <sparkle:shortVersionString>0.1.5</sparkle:shortVersionString>
