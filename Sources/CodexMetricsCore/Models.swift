@@ -402,6 +402,14 @@ public struct ModelMetric: Identifiable, Codable, Hashable, Sendable {
     public let usage: TokenUsage
     public let activeRuntime: TimeInterval
     public let estimatedCost: Decimal
+
+    public init(model: String, sessions: Int, usage: TokenUsage, activeRuntime: TimeInterval, estimatedCost: Decimal) {
+        self.model = model
+        self.sessions = sessions
+        self.usage = usage
+        self.activeRuntime = activeRuntime
+        self.estimatedCost = estimatedCost
+    }
 }
 
 public struct ToolMetric: Identifiable, Codable, Hashable, Sendable {

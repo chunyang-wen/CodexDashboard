@@ -1,8 +1,8 @@
-PROJECT = CodexDashboard.xcodeproj
-SCHEME = CodexDashboard
-APP_NAME = CodexDashboard
-APPCAST_DIR = docs
-DOWNLOAD_URL_PREFIX = https://github.com/chunyang-wen/CodexDashboard/releases/download
+PROJECT ?= CodexDashboard.xcodeproj
+SCHEME ?= CodexDashboard
+APP_NAME ?= CodexDashboard
+APPCAST_DIR ?= docs
+DOWNLOAD_URL_PREFIX ?= https://github.com/chunyang-wen/CodexDashboard/releases/download
 SPARKLE_BIN ?= $(HOME)/.developer/SparkleBin/bin
 VERSION ?= $(shell xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration Release -showBuildSettings 2>/dev/null | grep -w MARKETING_VERSION | head -n 1 | awk '{print $$3}')
 XCODEBUILD_EXTRA_ARGS ?=

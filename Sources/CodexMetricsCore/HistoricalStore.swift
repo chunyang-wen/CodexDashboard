@@ -56,6 +56,9 @@ final class MetricsDatabase: @unchecked Sendable {
         if !tableHasColumn("historical_session", named: "summary") {
             try execute("ALTER TABLE historical_session ADD COLUMN summary BLOB")
         }
+        if tableExists("daily_model") && !tableHasColumn("daily_model", named: "cached_input") {
+            try execute("ALTER TABLE daily_model ADD COLUMN cached_input INTEGER NOT NULL DEFAULT 0")
+        }
         try execute("""
             CREATE TABLE IF NOT EXISTS source_session_index (
                 source_key TEXT NOT NULL,
@@ -99,6 +102,741 @@ final class MetricsDatabase: @unchecked Sendable {
                 value BLOB NOT NULL
             )
             """)
+        try execute("""
+            CREATE TABLE IF NOT EXISTS daily_contribution (
+                session_id      TEXT NOT NULL,
+                day             REAL NOT NULL,
+                project_path    TEXT NOT NULL,
+                input_tokens    INTEGER NOT NULL DEFAULT 0,
+                cached_input    INTEGER NOT NULL DEFAULT 0,
+                cache_write     INTEGER NOT NULL DEFAULT 0,
+                output_tokens   INTEGER NOT NULL DEFAULT 0,
+                reasoning       INTEGER NOT NULL DEFAULT 0,
+                total_tokens    INTEGER NOT NULL DEFAULT 0,
+                cost            REAL NOT NULL DEFAULT 0,
+                covered_tokens  INTEGER NOT NULL DEFAULT 0,
+                active_runtime  REAL NOT NULL DEFAULT 0,
+                tool_calls      INTEGER NOT NULL DEFAULT 0,
+                skill_calls     INTEGER NOT NULL DEFAULT 0,
+                completed_turns INTEGER NOT NULL DEFAULT 0,
+                aborted_turns   INTEGER NOT NULL DEFAULT 0,
+                turn_durations  BLOB,
+                first_token_times BLOB,
+                PRIMARY KEY(session_id, day)
+            )
+            """)
+        try execute("""
+            CREATE TABLE IF NOT EXISTS daily_model (
+                session_id      TEXT NOT NULL,
+                day             REAL NOT NULL,
+                model           TEXT NOT NULL,
+                total_tokens    INTEGER NOT NULL DEFAULT 0,
+                input_tokens    INTEGER NOT NULL DEFAULT 0,
+                cached_input    INTEGER NOT NULL DEFAULT 0,
+                output_tokens   INTEGER NOT NULL DEFAULT 0,
+                cost            REAL NOT NULL DEFAULT 0,
+                active_runtime  REAL NOT NULL DEFAULT 0,
+                PRIMARY KEY(session_id, day, model),
+                FOREIGN KEY(session_id, day) REFERENCES daily_contribution(session_id, day)
+            )
+            """)
+        try execute("""
+            CREATE TABLE IF NOT EXISTS tool_daily (
+                session_id      TEXT NOT NULL,
+                day             REAL NOT NULL,
+                tool            TEXT NOT NULL,
+                calls           INTEGER NOT NULL DEFAULT 0,
+                attributed_calls INTEGER NOT NULL DEFAULT 0,
+                cost            REAL NOT NULL DEFAULT 0,
+                PRIMARY KEY(session_id, day, tool)
+            )
+            """)
+        try execute("""
+            CREATE TABLE IF NOT EXISTS skill_daily (
+                session_id      TEXT NOT NULL,
+                day             REAL NOT NULL,
+                skill           TEXT NOT NULL,
+                calls           INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(session_id, day, skill)
+            )
+            """)
+        try execute("CREATE INDEX IF NOT EXISTS idx_daily_day ON daily_contribution(day)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_daily_project_day ON daily_contribution(project_path, day)")
+        try execute("CREATE INDEX IF NOT EXISTS idx_daily_model_model ON daily_model(model)")
+        if !tableExists("daily_contribution_filled") {
+            try migrateDailyIndexToTyped()
+            try execute("CREATE TABLE IF NOT EXISTS daily_contribution_filled (done INTEGER)")
+        }
+        // Re-run the typed migration when daily_model gains new columns so existing
+        // rows get backfilled with data that was not captured before.
+        if tableExists("metric_daily_index") && !tableExists("daily_model_cached_input_filled") {
+            try migrateDailyModelCachedInput()
+            try execute("CREATE TABLE IF NOT EXISTS daily_model_cached_input_filled (done INTEGER)")
+        }
+    }
+
+
+    /// One-time backfill: re-decode metric_daily_index blobs and update cached_input
+    /// in daily_model rows that were written before that column existed.
+    private func migrateDailyModelCachedInput() throws {
+        // Collect all updates first so we never mutate daily_model while its
+        // rows are being scanned by the open SELECT cursor.
+        let decoder = Self.decoder()
+        guard let select = prepare("""
+            SELECT m.session_id, m.day, d.metric FROM daily_model m
+            JOIN metric_daily_index d ON d.session_id = m.session_id AND d.day = m.day
+            WHERE m.cached_input = 0 AND d.metric IS NOT NULL
+            """) else { throw databaseError() }
+        defer { sqlite3_finalize(select) }
+
+        var updates: [(sessionID: String, day: Double, cachedInput: Int64)] = []
+        while sqlite3_step(select) == SQLITE_ROW {
+            guard let idBytes = sqlite3_column_text(select, 0),
+                  let blob = data(select, 2),
+                  let metric = try? decoder.decode(IndexedDailyMetrics.self, from: blob) else { continue }
+            let sessionID = String(cString: idBytes)
+            let dayKey = sqlite3_column_double(select, 1)
+            for model in metric.models where model.usage.cachedInput > 0 {
+                updates.append((sessionID, dayKey, model.usage.cachedInput))
+            }
+        }
+
+        guard !updates.isEmpty,
+              let update = prepare("UPDATE daily_model SET cached_input = ? WHERE session_id = ? AND day = ?") else { return }
+        defer { sqlite3_finalize(update) }
+        for entry in updates {
+            sqlite3_reset(update)
+            sqlite3_clear_bindings(update)
+            sqlite3_bind_int64(update, 1, entry.cachedInput)
+            bind(entry.sessionID, to: update, at: 2)
+            sqlite3_bind_double(update, 3, entry.day)
+            guard sqlite3_step(update) == SQLITE_DONE else { throw databaseError() }
+        }
+    }
+
+    private func tableExists(_ name: String) -> Bool {
+        guard let statement = prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?") else { return false }
+        defer { sqlite3_finalize(statement) }
+        bind(name, to: statement, at: 1)
+        return sqlite3_step(statement) == SQLITE_ROW
+    }
+
+    /// One-time migration: decode each metric_daily_index JSON blob and insert
+    /// typed rows into daily_contribution + daily_model.
+    private func migrateDailyIndexToTyped() throws {
+        let decoder = Self.decoder()
+        let rows: [(sessionID: String, day: Double, data: Data)] = try lockedThrowing {
+            guard let statement = prepare("SELECT session_id, day, metric FROM metric_daily_index") else {
+                throw databaseError()
+            }
+            defer { sqlite3_finalize(statement) }
+            var result: [(String, Double, Data)] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let idBytes = sqlite3_column_text(statement, 0),
+                      let blob = data(statement, 2) else { continue }
+                result.append((String(cString: idBytes), sqlite3_column_double(statement, 1), blob))
+            }
+            return result
+        }
+
+        struct ContributionRow {
+            var projectPath = ""
+            var usage = TokenUsage.zero
+            var estimatedCost = Decimal.zero
+            var coveredTokens: Int64 = 0
+            var activeRuntime: TimeInterval = 0
+            var toolCalls = 0
+            var skillCalls = 0
+            var completedTurns = 0
+            var turnDurations: [TimeInterval] = []
+            var firstTokenTimes: [TimeInterval] = []
+        }
+
+        struct ModelRow {
+            var model = ""
+            var tokens: Int64 = 0
+            var input: Int64 = 0
+            var output: Int64 = 0
+            var cost = 0.0
+            var runtime = 0.0
+        }
+
+        var contributionRows: [(sessionID: String, day: Double, row: ContributionRow)] = []
+        var modelRows: [(sessionID: String, day: Double, row: ModelRow)] = []
+
+        for rowData in rows {
+            guard let metric = try? decoder.decode(IndexedDailyMetrics.self, from: rowData.data) else { continue }
+            var contribution = ContributionRow()
+            contribution.projectPath = metric.projectPath
+            contribution.usage = metric.usage
+            contribution.estimatedCost = metric.estimatedCost
+            contribution.coveredTokens = metric.coveredTokens
+            contribution.activeRuntime = metric.activeRuntime
+            contribution.toolCalls = metric.toolCalls
+            contribution.skillCalls = metric.skillCalls
+            contribution.completedTurns = metric.completedTurns
+            contribution.turnDurations = metric.turnDurations
+            contribution.firstTokenTimes = metric.firstTokenTimes
+
+            for model in metric.models {
+                var modelRow = ModelRow()
+                modelRow.model = model.model
+                modelRow.tokens = model.usage.total
+                modelRow.input = model.usage.input
+                modelRow.output = model.usage.output
+                modelRow.cost = NSDecimalNumber(decimal: model.estimatedCost).doubleValue
+                modelRow.runtime = model.activeRuntime
+                modelRows.append((rowData.sessionID, rowData.day, modelRow))
+            }
+            contributionRows.append((rowData.sessionID, rowData.day, contribution))
+        }
+
+        let durationEncoder = JSONEncoder()
+        try transaction {
+            guard let insertContribution = prepare("""
+                INSERT OR REPLACE INTO daily_contribution(
+                    session_id, day, project_path,
+                    input_tokens, cached_input, cache_write, output_tokens, reasoning, total_tokens,
+                    cost, covered_tokens, active_runtime,
+                    tool_calls, skill_calls, completed_turns, aborted_turns,
+                    turn_durations, first_token_times
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """) else { throw databaseError() }
+            defer { sqlite3_finalize(insertContribution) }
+
+            for (sessionID, day, row) in contributionRows {
+                bind(sessionID, to: insertContribution, at: 1)
+                sqlite3_bind_double(insertContribution, 2, day)
+                bind(row.projectPath, to: insertContribution, at: 3)
+                sqlite3_bind_int64(insertContribution, 4, row.usage.input)
+                sqlite3_bind_int64(insertContribution, 5, row.usage.cachedInput)
+                sqlite3_bind_int64(insertContribution, 6, row.usage.cacheWriteInput)
+                sqlite3_bind_int64(insertContribution, 7, row.usage.output)
+                sqlite3_bind_int64(insertContribution, 8, row.usage.reasoningOutput)
+                sqlite3_bind_int64(insertContribution, 9, row.usage.total)
+                sqlite3_bind_double(insertContribution, 10, NSDecimalNumber(decimal: row.estimatedCost).doubleValue)
+                sqlite3_bind_int64(insertContribution, 11, row.coveredTokens)
+                sqlite3_bind_double(insertContribution, 12, row.activeRuntime)
+                sqlite3_bind_int64(insertContribution, 13, Int64(row.toolCalls))
+                sqlite3_bind_int64(insertContribution, 14, Int64(row.skillCalls))
+                sqlite3_bind_int64(insertContribution, 15, Int64(row.completedTurns))
+                // abortedTurns lives in the session-level record; not per-day.
+                sqlite3_bind_int64(insertContribution, 16, 0)
+                if !row.turnDurations.isEmpty {
+                    bind(try durationEncoder.encode(row.turnDurations), to: insertContribution, at: 17)
+                } else {
+                    sqlite3_bind_null(insertContribution, 17)
+                }
+                if !row.firstTokenTimes.isEmpty {
+                    bind(try durationEncoder.encode(row.firstTokenTimes), to: insertContribution, at: 18)
+                } else {
+                    sqlite3_bind_null(insertContribution, 18)
+                }
+                guard sqlite3_step(insertContribution) == SQLITE_DONE else { throw databaseError() }
+                sqlite3_reset(insertContribution)
+                sqlite3_clear_bindings(insertContribution)
+            }
+
+            guard let insertModel = prepare("""
+                INSERT OR REPLACE INTO daily_model(
+                    session_id, day, model, total_tokens, input_tokens, output_tokens, cost, active_runtime
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """) else { throw databaseError() }
+            defer { sqlite3_finalize(insertModel) }
+
+            for (sessionID, day, row) in modelRows {
+                bind(sessionID, to: insertModel, at: 1)
+                sqlite3_bind_double(insertModel, 2, day)
+                bind(row.model, to: insertModel, at: 3)
+                sqlite3_bind_int64(insertModel, 4, row.tokens)
+                sqlite3_bind_int64(insertModel, 5, row.input)
+                sqlite3_bind_int64(insertModel, 6, row.output)
+                sqlite3_bind_double(insertModel, 7, row.cost)
+                sqlite3_bind_double(insertModel, 8, row.runtime)
+                guard sqlite3_step(insertModel) == SQLITE_DONE else { throw databaseError() }
+                sqlite3_reset(insertModel)
+                sqlite3_clear_bindings(insertModel)
+            }
+
+            // Extract tool and skill data from the same decoded blobs
+            let decoder2 = Self.decoder()
+            var toolRows: [(sessionID: String, day: Double, tool: String, calls: Int32, attributedCalls: Int32, cost: Double)] = []
+            var skillRows: [(sessionID: String, day: Double, skill: String, calls: Int32)] = []
+            for rowData in rows {
+                guard let metric = try? decoder2.decode(IndexedDailyMetrics.self, from: rowData.data) else { continue }
+                for tool in metric.tools {
+                    toolRows.append((
+                        sessionID: rowData.sessionID,
+                        day: rowData.day,
+                        tool: tool.tool,
+                        calls: Int32(tool.calls),
+                        attributedCalls: Int32(tool.attributedCalls),
+                        cost: NSDecimalNumber(decimal: tool.estimatedCost).doubleValue
+                    ))
+                }
+                for skill in metric.skills {
+                    skillRows.append((
+                        sessionID: rowData.sessionID,
+                        day: rowData.day,
+                        skill: skill.skill,
+                        calls: Int32(skill.calls)
+                    ))
+                }
+            }
+
+            if !toolRows.isEmpty {
+                guard let insertTool = prepare("""
+                    INSERT OR REPLACE INTO tool_daily(session_id, day, tool, calls, attributed_calls, cost)
+                    VALUES(?,?,?,?,?,?)
+                    """) else { throw databaseError() }
+                defer { sqlite3_finalize(insertTool) }
+                for row in toolRows {
+                    bind(row.sessionID, to: insertTool, at: 1)
+                    sqlite3_bind_double(insertTool, 2, row.day)
+                    bind(row.tool, to: insertTool, at: 3)
+                    sqlite3_bind_int64(insertTool, 4, Int64(row.calls))
+                    sqlite3_bind_int64(insertTool, 5, Int64(row.attributedCalls))
+                    sqlite3_bind_double(insertTool, 6, row.cost)
+                    guard sqlite3_step(insertTool) == SQLITE_DONE else { throw databaseError() }
+                    sqlite3_reset(insertTool)
+                    sqlite3_clear_bindings(insertTool)
+                }
+            }
+
+            if !skillRows.isEmpty {
+                guard let insertSkill = prepare("""
+                    INSERT OR REPLACE INTO skill_daily(session_id, day, skill, calls) VALUES(?,?,?,?)
+                    """) else { throw databaseError() }
+                defer { sqlite3_finalize(insertSkill) }
+                for row in skillRows {
+                    bind(row.sessionID, to: insertSkill, at: 1)
+                    sqlite3_bind_double(insertSkill, 2, row.day)
+                    bind(row.skill, to: insertSkill, at: 3)
+                    sqlite3_bind_int64(insertSkill, 4, Int64(row.calls))
+                    guard sqlite3_step(insertSkill) == SQLITE_DONE else { throw databaseError() }
+                    sqlite3_reset(insertSkill)
+                    sqlite3_clear_bindings(insertSkill)
+                }
+            }
+        }
+    }
+
+    private func upsertTypedDaily(
+        day: IndexedDailyMetrics,
+        sessionID: String
+    ) throws {
+        let dayKey = day.day.timeIntervalSince1970
+
+        guard let insertContribution = prepare("""
+            INSERT OR REPLACE INTO daily_contribution(
+                session_id, day, project_path,
+                input_tokens, cached_input, cache_write, output_tokens, reasoning, total_tokens,
+                cost, covered_tokens, active_runtime,
+                tool_calls, skill_calls, completed_turns, aborted_turns,
+                turn_durations, first_token_times
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """) else { throw databaseError() }
+        defer { sqlite3_finalize(insertContribution) }
+
+        let durationEncoder = JSONEncoder()
+        bind(sessionID, to: insertContribution, at: 1)
+        sqlite3_bind_double(insertContribution, 2, dayKey)
+        bind(day.projectPath, to: insertContribution, at: 3)
+        sqlite3_bind_int64(insertContribution, 4, day.usage.input)
+        sqlite3_bind_int64(insertContribution, 5, day.usage.cachedInput)
+        sqlite3_bind_int64(insertContribution, 6, day.usage.cacheWriteInput)
+        sqlite3_bind_int64(insertContribution, 7, day.usage.output)
+        sqlite3_bind_int64(insertContribution, 8, day.usage.reasoningOutput)
+        sqlite3_bind_int64(insertContribution, 9, day.usage.total)
+        sqlite3_bind_double(insertContribution, 10, NSDecimalNumber(decimal: day.estimatedCost).doubleValue)
+        sqlite3_bind_int64(insertContribution, 11, day.coveredTokens)
+        sqlite3_bind_double(insertContribution, 12, day.activeRuntime)
+        sqlite3_bind_int64(insertContribution, 13, Int64(day.toolCalls))
+        sqlite3_bind_int64(insertContribution, 14, Int64(day.skillCalls))
+        sqlite3_bind_int64(insertContribution, 15, Int64(day.completedTurns))
+        sqlite3_bind_int64(insertContribution, 16, 0)
+        if !day.turnDurations.isEmpty {
+            bind(try durationEncoder.encode(day.turnDurations), to: insertContribution, at: 17)
+        } else {
+            sqlite3_bind_null(insertContribution, 17)
+        }
+        if !day.firstTokenTimes.isEmpty {
+            bind(try durationEncoder.encode(day.firstTokenTimes), to: insertContribution, at: 18)
+        } else {
+            sqlite3_bind_null(insertContribution, 18)
+        }
+        guard sqlite3_step(insertContribution) == SQLITE_DONE else { throw databaseError() }
+
+        guard let deleteModel = prepare("DELETE FROM daily_model WHERE session_id = ? AND day = ?") else { throw databaseError() }
+        defer { sqlite3_finalize(deleteModel) }
+        bind(sessionID, to: deleteModel, at: 1)
+        sqlite3_bind_double(deleteModel, 2, dayKey)
+        guard sqlite3_step(deleteModel) == SQLITE_DONE else { throw databaseError() }
+
+        guard let insertModel = prepare("""
+            INSERT OR REPLACE INTO daily_model(
+                session_id, day, model, total_tokens, input_tokens, output_tokens, cost, active_runtime
+            ) VALUES(?,?,?,?,?,?,?,?)
+            """) else { throw databaseError() }
+        defer { sqlite3_finalize(insertModel) }
+
+        for model in day.models {
+            sqlite3_reset(insertModel)
+            sqlite3_clear_bindings(insertModel)
+            bind(sessionID, to: insertModel, at: 1)
+            sqlite3_bind_double(insertModel, 2, dayKey)
+            bind(model.model, to: insertModel, at: 3)
+            sqlite3_bind_int64(insertModel, 4, model.usage.total)
+            sqlite3_bind_int64(insertModel, 5, model.usage.input)
+            sqlite3_bind_int64(insertModel, 6, model.usage.cachedInput)
+            sqlite3_bind_int64(insertModel, 7, model.usage.output)
+            sqlite3_bind_double(insertModel, 8, NSDecimalNumber(decimal: model.estimatedCost).doubleValue)
+            sqlite3_bind_double(insertModel, 9, model.activeRuntime)
+            guard sqlite3_step(insertModel) == SQLITE_DONE else { throw databaseError() }
+        }
+
+        // Tools and skills
+        try executeUnlocked("DELETE FROM tool_daily WHERE session_id = '\(sessionID)' AND day = '\(dayKey)'")
+        try executeUnlocked("DELETE FROM skill_daily WHERE session_id = '\(sessionID)' AND day = '\(dayKey)'")
+        if !day.tools.isEmpty {
+            guard let insertTool = prepare("""
+                INSERT OR REPLACE INTO tool_daily(session_id, day, tool, calls, attributed_calls, cost)
+                VALUES(?,?,?,?,?,?)
+                """) else { throw databaseError() }
+            defer { sqlite3_finalize(insertTool) }
+            for tool in day.tools {
+                sqlite3_reset(insertTool)
+                sqlite3_clear_bindings(insertTool)
+                bind(sessionID, to: insertTool, at: 1)
+                sqlite3_bind_double(insertTool, 2, dayKey)
+                bind(tool.tool, to: insertTool, at: 3)
+                sqlite3_bind_int64(insertTool, 4, Int64(tool.calls))
+                sqlite3_bind_int64(insertTool, 5, Int64(tool.attributedCalls))
+                sqlite3_bind_double(insertTool, 6, NSDecimalNumber(decimal: tool.estimatedCost).doubleValue)
+                guard sqlite3_step(insertTool) == SQLITE_DONE else { throw databaseError() }
+            }
+        }
+        if !day.skills.isEmpty {
+            guard let insertSkill = prepare("""
+                INSERT OR REPLACE INTO skill_daily(session_id, day, skill, calls) VALUES(?,?,?,?)
+                """) else { throw databaseError() }
+            defer { sqlite3_finalize(insertSkill) }
+            for skill in day.skills {
+                sqlite3_reset(insertSkill)
+                sqlite3_clear_bindings(insertSkill)
+                bind(sessionID, to: insertSkill, at: 1)
+                sqlite3_bind_double(insertSkill, 2, dayKey)
+                bind(skill.skill, to: insertSkill, at: 3)
+                sqlite3_bind_int64(insertSkill, 4, Int64(skill.calls))
+                guard sqlite3_step(insertSkill) == SQLITE_DONE else { throw databaseError() }
+            }
+        }
+    }
+
+    // MARK: - Typed daily queries
+
+    func aggregateDaily(
+        projectPath: String?,
+        since startDate: Date?,
+        before endDate: Date?
+    ) throws -> DailyAggregateResult {
+        try lockedThrowing {
+            var sql = """
+                SELECT SUM(input_tokens), SUM(cached_input), SUM(cache_write),
+                       SUM(output_tokens), SUM(reasoning), SUM(total_tokens),
+                       SUM(cost), SUM(covered_tokens), SUM(active_runtime),
+                       SUM(tool_calls), SUM(skill_calls), SUM(completed_turns),
+                       COUNT(DISTINCT day)
+                FROM daily_contribution WHERE 1=1
+                """
+            if projectPath != nil { sql += " AND project_path = ?" }
+            if startDate != nil { sql += " AND day >= ?" }
+            if endDate != nil { sql += " AND day < ?" }
+
+            guard let statement = prepare(sql) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+
+            var index: Int32 = 1
+            if let projectPath { bind(projectPath, to: statement, at: index); index += 1 }
+            if let startDate { sqlite3_bind_double(statement, index, startDate.timeIntervalSince1970); index += 1 }
+            if let endDate { sqlite3_bind_double(statement, index, endDate.timeIntervalSince1970); index += 1 }
+
+            guard sqlite3_step(statement) == SQLITE_ROW else { throw databaseError() }
+            var result = DailyAggregateResult()
+            result.usage = TokenUsage(
+                input: int64OrZero(statement, 0),
+                cachedInput: int64OrZero(statement, 1),
+                cacheWriteInput: int64OrZero(statement, 2),
+                output: int64OrZero(statement, 3),
+                reasoningOutput: int64OrZero(statement, 4),
+                total: int64OrZero(statement, 5)
+            )
+            result.estimatedCost = doubleOrZero(statement, 6)
+            result.coveredTokens = int64OrZero(statement, 7)
+            result.activeRuntime = doubleOrZero(statement, 8)
+            result.toolCalls = Int(int64OrZero(statement, 9))
+            result.skillCalls = Int(int64OrZero(statement, 10))
+            result.completedTurns = Int(int64OrZero(statement, 11))
+            result.activeDays = Int(int64OrZero(statement, 12))
+            return result
+        }
+    }
+
+    func dailyPeriodRows(
+        projectPath: String?,
+        since startDate: Date?
+    ) throws -> [DailyPeriodRow] {
+        try lockedThrowing {
+            var sql = """
+                SELECT day,
+                       SUM(input_tokens), SUM(cached_input), SUM(cache_write),
+                       SUM(output_tokens), SUM(reasoning), SUM(total_tokens),
+                       SUM(cost), SUM(active_runtime), COUNT(DISTINCT session_id)
+                FROM daily_contribution WHERE 1=1
+                """
+            if projectPath != nil { sql += " AND project_path = ?" }
+            if startDate != nil { sql += " AND day >= ?" }
+            sql += " GROUP BY day ORDER BY day"
+
+            guard let statement = prepare(sql) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+
+            var index: Int32 = 1
+            if let projectPath { bind(projectPath, to: statement, at: index); index += 1 }
+            if let startDate { sqlite3_bind_double(statement, index, startDate.timeIntervalSince1970); index += 1 }
+
+            var rows: [DailyPeriodRow] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let usage = TokenUsage(
+                    input: int64OrZero(statement, 1),
+                    cachedInput: int64OrZero(statement, 2),
+                    cacheWriteInput: int64OrZero(statement, 3),
+                    output: int64OrZero(statement, 4),
+                    reasoningOutput: int64OrZero(statement, 5),
+                    total: int64OrZero(statement, 6)
+                )
+                rows.append(DailyPeriodRow(
+                    day: Date(timeIntervalSince1970: sqlite3_column_double(statement, 0)),
+                    usage: usage,
+                    estimatedCost: doubleOrZero(statement, 7),
+                    activeRuntime: doubleOrZero(statement, 8),
+                    sessions: Int(int64OrZero(statement, 9))
+                ))
+            }
+            return rows
+        }
+    }
+
+    func dailyModelRows(
+        projectPath: String?,
+        since startDate: Date?
+    ) throws -> [DailyModelRow] {
+        try lockedThrowing {
+            var sql = """
+                SELECT m.day, m.model,
+                       SUM(m.input_tokens), SUM(m.cached_input), SUM(m.output_tokens), SUM(m.total_tokens),
+                       SUM(m.cost), SUM(m.active_runtime), COUNT(DISTINCT m.session_id)
+                FROM daily_model m
+                JOIN daily_contribution c ON c.session_id = m.session_id AND c.day = m.day
+                WHERE 1=1
+                """
+            if projectPath != nil { sql += " AND c.project_path = ?" }
+            if startDate != nil { sql += " AND m.day >= ?" }
+            sql += " GROUP BY m.day, m.model ORDER BY m.day, m.model"
+
+            guard let statement = prepare(sql) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+
+            var index: Int32 = 1
+            if let projectPath { bind(projectPath, to: statement, at: index); index += 1 }
+            if let startDate { sqlite3_bind_double(statement, index, startDate.timeIntervalSince1970); index += 1 }
+
+            var rows: [DailyModelRow] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let day = Date(timeIntervalSince1970: sqlite3_column_double(statement, 0))
+                let model = textValue(statement, 1)
+                let inputTotal = int64OrZero(statement, 2)
+                let cachedTotal = int64OrZero(statement, 3)
+                let outputTotal = int64OrZero(statement, 4)
+                let grandTotal = int64OrZero(statement, 5)
+                let usage = TokenUsage(
+                    input: inputTotal,
+                    cachedInput: cachedTotal,
+                    cacheWriteInput: 0,
+                    output: outputTotal,
+                    reasoningOutput: 0,
+                    total: grandTotal
+                )
+                rows.append(DailyModelRow(
+                    day: day,
+                    model: model ?? "",
+                    usage: usage,
+                    estimatedCost: doubleOrZero(statement, 6),
+                    activeRuntime: doubleOrZero(statement, 7),
+                    sessions: Int(int64OrZero(statement, 8))
+                ))
+            }
+            return rows
+        }
+    }
+
+    func mergedTools(
+        projectPath: String?,
+        since startDate: Date?
+    ) throws -> [MergedToolResult] {
+        try lockedThrowing {
+            var sql = """
+                SELECT t.tool, SUM(t.calls), SUM(t.attributed_calls), COUNT(DISTINCT t.session_id), SUM(t.cost)
+                FROM tool_daily t
+                JOIN daily_contribution c ON c.session_id = t.session_id AND c.day = t.day
+                WHERE 1=1
+                """
+            if projectPath != nil { sql += " AND c.project_path = ?" }
+            if startDate != nil { sql += " AND t.day >= ?" }
+            sql += " GROUP BY t.tool ORDER BY SUM(t.calls) DESC"
+
+            guard let statement = prepare(sql) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            var index: Int32 = 1
+            if let projectPath { bind(projectPath, to: statement, at: index); index += 1 }
+            if let startDate { sqlite3_bind_double(statement, index, startDate.timeIntervalSince1970); index += 1 }
+
+            var results: [MergedToolResult] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let bytes = sqlite3_column_text(statement, 0) else { continue }
+                results.append(MergedToolResult(
+                    tool: String(cString: bytes),
+                    calls: Int(int64OrZero(statement, 1)),
+                    attributedCalls: Int(int64OrZero(statement, 2)),
+                    sessions: Int(int64OrZero(statement, 3)),
+                    estimatedCost: doubleOrZero(statement, 4)
+                ))
+            }
+            return results
+        }
+    }
+
+    func mergedSkills(
+        projectPath: String?,
+        since startDate: Date?
+    ) throws -> [MergedSkillResult] {
+        try lockedThrowing {
+            var sql = """
+                SELECT s.skill, SUM(s.calls), COUNT(DISTINCT s.session_id)
+                FROM skill_daily s
+                JOIN daily_contribution c ON c.session_id = s.session_id AND c.day = s.day
+                WHERE 1=1
+                """
+            if projectPath != nil { sql += " AND c.project_path = ?" }
+            if startDate != nil { sql += " AND s.day >= ?" }
+            sql += " GROUP BY s.skill ORDER BY SUM(s.calls) DESC"
+
+            guard let statement = prepare(sql) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            var index: Int32 = 1
+            if let projectPath { bind(projectPath, to: statement, at: index); index += 1 }
+            if let startDate { sqlite3_bind_double(statement, index, startDate.timeIntervalSince1970); index += 1 }
+
+            var results: [MergedSkillResult] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let bytes = sqlite3_column_text(statement, 0) else { continue }
+                results.append(MergedSkillResult(
+                    skill: String(cString: bytes),
+                    calls: Int(int64OrZero(statement, 1)),
+                    sessions: Int(int64OrZero(statement, 2))
+                ))
+            }
+            return results
+        }
+    }
+
+    func durationArrays(
+        projectPath: String?,
+        since startDate: Date?,
+        before endDate: Date?
+    ) throws -> DurationArrays {
+        try lockedThrowing {
+            var sql = """
+                SELECT turn_durations, first_token_times
+                FROM daily_contribution WHERE turn_durations IS NOT NULL AND 1=1
+                """
+            if projectPath != nil { sql += " AND project_path = ?" }
+            if startDate != nil { sql += " AND day >= ?" }
+            if endDate != nil { sql += " AND day < ?" }
+
+            guard let statement = prepare(sql) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            var index: Int32 = 1
+            if let projectPath { bind(projectPath, to: statement, at: index); index += 1 }
+            if let startDate { sqlite3_bind_double(statement, index, startDate.timeIntervalSince1970); index += 1 }
+            if let endDate { sqlite3_bind_double(statement, index, endDate.timeIntervalSince1970) }
+
+            let decoder = Self.decoder()
+            var result = DurationArrays()
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let data = data(statement, 0),
+                   let durations = try? decoder.decode([TimeInterval].self, from: data) {
+                    result.turnDurations.append(contentsOf: durations)
+                }
+                if let data = data(statement, 1),
+                   let times = try? decoder.decode([TimeInterval].self, from: data) {
+                    result.firstTokenTimes.append(contentsOf: times)
+                }
+            }
+            return result
+        }
+    }
+
+    func sessionCost(sessionID: String) throws -> (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)? {
+        try lockedThrowing {
+            guard let statement = prepare(
+                "SELECT SUM(cost), SUM(covered_tokens), SUM(total_tokens) FROM daily_contribution WHERE session_id = ?"
+            ) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            bind(sessionID, to: statement, at: 1)
+            guard sqlite3_step(statement) == SQLITE_ROW,
+                  sqlite3_column_type(statement, 0) != SQLITE_NULL else { return nil }
+            let costDouble = doubleOrZero(statement, 0)
+            let covered = int64OrZero(statement, 1)
+            let total = int64OrZero(statement, 2)
+            return (Decimal(costDouble), covered, total)
+        }
+    }
+
+    func sessionCosts(projectPath: String) throws -> [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)] {
+        try lockedThrowing {
+            guard let statement = prepare("""
+                SELECT session_id, SUM(cost), SUM(covered_tokens), SUM(total_tokens)
+                FROM daily_contribution
+                WHERE project_path = ?
+                GROUP BY session_id
+                """) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            bind(projectPath, to: statement, at: 1)
+
+            var result: [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)] = [:]
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let idBytes = sqlite3_column_text(statement, 0) else { continue }
+                result[String(cString: idBytes)] = (
+                    Decimal(doubleOrZero(statement, 1)),
+                    int64OrZero(statement, 2),
+                    int64OrZero(statement, 3)
+                )
+            }
+            return result
+        }
+    }
+
+    private func int64OrZero(_ statement: OpaquePointer, _ index: Int32) -> Int64 {
+        sqlite3_column_type(statement, index) == SQLITE_NULL ? 0 : sqlite3_column_int64(statement, index)
+    }
+    private func doubleOrZero(_ statement: OpaquePointer, _ index: Int32) -> Double {
+        sqlite3_column_type(statement, index) == SQLITE_NULL ? 0 : sqlite3_column_double(statement, index)
+    }
+    private func textValue(_ statement: OpaquePointer, _ index: Int32) -> String? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL,
+              let bytes = sqlite3_column_text(statement, index) else { return nil }
+        return String(cString: bytes)
     }
 
     deinit { if let handle { sqlite3_close(handle) } }
@@ -506,6 +1244,8 @@ final class MetricsDatabase: @unchecked Sendable {
             if reset {
                 try executeUnlocked("DELETE FROM metric_daily_index")
                 try executeUnlocked("DELETE FROM metric_session_index")
+                try executeUnlocked("DELETE FROM daily_contribution")
+                try executeUnlocked("DELETE FROM daily_model")
             }
             guard let deleteDays = prepare("DELETE FROM metric_daily_index WHERE session_id = ?"),
                   let existingDays = prepare("SELECT day, metric FROM metric_daily_index WHERE session_id = ?"),
@@ -533,6 +1273,12 @@ final class MetricsDatabase: @unchecked Sendable {
                 sqlite3_finalize(insertDay)
             }
 
+            guard let deleteContributions = prepare("DELETE FROM daily_contribution WHERE session_id = ?"),
+                  let deleteModels = prepare("DELETE FROM daily_model WHERE session_id = ?") else { throw databaseError() }
+            defer {
+                sqlite3_finalize(deleteContributions)
+                sqlite3_finalize(deleteModels)
+            }
             for sessionID in sessionIDs where !reset {
                 sqlite3_reset(deleteDays)
                 sqlite3_clear_bindings(deleteDays)
@@ -542,6 +1288,14 @@ final class MetricsDatabase: @unchecked Sendable {
                 sqlite3_clear_bindings(deleteSession)
                 bind(sessionID, to: deleteSession, at: 1)
                 guard sqlite3_step(deleteSession) == SQLITE_DONE else { throw databaseError() }
+                sqlite3_reset(deleteContributions)
+                sqlite3_clear_bindings(deleteContributions)
+                bind(sessionID, to: deleteContributions, at: 1)
+                guard sqlite3_step(deleteContributions) == SQLITE_DONE else { throw databaseError() }
+                sqlite3_reset(deleteModels)
+                sqlite3_clear_bindings(deleteModels)
+                bind(sessionID, to: deleteModels, at: 1)
+                guard sqlite3_step(deleteModels) == SQLITE_DONE else { throw databaseError() }
             }
 
             for record in encoded {
@@ -585,6 +1339,7 @@ final class MetricsDatabase: @unchecked Sendable {
                     sqlite3_bind_double(insertDay, 2, day.day.timeIntervalSince1970)
                     bind(bytes, to: insertDay, at: 3)
                     guard sqlite3_step(insertDay) == SQLITE_DONE else { throw databaseError() }
+                    try upsertTypedDaily(day: day, sessionID: summary.sessionID)
                 }
             }
 
@@ -742,6 +1497,62 @@ public enum HistoricalStoreError: LocalizedError {
 
 /// Durable, conversation-free metric history. Unlike the rollout parser cache, this
 /// archive is never invalidated when source logs move, disappear, or parser versions change.
+
+/// Aggregated metrics computed by SQLite directly from daily_contribution.
+public struct DailyAggregateResult: Sendable {
+    public init() {}
+    public var usage = TokenUsage.zero
+    public var estimatedCost: Double = 0
+    public var coveredTokens: Int64 = 0
+    public var activeRuntime: TimeInterval = 0
+    public var toolCalls = 0
+    public var skillCalls = 0
+    public var completedTurns = 0
+    public var activeDays = 0
+}
+
+/// One period bucket from a GROUP BY day query.
+public struct DailyPeriodRow: Sendable {
+    public let day: Date
+    public let usage: TokenUsage
+    public let estimatedCost: Double
+    public let activeRuntime: TimeInterval
+    public let sessions: Int
+}
+
+/// One model-day bucket from a GROUP BY day, model query.
+public struct DailyModelRow: Sendable {
+    public let day: Date
+    public let model: String
+    public let usage: TokenUsage
+    public let estimatedCost: Double
+    public let activeRuntime: TimeInterval
+    public let sessions: Int
+}
+
+/// Merged tool usage across all days.
+public struct MergedToolResult: Sendable {
+    public let tool: String
+    public let calls: Int
+    public let attributedCalls: Int
+    public let sessions: Int
+    public let estimatedCost: Double
+}
+
+/// Merged skill usage across all days.
+public struct MergedSkillResult: Sendable {
+    public let skill: String
+    public let calls: Int
+    public let sessions: Int
+}
+
+/// Duration arrays extracted from typed daily blobs.
+public struct DurationArrays: Sendable {
+    public init() {}
+    public var turnDurations: [TimeInterval] = []
+    public var firstTokenTimes: [TimeInterval] = []
+}
+
 public actor HistoricalStore {
     public let url: URL
     private var archive: HistoricalArchive?
@@ -767,6 +1578,68 @@ public actor HistoricalStore {
     /// the small resident menu process; a refresh worker performs migration.
     public func storedPricingHistory() throws -> PricingHistory {
         (try database?.pricing() ?? .bundled).merging(.bundled)
+    }
+
+    // MARK: - Typed daily aggregate queries
+
+    public func aggregateDaily(
+        projectPath: String? = nil,
+        since startDate: Date? = nil,
+        before endDate: Date? = nil
+    ) throws -> DailyAggregateResult {
+        guard let database else { return DailyAggregateResult() }
+        return try database.aggregateDaily(projectPath: projectPath, since: startDate, before: endDate)
+    }
+
+    public func dailyPeriodRows(
+        projectPath: String? = nil,
+        since startDate: Date? = nil
+    ) throws -> [DailyPeriodRow] {
+        guard let database else { return [] }
+        return try database.dailyPeriodRows(projectPath: projectPath, since: startDate)
+    }
+
+    public func dailyModelRows(
+        projectPath: String? = nil,
+        since startDate: Date? = nil
+    ) throws -> [DailyModelRow] {
+        guard let database else { return [] }
+        return try database.dailyModelRows(projectPath: projectPath, since: startDate)
+    }
+
+    public func mergedTools(
+        projectPath: String? = nil,
+        since startDate: Date? = nil
+    ) throws -> [MergedToolResult] {
+        guard let database else { return [] }
+        return try database.mergedTools(projectPath: projectPath, since: startDate)
+    }
+
+    public func mergedSkills(
+        projectPath: String? = nil,
+        since startDate: Date? = nil
+    ) throws -> [MergedSkillResult] {
+        guard let database else { return [] }
+        return try database.mergedSkills(projectPath: projectPath, since: startDate)
+    }
+
+    public func durationArrays(
+        projectPath: String? = nil,
+        since startDate: Date? = nil,
+        before endDate: Date? = nil
+    ) throws -> DurationArrays {
+        guard let database else { return DurationArrays() }
+        return try database.durationArrays(projectPath: projectPath, since: startDate, before: endDate)
+    }
+
+    public func sessionCost(sessionID: String) throws -> (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)? {
+        guard let database else { return nil }
+        return try database.sessionCost(sessionID: sessionID)
+    }
+
+    public func sessionCosts(projectPath: String) throws -> [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)] {
+        guard let database else { return [:] }
+        return try database.sessionCosts(projectPath: projectPath)
     }
 
     public func mergedSessions(with indexed: [SessionMetric]) throws -> [SessionMetric] {
