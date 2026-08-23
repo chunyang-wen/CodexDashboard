@@ -1185,6 +1185,7 @@ public enum HistoricalStoreError: LocalizedError {
 
 /// Aggregated metrics computed by SQLite directly from daily_contribution.
 public struct DailyAggregateResult: Sendable {
+    public init() {}
     public var usage = TokenUsage.zero
     public var estimatedCost: Double = 0
     public var coveredTokens: Int64 = 0
