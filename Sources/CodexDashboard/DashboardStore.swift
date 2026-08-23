@@ -573,7 +573,8 @@ final class DashboardStore: ObservableObject {
             var deferredEventID: UInt64?
             while !Task.isCancelled {
                 if pending == nil {
-                    pending = await iterator.next()
+                    guard await iterator.next() != nil else { return }
+                    pending = watcher.takePendingBatch()
                 }
                 guard let batch = pending else { return }
 

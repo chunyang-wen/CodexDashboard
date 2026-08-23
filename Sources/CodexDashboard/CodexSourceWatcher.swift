@@ -39,21 +39,25 @@ enum CodexSourceWatcherError: LocalizedError {
 /// macOS owns the filesystem journal; the app creates no helper process and holds
 /// no descriptor per rollout.
 final class CodexSourceWatcher: @unchecked Sendable {
-    let events: AsyncStream<CodexSourceChangeBatch>
+    /// A one-slot wake-up stream. The actual changes live in `pendingBatch` so
+    /// bursts of filesystem events are merged instead of queued individually.
+    let events: AsyncStream<Void>
     let startingEventID: UInt64
 
-    private let continuation: AsyncStream<CodexSourceChangeBatch>.Continuation
+    private let continuation: AsyncStream<Void>.Continuation
     private let classifier: CodexSourcePathClassifier
     private let queue = DispatchQueue(label: "CodexDashboard.SourceWatcher", qos: .utility)
     private let lock = NSLock()
     private var stream: FSEventStreamRef?
+    private var pendingBatch: CodexSourceChangeBatch?
+    private var signalQueued = false
 
     init(codexHome: URL, sinceEventID: UInt64?, latency: TimeInterval) throws {
         classifier = CodexSourcePathClassifier(codexHome: codexHome)
         startingEventID = sinceEventID ?? FSEventsGetCurrentEventId()
 
-        var capturedContinuation: AsyncStream<CodexSourceChangeBatch>.Continuation?
-        events = AsyncStream(bufferingPolicy: .unbounded) { continuation in
+        var capturedContinuation: AsyncStream<Void>.Continuation?
+        events = AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             capturedContinuation = continuation
         }
         guard let capturedContinuation else { throw CodexSourceWatcherError.unavailable }
@@ -98,6 +102,8 @@ final class CodexSourceWatcher: @unchecked Sendable {
 
     func stop() {
         let stream = lock.withLock { () -> FSEventStreamRef? in
+            pendingBatch = nil
+            signalQueued = false
             defer { self.stream = nil }
             return self.stream
         }
@@ -106,6 +112,17 @@ final class CodexSourceWatcher: @unchecked Sendable {
         FSEventStreamInvalidate(stream)
         FSEventStreamRelease(stream)
         continuation.finish()
+    }
+
+    /// Returns all changes accumulated since the previous wake-up. The lock
+    /// also closes the race where a filesystem callback arrives while the
+    /// consumer is taking the current batch.
+    func takePendingBatch() -> CodexSourceChangeBatch? {
+        lock.withLock {
+            signalQueued = false
+            defer { pendingBatch = nil }
+            return pendingBatch
+        }
     }
 
     private func receive(
@@ -141,7 +158,20 @@ final class CodexSourceWatcher: @unchecked Sendable {
             }
         }
         guard batch.requiresReconciliation || batch.indexChanged || !batch.rolloutPaths.isEmpty else { return }
-        continuation.yield(batch)
+        let shouldSignal = lock.withLock { () -> Bool in
+            if var pendingBatch {
+                pendingBatch.merge(batch)
+                self.pendingBatch = pendingBatch
+            } else {
+                pendingBatch = batch
+            }
+            guard !signalQueued else { return false }
+            signalQueued = true
+            return true
+        }
+        if shouldSignal {
+            continuation.yield(())
+        }
     }
 
     private static let callback: FSEventStreamCallback = { _, info, count, rawPaths, flags, eventIDs in
