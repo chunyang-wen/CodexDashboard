@@ -617,8 +617,10 @@ struct ActivityChart: View {
     }
 
     private func hoverCard(_ period: PeriodMetric) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(periodLabel(period.start)).font(.caption.weight(.semibold))
+        VStack(alignment: .center, spacing: 5) {
+            Text(periodLabel(period.start))
+                .font(.caption.weight(.semibold))
+                .frame(maxWidth: .infinity, alignment: .center)
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
                 GridRow {
                     hoverMetric(
@@ -626,11 +628,13 @@ struct ActivityChart: View {
                         icon: "text.word.spacing",
                         accessibilityLabel: "Tokens"
                     )
+                    .frame(width: 99, alignment: .leading)
                     hoverMetric(
                         preciseDuration(period.activeRuntime),
                         icon: "clock",
                         accessibilityLabel: "Runtime"
                     )
+                    .frame(width: 99, alignment: .leading)
                 }
                 GridRow {
                     hoverMetric(
@@ -638,16 +642,18 @@ struct ActivityChart: View {
                         icon: "dollarsign",
                         accessibilityLabel: "Estimated cost"
                     )
+                    .frame(width: 99, alignment: .leading)
                     hoverMetric(
                         "\(period.sessions) session\(period.sessions == 1 ? "" : "s")",
                         icon: "person.2",
                         accessibilityLabel: "Sessions"
                     )
+                    .frame(width: 99, alignment: .leading)
                 }
             }
         }
         .font(.caption2.monospacedDigit())
-        .frame(width: 230, alignment: .leading)
+        .frame(width: 208, alignment: .center)
         .padding(.horizontal, 11).padding(.vertical, 9)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.separator.opacity(0.55)))
@@ -655,7 +661,7 @@ struct ActivityChart: View {
     }
 
     private func hoverCardPosition(for location: CGPoint, in size: CGSize) -> CGPoint {
-        let cardSize = CGSize(width: 252, height: 86)
+        let cardSize = CGSize(width: 230, height: 86)
         let horizontalInset: CGFloat = 8
         let verticalInset: CGFloat = 8
         let x = min(
@@ -684,9 +690,9 @@ struct ActivityChart: View {
                 .frame(width: 13)
             Text(value)
                 .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+                .minimumScaleFactor(0.8)
         }
-        .layoutPriority(1)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(accessibilityLabel) \(value)")
     }
