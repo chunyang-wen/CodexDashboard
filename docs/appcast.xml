@@ -3,6 +3,14 @@
     <channel>
         <title>CodexDashboard</title>
         <item>
+            <title>0.1.5</title>
+            <pubDate>Sun, 23 Aug 2026 19:07:57 +0800</pubDate>
+            <sparkle:version>20260823190317</sparkle:version>
+            <sparkle:shortVersionString>0.1.5</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.5/CodexDashboard-0.1.5.zip" length="7780121" type="application/octet-stream" sparkle:edSignature="QwS7Tkgv3BEYrMv5e2oVEE2R2CmP37uM8lg2Fbw3cF/Z1PN1VPyL8vTuambYjPJdHeyiki/xJnAfENLm0tJgDA=="/>
+        </item>
+        <item>
             <title>0.1.4</title>
             <pubDate>Sun, 23 Aug 2026 15:43:02 +0800</pubDate>
             <sparkle:version>20260823153722</sparkle:version>
@@ -17,14 +25,6 @@
             <sparkle:shortVersionString>0.1.3</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.3/CodexDashboard-0.1.3.zip" length="7543576" type="application/octet-stream" sparkle:edSignature="TBEHEZ4MeibX+jROOHCW5rsj2WWCeDjxNu2ZUs/KtCCTCdu14+h35sVUE3c+xd1Q1CifL6/EPtDILpbaCp37BQ=="/>
-        </item>
-        <item>
-            <title>0.1.2</title>
-            <pubDate>Sat, 22 Aug 2026 22:52:19 +0800</pubDate>
-            <sparkle:version>3</sparkle:version>
-            <sparkle:shortVersionString>0.1.2</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.2/CodexDashboard-0.1.2.zip" length="7541582" type="application/octet-stream" sparkle:edSignature="OU2NReQItNG+156gUt+GcGjmGFfC+YrgyWHhH69VkjfxLC6JUtlgsWKdJd44i5a2PArZiLwyLVwhB2O9McFbDQ=="/>
         </item>
     </channel>
 </rss>
