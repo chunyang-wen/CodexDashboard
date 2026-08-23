@@ -303,6 +303,7 @@ struct ActivityChart: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding private var metric: String
     @State private var hoveredPeriod: PeriodMetric?
+    @State private var hoverLocation: CGPoint?
     @State private var hoveredScrollEdge: ScrollEdge?
     @State private var scrollPosition = 0.0
     @State private var dragStartScrollPosition: Double?
@@ -405,31 +406,21 @@ struct ActivityChart: View {
                     PointMark(x: .value("Selected period", Double(item.offset) + 0.5), y: .value("Selected value", metricValue(item.element)))
                         .symbolSize(22)
                         .foregroundStyle(.background)
-                        .annotation(
-                            position: .top,
-                            alignment: annotationAlignment(for: item.offset),
-                            spacing: 10,
-                            overflowResolution: .init(
-                                x: .fit(to: .chart),
-                                y: .fit(to: .chart)
-                            )
-                        ) {
-                            if hoveredPeriod?.id == item.element.id { hoverCard(item.element) }
-                        }
                 }
             }
             .chartScrollableAxes(.horizontal)
             .chartXVisibleDomain(length: visiblePeriodCount)
             .chartScrollPosition(x: $scrollPosition)
-            .chartXScale(range: .plotDimension(startPadding: 30, endPadding: 34))
+            .chartXScale(range: .plotDimension(startPadding: 54, endPadding: 58))
             .chartXAxis {
                 AxisMarks(values: axisPositions) { value in
                     AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
-                    AxisValueLabel(collisionResolution: .greedy(minimumSpacing: 4)) {
+                    AxisValueLabel(centered: true, collisionResolution: .disabled) {
                         if let position = value.as(Double.self) {
                             let index = Int(floor(position))
                             if periods.indices.contains(index) {
                                 Text(axisPeriodLabel(periods[index].start))
+                                    .font(.caption2)
                                     .lineLimit(1)
                                     .fixedSize(horizontal: true, vertical: false)
                             }
@@ -449,61 +440,73 @@ struct ActivityChart: View {
             }
             .chartOverlay { proxy in
                 GeometryReader { geometry in
-                    Rectangle()
-                        .fill(.clear)
-                        .contentShape(Rectangle())
-                        .onContinuousHover { phase in
-                            switch phase {
-                            case .active(let location):
-                                guard let plotFrame = proxy.plotFrame else { return }
-                                let frame = geometry[plotFrame]
-                                let x = location.x - frame.minX
-                                guard x >= 0, x <= frame.width,
-                                      let rawIndex: Double = proxy.value(atX: x) else {
-                                    hoveredPeriod = nil
-                                    return
-                                }
-                                let index = Int(floor(rawIndex))
-                                let nearest = periods.indices.contains(index) ? periods[index] : nil
-                                if hoveredPeriod?.id != nearest?.id { hoveredPeriod = nearest }
-                            case .ended:
-                                hoveredPeriod = nil
-                            }
-                        }
-                        .simultaneousGesture(
-                            DragGesture(minimumDistance: 2)
-                                .onChanged { value in
-                                    guard canScroll, let plotFrame = proxy.plotFrame else { return }
-                                    let frame = geometry[plotFrame]
-                                    guard frame.width > 0 else { return }
-                                    if dragStartScrollPosition == nil {
-                                        dragStartScrollPosition = scrollPosition
-                                    }
-                                    let translatedPeriods = Double(value.translation.width / frame.width) * visiblePeriodCount
-                                    let proposed = (dragStartScrollPosition ?? scrollPosition) - translatedPeriods
-                                    scrollPosition = min(latestScrollPosition, max(0, proposed))
-                                    hoveredPeriod = nil
-                                }
-                                .onEnded { _ in
-                                    dragStartScrollPosition = nil
-                                }
-                        )
-                        .simultaneousGesture(
-                            SpatialTapGesture()
-                                .onEnded { value in
-                                    guard allowsPeriodSelection else { return }
+                    ZStack {
+                        Rectangle()
+                            .fill(.clear)
+                            .contentShape(Rectangle())
+                            .onContinuousHover { phase in
+                                switch phase {
+                                case .active(let location):
                                     guard let plotFrame = proxy.plotFrame else { return }
                                     let frame = geometry[plotFrame]
-                                    let x = value.location.x - frame.minX
+                                    let x = location.x - frame.minX
                                     guard x >= 0, x <= frame.width,
-                                          let rawIndex: Double = proxy.value(atX: x) else { return }
-                                    let index = Int(floor(rawIndex))
-                                    guard periods.indices.contains(index) else { return }
-                                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) {
-                                        selectedPeriodStart = periods[index].start
+                                          let rawIndex: Double = proxy.value(atX: x) else {
+                                        hoveredPeriod = nil
+                                        hoverLocation = nil
+                                        return
                                     }
+                                    let index = Int(floor(rawIndex))
+                                    let nearest = periods.indices.contains(index) ? periods[index] : nil
+                                    hoveredPeriod = nearest
+                                    hoverLocation = location
+                                case .ended:
+                                    hoveredPeriod = nil
+                                    hoverLocation = nil
                                 }
-                        )
+                            }
+                            .simultaneousGesture(
+                                DragGesture(minimumDistance: 2)
+                                    .onChanged { value in
+                                        guard canScroll, let plotFrame = proxy.plotFrame else { return }
+                                        let frame = geometry[plotFrame]
+                                        guard frame.width > 0 else { return }
+                                        if dragStartScrollPosition == nil {
+                                            dragStartScrollPosition = scrollPosition
+                                        }
+                                        let translatedPeriods = Double(value.translation.width / frame.width) * visiblePeriodCount
+                                        let proposed = (dragStartScrollPosition ?? scrollPosition) - translatedPeriods
+                                        scrollPosition = min(latestScrollPosition, max(0, proposed))
+                                        hoveredPeriod = nil
+                                        hoverLocation = nil
+                                    }
+                                    .onEnded { _ in
+                                        dragStartScrollPosition = nil
+                                    }
+                            )
+                            .simultaneousGesture(
+                                SpatialTapGesture()
+                                    .onEnded { value in
+                                        guard allowsPeriodSelection else { return }
+                                        guard let plotFrame = proxy.plotFrame else { return }
+                                        let frame = geometry[plotFrame]
+                                        let x = value.location.x - frame.minX
+                                        guard x >= 0, x <= frame.width,
+                                              let rawIndex: Double = proxy.value(atX: x) else { return }
+                                        let index = Int(floor(rawIndex))
+                                        guard periods.indices.contains(index) else { return }
+                                        withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) {
+                                            selectedPeriodStart = periods[index].start
+                                        }
+                                    }
+                            )
+
+                        if let hoveredPeriod, let hoverLocation {
+                            hoverCard(hoveredPeriod)
+                                .position(hoverCardPosition(for: hoverLocation, in: geometry.size))
+                                .allowsHitTesting(false)
+                        }
+                    }
                 }
             }
             .frame(height: 220)
@@ -519,6 +522,7 @@ struct ActivityChart: View {
             .onAppear { scrollPosition = latestScrollPosition }
             .onChange(of: periods.map(\.id)) { _, _ in
                 hoveredPeriod = nil
+                hoverLocation = nil
                 scrollPosition = latestScrollPosition
             }
             .accessibilityHint(allowsPeriodSelection
@@ -584,13 +588,6 @@ struct ActivityChart: View {
         }
     }
 
-    private func annotationAlignment(for index: Int) -> Alignment {
-        let positionInViewport = Double(index) - scrollPosition
-        if positionInViewport < 3 { return .leading }
-        if positionInViewport > visiblePeriodCount - 4 { return .trailing }
-        return .center
-    }
-
     private func axisLabel(_ value: Double) -> String {
         switch metric {
         case "Runtime": return value.formatted(.number.precision(.fractionLength(0...1))) + "h"
@@ -622,33 +619,63 @@ struct ActivityChart: View {
     private func hoverCard(_ period: PeriodMetric) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(periodLabel(period.start)).font(.caption.weight(.semibold))
-            HStack(spacing: 14) {
-                hoverMetric(
-                    MetricFormatters.compactNumber(period.usage.total),
-                    icon: "text.word.spacing",
-                    accessibilityLabel: "Tokens"
-                )
-                hoverMetric(
-                    preciseDuration(period.activeRuntime),
-                    icon: "clock",
-                    accessibilityLabel: "Runtime"
-                )
-                Text(MetricFormatters.currency(period.estimatedCost))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .accessibilityLabel("Estimated cost \(MetricFormatters.currency(period.estimatedCost))")
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
+                GridRow {
+                    hoverMetric(
+                        MetricFormatters.compactNumber(period.usage.total),
+                        icon: "text.word.spacing",
+                        accessibilityLabel: "Tokens"
+                    )
+                    hoverMetric(
+                        preciseDuration(period.activeRuntime),
+                        icon: "clock",
+                        accessibilityLabel: "Runtime"
+                    )
+                }
+                GridRow {
+                    hoverMetric(
+                        MetricFormatters.currency(period.estimatedCost),
+                        icon: "dollarsign",
+                        accessibilityLabel: "Estimated cost"
+                    )
+                    hoverMetric(
+                        "\(period.sessions) session\(period.sessions == 1 ? "" : "s")",
+                        icon: "person.2",
+                        accessibilityLabel: "Sessions"
+                    )
+                }
             }
-            .font(.caption2.monospacedDigit())
-            .fixedSize(horizontal: true, vertical: false)
-            Text("\(period.sessions) session\(period.sessions == 1 ? "" : "s")")
-                .font(.caption2).foregroundStyle(.secondary)
         }
-        .frame(minWidth: 230, alignment: .leading)
-        .fixedSize(horizontal: true, vertical: true)
+        .font(.caption2.monospacedDigit())
+        .frame(width: 230, alignment: .leading)
         .padding(.horizontal, 11).padding(.vertical, 9)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.separator.opacity(0.55)))
         .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
+    }
+
+    private func hoverCardPosition(for location: CGPoint, in size: CGSize) -> CGPoint {
+        let cardSize = CGSize(width: 252, height: 86)
+        let horizontalInset: CGFloat = 8
+        let verticalInset: CGFloat = 8
+        let x = min(
+            max(cardSize.width / 2 + horizontalInset, location.x),
+            max(cardSize.width / 2 + horizontalInset, size.width - cardSize.width / 2 - horizontalInset)
+        )
+        let above = location.y - cardSize.height / 2 - 14
+        let below = location.y + cardSize.height / 2 + 14
+        let y: CGFloat
+        if above - cardSize.height / 2 >= verticalInset {
+            y = above
+        } else if below + cardSize.height / 2 <= size.height - verticalInset {
+            y = below
+        } else {
+            y = min(
+                max(cardSize.height / 2 + verticalInset, above),
+                max(cardSize.height / 2 + verticalInset, size.height - cardSize.height / 2 - verticalInset)
+            )
+        }
+        return CGPoint(x: x, y: y)
     }
 
     private func hoverMetric(_ value: String, icon: String, accessibilityLabel: String) -> some View {
@@ -1528,6 +1555,7 @@ private struct ModelTrendChart: View {
     @State private var hoverLocation: CGPoint?
     @State private var scrollPosition = 0.0
     @State private var dragStartScrollPosition: Double?
+    @State private var hiddenModels = Set<String>()
 
     private var dates: [Date] {
         data.dates
@@ -1570,7 +1598,7 @@ private struct ModelTrendChart: View {
             } else {
                 legend
                 Chart {
-                    ForEach(samples) { sample in
+                    ForEach(samples.filter { isModelVisible($0.model) }) { sample in
                         tokenMark(for: sample)
                         cacheMark(for: sample)
                         tokenPointMark(for: sample)
@@ -1688,6 +1716,7 @@ private struct ModelTrendChart: View {
                 .onChange(of: data.identity) { _, _ in
                     hoveredIndex = nil
                     hoverLocation = nil
+                    hiddenModels = []
                     scrollPosition = latestScrollPosition
                 }
                 .onChange(of: granularity) { _, _ in
@@ -1709,24 +1738,54 @@ private struct ModelTrendChart: View {
                 spacing: 8
             ) {
                 ForEach(Array(models.enumerated()), id: \.element.id) { index, model in
-                    HStack(spacing: 6) {
-                        Circle().fill(seriesColor(index)).frame(width: 7, height: 7)
-                        Text(model.model)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        toggleModel(model.model)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(seriesColor(index))
+                                .frame(width: 7, height: 7)
+                                .opacity(isModelVisible(model.model) ? 1 : 0.28)
+                            Text(model.model)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary.opacity(isModelVisible(model.model) ? 1 : 0.45))
+                                .fixedSize(horizontal: false, vertical: true)
+                            Image(systemName: isModelVisible(model.model) ? "eye" : "eye.slash")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary.opacity(0.65))
+                        }
                     }
+                    .buttonStyle(.plain)
+                    .help(isModelVisible(model.model) ? "Hide \(model.model)" : "Show \(model.model)")
+                    .accessibilityLabel("\(model.model) model curve")
+                    .accessibilityValue(isModelVisible(model.model) ? "Shown" : "Hidden")
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             HStack(spacing: 6) {
                 Capsule().fill(.primary.opacity(0.72)).frame(width: 18, height: 2)
                 Text("Tokens").font(.caption2).foregroundStyle(.secondary)
-                Capsule().fill(.secondary.opacity(0.72)).frame(width: 18, height: 2)
-                Text("Cache hit").font(.caption2).foregroundStyle(.secondary)
+                HStack(spacing: 3) {
+                    ForEach(0..<3, id: \.self) { _ in
+                        Capsule().fill(.secondary.opacity(0.72)).frame(width: 5, height: 2)
+                    }
+                }
+                Text("Cache hit rate").font(.caption2).foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func isModelVisible(_ model: String) -> Bool {
+        !hiddenModels.contains(model)
+    }
+
+    private func toggleModel(_ model: String) {
+        if hiddenModels.contains(model) {
+            hiddenModels.remove(model)
+        } else {
+            hiddenModels.insert(model)
+        }
     }
 
     private func scroll(by amount: Double) {
@@ -1819,7 +1878,7 @@ private struct ModelTrendChart: View {
         VStack(alignment: .leading, spacing: 7) {
             Text(axisPeriodLabel(dates[index]))
                 .font(.caption.weight(.semibold))
-            ForEach(samples.filter { $0.index == index }) { sample in
+            ForEach(samples.filter { $0.index == index && isModelVisible($0.model) }) { sample in
                 HStack(alignment: .top, spacing: 7) {
                     Circle()
                         .fill(seriesColor(sample.modelIndex))
