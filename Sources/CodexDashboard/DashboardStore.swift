@@ -920,8 +920,15 @@ final class DashboardStore: ObservableObject {
             if indexChanged || requiresReconciliation {
                 let existingByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
                 let codexHome = self.codexHome
-                let indexed = (try? await Task.detached(priority: .background) {
-                    try CodexStore(codexHome: codexHome).loadIndexedSessions()
+                let indexed: [SessionMetric] = (try? await Task.detached(priority: .background) { () throws -> [SessionMetric] in
+                    let store = CodexStore(codexHome: codexHome)
+                    let indexed: [SessionMetric]
+                    if requiresReconciliation {
+                        indexed = try store.loadIndexedSessions(reconcile: true)
+                    } else {
+                        indexed = try store.loadIndexedSessionChanges()
+                    }
+                    return indexed
                 }.value) ?? []
                 for session in indexed where !session.rolloutPath.isEmpty {
                     guard let existing = existingByID[session.id] else {
@@ -932,8 +939,24 @@ final class DashboardStore: ObservableObject {
                         pathsNeedingEnrichment.insert(session.rolloutPath)
                     }
                 }
-                let merged = try await historicalStore.mergedSessionSummaries(with: indexed)
-                sessions = merged
+                if requiresReconciliation {
+                    sessions = try await historicalStore.mergedSessionSummaries(with: indexed)
+                } else if !indexed.isEmpty {
+                    let merged = try await historicalStore.mergedSessionSummaries(for: indexed)
+                    var updatedSessions = sessions
+                    var positions = Dictionary(
+                        uniqueKeysWithValues: updatedSessions.indices.map { (updatedSessions[$0].id, $0) }
+                    )
+                    for summary in merged {
+                        if let position = positions[summary.id] {
+                            updatedSessions[position] = summary
+                        } else {
+                            positions[summary.id] = updatedSessions.count
+                            updatedSessions.append(summary)
+                        }
+                    }
+                    sessions = updatedSessions.sorted { $0.updatedAt > $1.updatedAt }
+                }
             }
             let candidates = sessions.filter { session in
                 (pathsNeedingEnrichment.contains(session.rolloutPath) || !previousIDs.contains(session.id)) && !session.enrichmentAvailable
@@ -987,12 +1010,27 @@ final class DashboardStore: ObservableObject {
     ) async -> Bool {
         do {
             let codexHome = self.codexHome
-            let indexed = (try? await Task.detached(priority: .background) {
-                try CodexStore(codexHome: codexHome).loadIndexedSessions()
+            let indexed: [SessionMetric] = (try? await Task.detached(priority: .background) { () throws -> [SessionMetric] in
+                let store = CodexStore(codexHome: codexHome)
+                let indexed: [SessionMetric]
+                if requiresReconciliation {
+                    indexed = try store.loadIndexedSessions(reconcile: true)
+                } else {
+                    var changes = try store.loadIndexedSessionChanges()
+                    let knownPaths = Set(changes.map(\.rolloutPath))
+                    let missingPaths = changedPaths.subtracting(knownPaths)
+                    if !missingPaths.isEmpty {
+                        changes.append(contentsOf: try store.loadIndexedSessions(forRolloutPaths: missingPaths))
+                    }
+                    indexed = changes
+                }
+                return indexed
             }.value) ?? []
             guard !Task.isCancelled, !dashboardDataIsResident else { return true }
 
-            let merged = try await historicalStore.mergedSessionSummaries(with: indexed)
+            let merged = requiresReconciliation
+                ? try await historicalStore.mergedSessionSummaries(with: indexed)
+                : try await historicalStore.mergedSessionSummaries(for: indexed)
             let historicalIDs = Set(merged.lazy.filter(\.enrichmentAvailable).map(\.id))
             let candidates = merged.filter { session in
                 (changedPaths.contains(session.rolloutPath) || !historicalIDs.contains(session.id)) && !session.enrichmentAvailable

@@ -33,19 +33,53 @@ public final class CodexStore: @unchecked Sendable {
     }
 
     /// Loads the compact Codex index without scanning rollout JSONL files.
-    public func loadIndexedSessions() throws -> [SessionMetric] {
+    public func loadIndexedSessions(reconcile: Bool = false) throws -> [SessionMetric] {
         // Keep a durable mirror of the source index. After the first successful
         // load, normal starts and FSEvent refreshes read only newly inserted rows
         // or the small inclusive updated-at tail instead of scanning all threads.
         if let cache = try? MetricsDatabase(userHome: userHome) {
-            return try loadIndexedSessions(using: cache)
+            return try loadIndexedSessions(using: cache, reconcile: reconcile)
         }
         return try loadIndexedSessionsWithoutCache()
     }
 
-    private func loadIndexedSessions(using cache: MetricsDatabase) throws -> [SessionMetric] {
+    /// Loads only source-index rows discovered after the durable checkpoint.
+    /// The caller owns the already loaded snapshot and can patch these rows in place.
+    public func loadIndexedSessionChanges() throws -> [SessionMetric] {
+        if let cache = try? MetricsDatabase(userHome: userHome) {
+            return try loadIndexedSessionChanges(using: cache)
+        }
+        return try loadIndexedSessionsWithoutCache()
+    }
+
+    /// Loads compact index rows for the supplied rollout files without scanning
+    /// the full source index or advancing its checkpoint.
+    public func loadIndexedSessions(forRolloutPaths paths: Set<String>) throws -> [SessionMetric] {
+        guard !paths.isEmpty else { return [] }
+        let databaseURLs = try locateDatabases()
+        var lastFailure: DatabaseReadFailure?
+        for (candidateIndex, databaseURL) in databaseURLs.enumerated() {
+            let attemptCount = candidateIndex == 0 ? 6 : 2
+            for attempt in 0..<attemptCount {
+                do {
+                    return try readIndexedSessions(
+                        from: databaseURL,
+                        after: nil,
+                        rolloutPaths: paths
+                    ).sessions.map(\.metric).sorted { $0.updatedAt > $1.updatedAt }
+                } catch let failure as DatabaseReadFailure {
+                    lastFailure = failure
+                    guard failure.isTransient, attempt < attemptCount - 1 else { break }
+                    Thread.sleep(forTimeInterval: 0.05 * pow(2, Double(attempt)))
+                }
+            }
+        }
+        throw lastFailure?.publicError ?? CodexStoreError.openFailed("Unknown error")
+    }
+
+    private func loadIndexedSessions(using cache: MetricsDatabase, reconcile: Bool) throws -> [SessionMetric] {
         let sourceKey = codexHome.standardizedFileURL.path
-        let checkpoint = try cache.sourceIndexCheckpoint(for: sourceKey)
+        let checkpoint = reconcile ? nil : try cache.sourceIndexCheckpoint(for: sourceKey)
         let databaseURLs = try locateDatabases()
         var lastFailure: DatabaseReadFailure?
         for (candidateIndex, databaseURL) in databaseURLs.enumerated() {
@@ -60,9 +94,44 @@ public final class CodexStore: @unchecked Sendable {
                     try cache.updateSourceIndex(
                         sourceKey: sourceKey,
                         sessions: delta.sessions,
-                        checkpoint: nextCheckpoint
+                        checkpoint: nextCheckpoint,
+                        replacing: reconcile
                     )
                     return try cache.sourceSessions(for: sourceKey)
+                } catch let failure as DatabaseReadFailure {
+                    lastFailure = failure
+                    guard failure.isTransient, attempt < attemptCount - 1 else { break }
+                    Thread.sleep(forTimeInterval: 0.05 * pow(2, Double(attempt)))
+                }
+            }
+        }
+        throw lastFailure?.publicError ?? CodexStoreError.openFailed("Unknown error")
+    }
+
+    private func loadIndexedSessionChanges(using cache: MetricsDatabase) throws -> [SessionMetric] {
+        let sourceKey = codexHome.standardizedFileURL.path
+        let checkpoint = try cache.sourceIndexCheckpoint(for: sourceKey)
+        let databaseURLs = try locateDatabases()
+        var lastFailure: DatabaseReadFailure?
+        for (candidateIndex, databaseURL) in databaseURLs.enumerated() {
+            let attemptCount = candidateIndex == 0 ? 6 : 2
+            for attempt in 0..<attemptCount {
+                do {
+                    let delta = try readIndexedSessions(from: databaseURL, after: checkpoint)
+                    let nextCheckpoint = MetricsDatabase.SourceIndexCheckpoint(
+                        maxRowID: max(checkpoint?.maxRowID ?? 0, delta.maxRowID),
+                        maxUpdatedAt: max(checkpoint?.maxUpdatedAt ?? 0, delta.maxUpdatedAt)
+                    )
+                    let changed = try cache.changedSourceSessions(
+                        sourceKey: sourceKey,
+                        sessions: delta.sessions
+                    )
+                    try cache.updateSourceIndex(
+                        sourceKey: sourceKey,
+                        sessions: delta.sessions,
+                        checkpoint: nextCheckpoint
+                    )
+                    return changed.map(\.metric).sorted { $0.updatedAt > $1.updatedAt }
                 } catch let failure as DatabaseReadFailure {
                     lastFailure = failure
                     guard failure.isTransient, attempt < attemptCount - 1 else { break }
@@ -103,7 +172,8 @@ public final class CodexStore: @unchecked Sendable {
 
     private func readIndexedSessions(
         from databaseURL: URL,
-        after checkpoint: MetricsDatabase.SourceIndexCheckpoint?
+        after checkpoint: MetricsDatabase.SourceIndexCheckpoint?,
+        rolloutPaths: Set<String> = []
     ) throws -> SourceIndexDelta {
         var database: OpaquePointer?
         let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
@@ -122,7 +192,13 @@ public final class CodexStore: @unchecked Sendable {
         let names = ["id", "rollout_path", "cwd", "title", "source", "model_provider", "created_at", "updated_at", "tokens_used", "model", "reasoning_effort", "git_branch", "cli_version", "archived"]
         let selections = names.map { columns.contains($0) ? $0 : "NULL AS \($0)" }.joined(separator: ", ")
         let sql: String
-        if checkpoint == nil {
+        if !rolloutPaths.isEmpty {
+            guard columns.contains("rollout_path") else {
+                throw DatabaseReadFailure.query(code: SQLITE_ERROR, message: "threads.rollout_path is unavailable")
+            }
+            let placeholders = Array(repeating: "?", count: rolloutPaths.count).joined(separator: ",")
+            sql = "SELECT rowid, \(selections) FROM threads WHERE rollout_path IN (\(placeholders))"
+        } else if checkpoint == nil {
             sql = "SELECT rowid, \(selections) FROM threads"
         } else {
             // Keep the two high-water predicates as separate UNION branches.
@@ -144,7 +220,11 @@ public final class CodexStore: @unchecked Sendable {
         }
         defer { sqlite3_finalize(statement) }
 
-        if let checkpoint {
+        if !rolloutPaths.isEmpty {
+            for (index, path) in rolloutPaths.sorted().enumerated() {
+                sqlite3_bind_text(statement, Int32(index + 1), path, -1, Self.transient)
+            }
+        } else if let checkpoint {
             sqlite3_bind_int64(statement, 1, checkpoint.maxRowID)
             sqlite3_bind_int64(statement, 2, checkpoint.maxUpdatedAt)
         }
@@ -391,6 +471,10 @@ public final class CodexStore: @unchecked Sendable {
 
     private func int(_ statement: OpaquePointer, _ index: Int32) -> Int64 {
         sqlite3_column_int64(statement, index)
+    }
+
+    private static var transient: sqlite3_destructor_type {
+        unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     }
 }
 

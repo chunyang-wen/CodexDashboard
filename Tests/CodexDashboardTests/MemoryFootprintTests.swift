@@ -92,9 +92,11 @@ final class MemoryFootprintTests: XCTestCase {
         let store = DashboardStore(userHome: tempUserHome, defaults: defaults)
         store.loadMenuBar()
         // Wait for menu-bar load task to finish
-        while store.isLoading {
+        for _ in 0..<500 { // 10 seconds maximum
+            if !store.isLoading { break }
             try await Task.sleep(for: .milliseconds(20))
         }
+        XCTAssertFalse(store.isLoading, "loadMenuBar timed out")
 
         let menuBarFootprint = getPhysicalFootprintMB()
         let menuBarDelta = menuBarFootprint - baselineFootprint

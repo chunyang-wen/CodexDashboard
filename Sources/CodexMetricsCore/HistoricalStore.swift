@@ -1022,11 +1022,20 @@ final class MetricsDatabase: @unchecked Sendable {
     func updateSourceIndex(
         sourceKey: String,
         sessions: [(metric: SessionMetric, sourceUpdatedAt: Int64)],
-        checkpoint: SourceIndexCheckpoint
+        checkpoint: SourceIndexCheckpoint,
+        replacing: Bool = false
     ) throws {
         let encoder = Self.encoder()
         let encoded = try sessions.map { ($0.metric, $0.sourceUpdatedAt, try encoder.encode($0.metric)) }
         try transaction {
+            if replacing {
+                guard let delete = prepare("DELETE FROM source_session_index WHERE source_key = ?") else {
+                    throw databaseError()
+                }
+                defer { sqlite3_finalize(delete) }
+                bind(sourceKey, to: delete, at: 1)
+                guard sqlite3_step(delete) == SQLITE_DONE else { throw databaseError() }
+            }
             guard let upsert = prepare("""
                 INSERT INTO source_session_index(source_key, session_id, source_updated_at, metric)
                 VALUES(?, ?, ?, ?)
@@ -1078,6 +1087,86 @@ final class MetricsDatabase: @unchecked Sendable {
             }
             return result
         }
+    }
+
+    func changedSourceSessions(
+        sourceKey: String,
+        sessions: [(metric: SessionMetric, sourceUpdatedAt: Int64)]
+    ) throws -> [(metric: SessionMetric, sourceUpdatedAt: Int64)] {
+        guard !sessions.isEmpty else { return [] }
+        let decoder = Self.decoder()
+        return try lockedThrowing {
+            guard let statement = prepare("""
+                SELECT source_updated_at, metric
+                FROM source_session_index
+                WHERE source_key = ? AND session_id = ?
+                """) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            var changed: [(metric: SessionMetric, sourceUpdatedAt: Int64)] = []
+            for (session, updatedAt) in sessions {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                bind(sourceKey, to: statement, at: 1)
+                bind(session.id, to: statement, at: 2)
+                let result = sqlite3_step(statement)
+                if result == SQLITE_ROW {
+                    let storedUpdatedAt = sqlite3_column_int64(statement, 0)
+                    let storedBytes = data(statement, 1)
+                    let storedMetric = storedBytes.flatMap {
+                        try? decoder.decode(SessionMetric.self, from: $0)
+                    }
+                    if storedUpdatedAt != updatedAt || storedMetric != session {
+                        changed.append((session, updatedAt))
+                    }
+                } else if result == SQLITE_DONE {
+                    changed.append((session, updatedAt))
+                } else {
+                    throw databaseError()
+                }
+            }
+            return changed
+        }
+    }
+
+    func historicalSessionSummaries(forIDs ids: Set<String>) throws -> [SessionSummary] {
+        guard !ids.isEmpty else { return [] }
+        let orderedIDs = ids.sorted()
+        let placeholders = Array(repeating: "?", count: orderedIDs.count).joined(separator: ",")
+        let rows: [(id: String, summary: SessionSummary?)] = try lockedThrowing {
+            guard let statement = prepare(
+                "SELECT id, summary FROM historical_session WHERE id IN (\(placeholders))"
+            ) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            for (index, id) in orderedIDs.enumerated() {
+                bind(id, to: statement, at: Int32(index + 1))
+            }
+            let decoder = Self.decoder()
+            var result: [(id: String, summary: SessionSummary?)] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let idBytes = sqlite3_column_text(statement, 0) else { continue }
+                let id = String(cString: idBytes)
+                let summary = data(statement, 1).flatMap {
+                    try? decoder.decode(SessionSummary.self, from: $0)
+                }
+                result.append((id, summary))
+            }
+            return result
+        }
+
+        var result: [SessionSummary] = []
+        var missingSummaryIDs = ids
+        for row in rows {
+            if let summary = row.summary {
+                result.append(summary)
+                missingSummaryIDs.remove(row.id)
+            }
+        }
+        for id in missingSummaryIDs {
+            if let full = try historicalSession(id: id) {
+                result.append(full.summary)
+            }
+        }
+        return result
     }
 
     func pricing() throws -> PricingHistory? {
@@ -1908,6 +1997,35 @@ public actor HistoricalStore {
             return try database.historicalSessionSummaries()
         }
         return try load().sessions.map(\.summary)
+    }
+
+    public func sessionSummaries(forIDs ids: Set<String>) throws -> [SessionSummary] {
+        guard !ids.isEmpty else { return [] }
+        if let archive {
+            return archive.sessions.filter { ids.contains($0.id) }.map(\.summary)
+        }
+        if let database {
+            return try database.historicalSessionSummaries(forIDs: ids)
+        }
+        return try load().sessions.filter { ids.contains($0.id) }.map(\.summary)
+    }
+
+    /// Merges only the supplied source-index changes with their matching
+    /// historical summaries. The full dashboard snapshot stays untouched.
+    public func mergedSessionSummaries(for indexed: [SessionMetric]) throws -> [SessionSummary] {
+        guard !indexed.isEmpty else { return [] }
+        let storedSummaries = try sessionSummaries(forIDs: Set(indexed.map(\.id)))
+        let storedByID = Dictionary(uniqueKeysWithValues: storedSummaries.map { ($0.id, $0) })
+        return indexed.map { session in
+            guard let historical = storedByID[session.id] else { return session.summary }
+            let canReuseEnrichment = historical.enrichmentAvailable
+                && historical.updatedAt >= session.updatedAt
+            return Self.combineSummaries(
+                historical,
+                session.summary,
+                enrichmentAvailable: canReuseEnrichment
+            )
+        }
     }
 
     public func sessions(withIDs ids: Set<String>) throws -> [SessionMetric] {

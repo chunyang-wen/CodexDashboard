@@ -1338,6 +1338,8 @@ final class AnalyticsTests: XCTestCase {
 
         let store = CodexStore(codexHome: codexHome, userHome: home)
         XCTAssertEqual(try store.loadIndexedSessions().map(\.id), ["first"])
+        let initialChanges = try store.loadIndexedSessionChanges()
+        XCTAssertTrue(initialChanges.isEmpty)
 
         // The new row deliberately shares the checkpoint timestamp. rowid is the
         // second high-water mark, so it is still discovered without a full scan.
@@ -1347,10 +1349,16 @@ final class AnalyticsTests: XCTestCase {
             UPDATE threads SET title = 'First updated', updated_at = 101 WHERE id = 'first';
             """, nil, nil, nil), SQLITE_OK)
 
+        let changes = try store.loadIndexedSessionChanges()
+        XCTAssertEqual(Set(changes.map(\.id)), ["first", "second"])
+
         let refreshed = try store.loadIndexedSessions()
         XCTAssertEqual(Set(refreshed.map(\.id)), ["first", "second"])
         XCTAssertEqual(refreshed.first { $0.id == "first" }?.title, "First updated")
         XCTAssertEqual(refreshed.first { $0.id == "second" }?.usage.total, 20)
+
+        XCTAssertEqual(sqlite3_exec(source, "DELETE FROM threads WHERE id = 'second';", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(try store.loadIndexedSessions(reconcile: true).map(\.id), ["first"])
     }
 
     func testHistoricalStoreReleaseMemoryFlushesCaches() async throws {
