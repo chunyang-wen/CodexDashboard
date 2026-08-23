@@ -126,6 +126,10 @@ struct ContentView: View {
                 }
             }
         }
+        .onAppear { store.updatePage(selection ?? .overview) }
+        .onChange(of: selection) { _, page in
+            if let page { store.updatePage(page) }
+        }
     }
 
     @ViewBuilder private var page: some View {
@@ -332,11 +336,16 @@ struct ActivityChart: View {
     private var visiblePeriodCount: Double { Double(min(30, max(1, periods.count))) }
     private var latestScrollPosition: Double { max(0, Double(periods.count) - visiblePeriodCount) }
     private var canScroll: Bool { Double(periods.count) > visiblePeriodCount }
+    private var visiblePeriods: [PeriodMetric] {
+        guard !periods.isEmpty else { return [] }
+        let start = min(max(0, Int(scrollPosition.rounded())), max(0, periods.count - Int(visiblePeriodCount)))
+        return Array(periods[start..<min(periods.count, start + Int(visiblePeriodCount))])
+    }
     private var axisPositions: [Double] {
         let step = max(1, Int(ceil(visiblePeriodCount / 8)))
-        var positions = stride(from: 0, to: periods.count, by: step).map { Double($0) + 0.5 }
-        if !periods.isEmpty {
-            let finalPosition = Double(periods.count) - 0.5
+        var positions = stride(from: 0, to: visiblePeriods.count, by: step).map { Double($0) + 0.5 }
+        if !visiblePeriods.isEmpty {
+            let finalPosition = Double(visiblePeriods.count) - 0.5
             if finalPosition - (positions.last ?? finalPosition) < Double(step) {
                 positions[positions.count - 1] = finalPosition
             } else {
@@ -375,7 +384,9 @@ struct ActivityChart: View {
                     .accessibilityLabel("Chart metric")
                 }
             }
-            Chart(Array(periods.enumerated()), id: \.offset) { item in
+            // Charts keeps mark and interaction state for every input element.
+            // Keep the history in the store, but render only the visible window.
+            Chart(Array(visiblePeriods.enumerated()), id: \.offset) { item in
                 RectangleMark(
                     xStart: .value("Period start", Double(item.offset) + 0.06),
                     xEnd: .value("Period end", Double(item.offset) + 0.94),
@@ -408,9 +419,6 @@ struct ActivityChart: View {
                         .foregroundStyle(.background)
                 }
             }
-            .chartScrollableAxes(.horizontal)
-            .chartXVisibleDomain(length: visiblePeriodCount)
-            .chartScrollPosition(x: $scrollPosition)
             .chartXScale(range: .plotDimension(startPadding: 54, endPadding: 58))
             .chartXAxis {
                 AxisMarks(values: axisPositions) { value in
@@ -418,8 +426,8 @@ struct ActivityChart: View {
                     AxisValueLabel(centered: true, collisionResolution: .disabled) {
                         if let position = value.as(Double.self) {
                             let index = Int(floor(position))
-                            if periods.indices.contains(index) {
-                                Text(axisPeriodLabel(periods[index].start))
+                            if visiblePeriods.indices.contains(index) {
+                                Text(axisPeriodLabel(visiblePeriods[index].start))
                                     .font(.caption2)
                                     .lineLimit(1)
                                     .fixedSize(horizontal: true, vertical: false)
@@ -457,7 +465,7 @@ struct ActivityChart: View {
                                         return
                                     }
                                     let index = Int(floor(rawIndex))
-                                    let nearest = periods.indices.contains(index) ? periods[index] : nil
+                                    let nearest = visiblePeriods.indices.contains(index) ? visiblePeriods[index] : nil
                                     hoveredPeriod = nearest
                                     hoverLocation = location
                                 case .ended:
@@ -494,9 +502,9 @@ struct ActivityChart: View {
                                         guard x >= 0, x <= frame.width,
                                               let rawIndex: Double = proxy.value(atX: x) else { return }
                                         let index = Int(floor(rawIndex))
-                                        guard periods.indices.contains(index) else { return }
+                                        guard visiblePeriods.indices.contains(index) else { return }
                                         withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) {
-                                            selectedPeriodStart = periods[index].start
+                                            selectedPeriodStart = visiblePeriods[index].start
                                         }
                                     }
                             )
@@ -1570,15 +1578,19 @@ private struct ModelTrendChart: View {
     private var visiblePeriodCount: Double { Double(min(30, max(1, dates.count))) }
     private var latestScrollPosition: Double { max(0, Double(dates.count) - visiblePeriodCount) }
     private var canScroll: Bool { Double(dates.count) > visiblePeriodCount }
+    private var visibleStart: Int {
+        min(max(0, Int(scrollPosition.rounded())), max(0, dates.count - Int(visiblePeriodCount)))
+    }
+    private var visibleEnd: Int { min(dates.count, visibleStart + Int(visiblePeriodCount)) }
     private var axisPositions: [Double] {
         let step = max(1, Int(ceil(visiblePeriodCount / 8)))
-        var positions = stride(from: 0, to: dates.count, by: step).map { Double($0) + 0.5 }
-        if !dates.isEmpty { positions.append(Double(dates.count) - 0.5) }
+        var positions = stride(from: visibleStart, to: visibleEnd, by: step).map { Double($0) + 0.5 }
+        if visibleStart < visibleEnd { positions.append(Double(visibleEnd) - 0.5) }
         return Array(Set(positions)).sorted()
     }
 
     private var samples: [ModelTrendChartData.Sample] {
-        data.samples
+        data.samples.filter { $0.index >= visibleStart && $0.index < visibleEnd }
     }
 
     private var maximumTokens: Double {
@@ -1616,9 +1628,6 @@ private struct ModelTrendChart: View {
                             .foregroundStyle(.secondary.opacity(0.72))
                     }
                 }
-                .chartScrollableAxes(.horizontal)
-                .chartXVisibleDomain(length: visiblePeriodCount)
-                .chartScrollPosition(x: $scrollPosition)
                 .chartXScale(range: .plotDimension(startPadding: 20, endPadding: 24))
                 .chartYScale(domain: 0...maximumTokens)
                 .chartXAxis {

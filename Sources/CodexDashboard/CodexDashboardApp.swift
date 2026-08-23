@@ -8,17 +8,17 @@ import SwiftUI
 final class AppUpdater: ObservableObject {
     static let shared = AppUpdater()
 
-    private(set) var updaterController: SPUStandardUpdaterController?
+    private var startHandler: (@MainActor () -> Void)?
 
     private init() {}
 
-    func configure(controller: SPUStandardUpdaterController) {
-        self.updaterController = controller
+    func configure(startHandler: @escaping @MainActor () -> Void) {
+        self.startHandler = startHandler
     }
 
     func checkForUpdates() {
         AppActivationPolicy.showDockIcon()
-        updaterController?.checkForUpdates(nil)
+        startHandler?()
     }
 }
 
@@ -39,12 +39,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        updaterController = SPUStandardUpdaterController(
-            startingUpdater: true,
-            updaterDelegate: self,
-            userDriverDelegate: self
-        )
-        AppUpdater.shared.configure(controller: updaterController)
+        // Sparkle is kept out of the always-running menu-bar baseline. The
+        // updater and its background work are created only when requested.
+        AppUpdater.shared.configure { [weak self] in
+            self?.checkForUpdates()
+        }
 
         NSApp.setActivationPolicy(.regular)
         AppActivationPolicy.bringWindowToFront(identifier: .dashboard)
@@ -67,6 +66,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
             name: NSWindow.didBecomeKeyNotification,
             object: nil
         )
+    }
+
+    private func checkForUpdates() {
+        if updaterController == nil {
+            updaterController = SPUStandardUpdaterController(
+                startingUpdater: true,
+                updaterDelegate: self,
+                userDriverDelegate: self
+            )
+        }
+        updaterController.checkForUpdates(nil)
     }
 
     @objc private func windowWillClose(_ notification: Notification) {

@@ -1262,6 +1262,47 @@ final class MetricsDatabase: @unchecked Sendable {
         }
     }
 
+    /// Builds the small menu-bar projection directly from typed daily rows.
+    /// This is intentionally independent of the session and metrics-index
+    /// blobs, so an idle launch never has to hydrate every historical session.
+    func menuBarMetricsFromDaily(since: Date) throws -> MenuBarMetricsSnapshot? {
+        try lockedThrowing {
+            guard let statement = prepare("""
+                SELECT day,
+                       SUM(input_tokens), SUM(cached_input), SUM(cache_write),
+                       SUM(output_tokens), SUM(reasoning), SUM(total_tokens),
+                       SUM(cost), SUM(active_runtime),
+                       SUM(tool_calls), SUM(skill_calls), COUNT(DISTINCT session_id)
+                FROM daily_contribution
+                WHERE day >= ?
+                GROUP BY day ORDER BY day
+                """) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_double(statement, 1, since.timeIntervalSince1970)
+
+            var days: [MenuBarDayMetrics] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                days.append(MenuBarDayMetrics(
+                    day: Date(timeIntervalSince1970: sqlite3_column_double(statement, 0)),
+                    usage: TokenUsage(
+                        input: int64OrZero(statement, 1),
+                        cachedInput: int64OrZero(statement, 2),
+                        cacheWriteInput: int64OrZero(statement, 3),
+                        output: int64OrZero(statement, 4),
+                        reasoningOutput: int64OrZero(statement, 5),
+                        total: int64OrZero(statement, 6)
+                    ),
+                    estimatedCost: Decimal(doubleOrZero(statement, 7)),
+                    toolCalls: Int(int64OrZero(statement, 9)),
+                    skillCalls: Int(int64OrZero(statement, 10)),
+                    sessions: Int(int64OrZero(statement, 11)),
+                    activeRuntime: doubleOrZero(statement, 8)
+                ))
+            }
+            return days.isEmpty ? nil : MenuBarMetricsSnapshot(days: days)
+        }
+    }
+
     func sourceEventID(for key: String) throws -> UInt64? {
         try metadata(UInt64.self, key: key)
     }
@@ -1963,6 +2004,10 @@ public actor HistoricalStore {
 
     public func menuBarMetricsSnapshot() throws -> MenuBarMetricsSnapshot? {
         try database?.menuBarMetrics()
+    }
+
+    public func menuBarMetricsFromDaily(since: Date) throws -> MenuBarMetricsSnapshot? {
+        try database?.menuBarMetricsFromDaily(since: since)
     }
 
     public func recordMenuBarMetrics(_ snapshot: MenuBarMetricsSnapshot) throws {

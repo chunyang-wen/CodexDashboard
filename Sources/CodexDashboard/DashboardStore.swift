@@ -54,6 +54,7 @@ private struct DashboardAnalytics: Sendable {
         allTimeModels: [ModelMetric],
         tools: [ToolMetric],
         skills: [SkillMetric],
+        granularity: PeriodGranularity = .month,
         turnDurations: [TimeInterval] = [],
         firstTokenTimes: [TimeInterval] = [],
         calendar: Calendar = .current
@@ -61,6 +62,11 @@ private struct DashboardAnalytics: Sendable {
         let filtered = sessions.filter { session in
             startDate.map { session.updatedAt >= $0 } ?? true
         }
+        // Keep only the projection selected by the dashboard. Building all four
+        // granularities here multiplied the chart data retained by the store,
+        // even though each page renders one granularity at a time.
+        let periods = Self.bucketPeriods(periodRows, granularity: granularity, calendar: calendar)
+        let modelPeriods = Self.bucketModelPeriods(modelRows, granularity: granularity, calendar: calendar)
         let usage = aggregate.usage
         return DashboardAnalytics(
             filteredSessions: filtered,
@@ -74,14 +80,14 @@ private struct DashboardAnalytics: Sendable {
             allTimeModels: allTimeModels,
             tools: tools,
             skills: skills,
-            daily: Self.bucketPeriods(periodRows, granularity: .day, calendar: calendar),
-            weekly: Self.bucketPeriods(periodRows, granularity: .week, calendar: calendar),
-            monthly: Self.bucketPeriods(periodRows, granularity: .month, calendar: calendar),
-            yearly: Self.bucketPeriods(periodRows, granularity: .year, calendar: calendar),
-            modelDaily: Self.bucketModelPeriods(modelRows, granularity: .day, calendar: calendar),
-            modelWeekly: Self.bucketModelPeriods(modelRows, granularity: .week, calendar: calendar),
-            modelMonthly: Self.bucketModelPeriods(modelRows, granularity: .month, calendar: calendar),
-            modelYearly: Self.bucketModelPeriods(modelRows, granularity: .year, calendar: calendar),
+            daily: granularity == .day ? periods : [],
+            weekly: granularity == .week ? periods : [],
+            monthly: granularity == .month ? periods : [],
+            yearly: granularity == .year ? periods : [],
+            modelDaily: granularity == .day ? modelPeriods : [],
+            modelWeekly: granularity == .week ? modelPeriods : [],
+            modelMonthly: granularity == .month ? modelPeriods : [],
+            modelYearly: granularity == .year ? modelPeriods : [],
             turnDurations: turnDurations,
             averageTTFT: firstTokenTimes.isEmpty ? nil : firstTokenTimes.reduce(0, +) / Double(firstTokenTimes.count),
             activeDays: aggregate.activeDays,
@@ -436,6 +442,7 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var historyMessage: String?
     @Published private(set) var errorMessage: String?
     @Published private(set) var range: Range = .month
+    private var activePage: DashboardPage = .overview
     @Published private(set) var codexHome: URL
     @Published private(set) var refreshInterval: TimeInterval
     @Published private(set) var weekStartsMonday: Bool {
@@ -774,8 +781,16 @@ final class DashboardStore: ObservableObject {
                 } else if let snapshot = try await self.historicalStore.menuBarMetricsSnapshot() {
                     self.menuBarAnalytics = MenuBarAnalytics(snapshot: snapshot)
                 } else if self.historySessionCount > 0 {
-                    _ = await self.refreshMenuBarInBackground(changedPaths: [], requiresReconciliation: true)
-                    await self.reloadMenuBarSnapshot()
+                    // Older databases may have typed daily rows but no compact
+                    // menu snapshot. Rebuild only the trailing projection;
+                    // reconciling every source session here caused a large idle
+                    // launch spike for a menu-bar-only process.
+                    let calendar = self.analyticsCalendar
+                    let cutoff = calendar.date(byAdding: .day, value: -45, to: calendar.startOfDay(for: .now)) ?? .distantPast
+                    if let snapshot = try await self.historicalStore.menuBarMetricsFromDaily(since: cutoff) {
+                        self.menuBarAnalytics = MenuBarAnalytics(snapshot: snapshot)
+                        try? await self.historicalStore.recordMenuBarMetrics(snapshot)
+                    }
                 }
                 let codexHome = self.codexHome
                 self.account = await Task.detached(priority: .utility) {
@@ -824,7 +839,8 @@ final class DashboardStore: ObservableObject {
             }
 
             var pending: CodexSourceChangeBatch?
-            if storedEventID == nil, historyExists {
+            var deferredEventID: UInt64?
+            if storedEventID == nil, historyExists, self.dashboardDataIsResident {
                 pending = CodexSourceChangeBatch(
                     rolloutPaths: [],
                     indexChanged: true,
@@ -832,13 +848,16 @@ final class DashboardStore: ObservableObject {
                     latestEventID: watcher.startingEventID
                 )
             } else if storedEventID == nil {
+                // Start from the current journal position. The compact snapshot
+                // is already authoritative for the menu bar; the next real
+                // session event will trigger an incremental refresh.
+                deferredEventID = watcher.startingEventID
                 try? await self.historicalStore.recordSourceEventID(watcher.startingEventID, for: codexHome)
             }
 
             var iterator = watcher.events.makeAsyncIterator()
             var failures = 0
             var lastRefreshAt = Date.distantPast
-            var deferredEventID: UInt64?
             while !Task.isCancelled {
                 if pending == nil {
                     guard await iterator.next() != nil else { return }
@@ -1183,6 +1202,12 @@ final class DashboardStore: ObservableObject {
         }
     }
 
+    func updatePage(_ page: DashboardPage) {
+        guard activePage != page else { return }
+        activePage = page
+        scheduleAnalyticsRefresh()
+    }
+
     private func scheduleAnalyticsRefresh() {
         guard dashboardDataIsResident else { return }
         analyticsID = UUID()
@@ -1214,15 +1239,25 @@ final class DashboardStore: ObservableObject {
 
                 let feedbackStartedAt = ContinuousClock.now
                 let sessions = sessions
+                let page = activePage
+                let granularity = range.granularity
                 let weeklyQuotaWindow = subscription?.windows.first { $0.windowMinutes == 10_080 }
 
                 // Fully SQL path: typed tables answer every dashboard question
                 // without decoding any JSON blobs.
                 let aggregate = (try? await historicalStore.aggregateDaily()) ?? DailyAggregateResult()
-                let periodRows = (try? await historicalStore.dailyPeriodRows()) ?? []
-                let modelRows = (try? await historicalStore.dailyModelRows()) ?? []
-                let tools = (try? await historicalStore.mergedTools()) ?? []
-                let skills = (try? await historicalStore.mergedSkills()) ?? []
+                let periodRows = (page == .overview || page == .billing)
+                    ? ((try? await historicalStore.dailyPeriodRows()) ?? [])
+                    : []
+                let modelRows = (page == .overview || page == .models)
+                    ? ((try? await historicalStore.dailyModelRows()) ?? [])
+                    : []
+                let tools = page == .overview
+                    ? ((try? await historicalStore.mergedTools()) ?? [])
+                    : []
+                let skills = page == .overview
+                    ? ((try? await historicalStore.mergedSkills()) ?? [])
+                    : []
                 let todayStart = analyticsCalendar.startOfDay(for: .now)
                 let todayAggregateResult = (try? await historicalStore.aggregateDaily(since: todayStart)) ?? DailyAggregateResult()
 
@@ -1241,12 +1276,14 @@ final class DashboardStore: ObservableObject {
                 let refreshed = await Task.detached(priority: .userInitiated) {
                     let calendar = analyticsCalendar
                     var selected = DashboardAnalytics.fromSQLResults(
-                        sessions: sessions,
+                        sessions: page == .overview || page == .projects ? sessions : [],
                         startDate: nil,
                         aggregate: aggregate,
                         periodRows: periodRows,
                         modelRows: modelRows,
-                        allTimeModels: DashboardAnalytics.mergeModelRowsPublic(modelRows),
+                        allTimeModels: page == .models
+                            ? DashboardAnalytics.mergeModelRowsPublic(modelRows)
+                            : [],
                         tools: tools.map { tool in
                             ToolMetric(tool: tool.tool, calls: tool.calls, attributedCalls: tool.attributedCalls,
                                        sessions: tool.sessions, attributedUsage: .zero,
@@ -1257,6 +1294,7 @@ final class DashboardStore: ObservableObject {
                                         sessions: skill.sessions, attributedUsage: .zero,
                                         estimatedCost: 0)
                         },
+                        granularity: granularity,
                         calendar: calendar
                     )
                     selected.abortedTurns = 0
