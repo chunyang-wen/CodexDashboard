@@ -907,14 +907,15 @@ struct ProjectsView: View {
                     granularity: store.range.granularity,
                     pricing: store.pricing,
                     indexed: store.projectAggregate(path: path),
-                    periods: store.projectPeriods(path: path, granularity: store.range.granularity),
+                    periods: store.cachedProjectPeriods(path: path, granularity: store.range.granularity),
                     activityMetric: $activityMetric,
-                    sessionIndexes: Dictionary(uniqueKeysWithValues: project.sessions.compactMap { session in
-                        store.indexedSession(session.id).map { (session.id, $0) }
-                    })
+                    sessionIndexes: store.sessionIndexes(for: project)
                 ) { session in
                     expandedProjects.insert(project.id)
                     selection = .session(session.id)
+                }
+                .task(id: path) {
+                    await store.loadProjectAggregate(path: path)
                 }
             } else { selectionPlaceholder }
         case .session(let id):
@@ -1013,10 +1014,10 @@ private struct ProjectDetailView: View {
     let rangeLabel: String
     let granularity: PeriodGranularity
     let pricing: PricingHistory
-    let indexed: MetricsIndexAggregate
+    let indexed: SQLProjectAggregate
     let periods: [PeriodMetric]
     @Binding var activityMetric: String
-    let sessionIndexes: [String: IndexedSessionMetrics]
+    let sessionIndexes: [String: IndexedSessionCost]
     let onSelectSession: (SessionSummary) -> Void
 
     var body: some View {
@@ -1054,7 +1055,7 @@ private struct ProjectDetailView: View {
                                     let sessionCost = sessionIndexes[session.id]?.estimatedCost
                                         ?? (pricing.estimate(usage: session.usage, model: session.model, on: session.updatedAt) ?? 0)
                                     let sessionCoverage = sessionIndexes[session.id].map { indexed in
-                                        indexed.usage.total > 0 ? Double(indexed.coveredTokens) / Double(indexed.usage.total) : 0
+                                        indexed.totalTokens > 0 ? Double(indexed.coveredTokens) / Double(indexed.totalTokens) : 0
                                     } ?? (pricing.price(for: session.model, on: session.updatedAt) != nil ? 1.0 : 0.0)
                                     Text(sessionCoverage > 0 ? MetricFormatters.preciseCurrency(sessionCost) : "Cost —")
                                         .font(.caption).foregroundStyle(.secondary)
