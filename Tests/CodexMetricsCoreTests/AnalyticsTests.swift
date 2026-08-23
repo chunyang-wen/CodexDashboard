@@ -613,6 +613,41 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(restored.aggregate(projectPath: "/tmp/b").usage, originalB.usage)
     }
 
+    func testDailyModelRowsPreserveTokenBreakdownCostAndRuntime() async throws {
+        let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: userHome) }
+        let date = Date(timeIntervalSince1970: 1_785_542_400)
+        let usage = TokenUsage(input: 1_000, cachedInput: 800, output: 200, total: 1_200)
+        let session = SessionMetric(
+            id: "model-breakdown", rolloutPath: "/tmp/model-breakdown.jsonl", projectPath: "/tmp/project",
+            title: "", source: "app", provider: "openai", createdAt: date, updatedAt: date,
+            model: "gpt-5.6", reasoningEffort: nil, gitBranch: nil, cliVersion: nil,
+            archived: false, usage: usage,
+            usageEvents: [UsageEvent(date: date, usage: usage, model: "gpt-5.6")],
+            turns: [TurnMetric(completedAt: date, duration: 12, timeToFirstToken: nil, completed: true)],
+            enrichmentAvailable: true
+        )
+
+        let store = HistoricalStore(userHome: userHome)
+        _ = try await store.record([session], pricing: .bundled)
+        _ = try await store.metricsIndex(for: [session], pricing: .bundled)
+
+        let rows = try await store.dailyModelRows()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].usage.input, 1_000)
+        XCTAssertEqual(rows[0].usage.cachedInput, 800)
+        XCTAssertEqual(rows[0].usage.output, 200)
+        XCTAssertEqual(rows[0].usage.total, 1_200)
+        XCTAssertEqual(rows[0].estimatedCost, 0.0074, accuracy: 1e-12)
+        XCTAssertEqual(rows[0].activeRuntime, 12)
+
+        let rebuilt = try await store.rebuildMetricsIndex(pricing: .bundled)
+        XCTAssertEqual(rebuilt.sessions.count, 1)
+        let rebuiltRows = try await store.dailyModelRows()
+        XCTAssertEqual(rebuiltRows[0].usage.cachedInput, 800)
+        XCTAssertEqual(rebuiltRows[0].estimatedCost, 0.0074, accuracy: 1e-12)
+    }
+
     func testGrowingSessionDoesNotRewriteUnchangedDailyContributions() async throws {
         let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: userHome) }

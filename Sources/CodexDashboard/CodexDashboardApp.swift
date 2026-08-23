@@ -1522,6 +1522,25 @@ private struct DashboardSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Maintenance") {
+                LabeledContent("History index") {
+                    Button {
+                        store.rebuildHistoryIndex()
+                    } label: {
+                        if store.isRebuildingHistory {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Text("Rebuild")
+                        }
+                    }
+                    .disabled(store.isBusy)
+                }
+                Text("Rebuilds the stored token, cost, runtime, and model breakdowns from all saved sessions. This may take a while for large histories.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Updates") {
                 LabeledContent("Software Update") {
                     Button("Check for Updates…") {

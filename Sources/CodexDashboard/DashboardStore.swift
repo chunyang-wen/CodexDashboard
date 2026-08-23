@@ -431,6 +431,7 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var pricingSource = "Bundled fallback"
     @Published private(set) var pricingUpdatedAt: Date?
     @Published private(set) var isRefreshingPricing = false
+    @Published private(set) var isRebuildingHistory = false
     @Published private(set) var historySessionCount = 0
     @Published private(set) var historyMessage: String?
     @Published private(set) var errorMessage: String?
@@ -490,7 +491,7 @@ final class DashboardStore: ObservableObject {
         scheduleAnalyticsRefresh()
     }
 
-    var isBusy: Bool { isLoading || isEnriching }
+    var isBusy: Bool { isLoading || isEnriching || isRebuildingHistory }
     var enrichmentFraction: Double {
         enrichmentTotal > 0 ? Double(enrichedSessions) / Double(enrichmentTotal) : 0
     }
@@ -1423,6 +1424,28 @@ final class DashboardStore: ObservableObject {
                 } else {
                     self.historyMessage = "History scan failed."
                 }
+            }
+        }
+    }
+
+    func rebuildHistoryIndex() {
+        guard !isRebuildingHistory else { return }
+        isRebuildingHistory = true
+        historyMessage = "Rebuilding the history index…"
+        Task { [weak self] in
+            guard let self else { return }
+            defer { isRebuildingHistory = false }
+            do {
+                let rebuilt = try await historicalStore.rebuildMetricsIndex(
+                    pricing: pricing,
+                    calendar: analyticsCalendar
+                )
+                metricsIndex = rebuilt
+                indexedSessionsByID = Dictionary(uniqueKeysWithValues: rebuilt.sessions.map { ($0.sessionID, $0) })
+                historyMessage = "History index rebuilt for (rebuilt.sessions.count.formatted()) sessions."
+                scheduleAnalyticsRefresh()
+            } catch {
+                historyMessage = "History index rebuild failed: (error.localizedDescription)"
             }
         }
     }

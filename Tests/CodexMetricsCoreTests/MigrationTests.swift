@@ -167,6 +167,11 @@ final class MigrationTests: XCTestCase {
         XCTAssertEqual(modelRows.count, 1)
         XCTAssertEqual(modelRows[0].model, "gpt-4o")
         XCTAssertEqual(modelRows[0].usage.total, 300)
+        XCTAssertEqual(modelRows[0].usage.input, 100)
+        XCTAssertEqual(modelRows[0].usage.cachedInput, 50)
+        XCTAssertEqual(modelRows[0].usage.output, 200)
+        XCTAssertEqual(modelRows[0].estimatedCost, 0.05)
+        XCTAssertEqual(modelRows[0].activeRuntime, 120)
     }
 
     func testAggregateQueriesFilterByProjectAndDate() async throws {

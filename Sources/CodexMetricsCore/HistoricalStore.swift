@@ -256,6 +256,7 @@ final class MetricsDatabase: @unchecked Sendable {
             var model = ""
             var tokens: Int64 = 0
             var input: Int64 = 0
+            var cachedInput: Int64 = 0
             var output: Int64 = 0
             var cost = 0.0
             var runtime = 0.0
@@ -283,6 +284,7 @@ final class MetricsDatabase: @unchecked Sendable {
                 modelRow.model = model.model
                 modelRow.tokens = model.usage.total
                 modelRow.input = model.usage.input
+                modelRow.cachedInput = model.usage.cachedInput
                 modelRow.output = model.usage.output
                 modelRow.cost = NSDecimalNumber(decimal: model.estimatedCost).doubleValue
                 modelRow.runtime = model.activeRuntime
@@ -339,8 +341,8 @@ final class MetricsDatabase: @unchecked Sendable {
 
             guard let insertModel = prepare("""
                 INSERT OR REPLACE INTO daily_model(
-                    session_id, day, model, total_tokens, input_tokens, output_tokens, cost, active_runtime
-                ) VALUES(?,?,?,?,?,?,?,?)
+                    session_id, day, model, total_tokens, input_tokens, cached_input, output_tokens, cost, active_runtime
+                ) VALUES(?,?,?,?,?,?,?,?,?)
                 """) else { throw databaseError() }
             defer { sqlite3_finalize(insertModel) }
 
@@ -350,9 +352,10 @@ final class MetricsDatabase: @unchecked Sendable {
                 bind(row.model, to: insertModel, at: 3)
                 sqlite3_bind_int64(insertModel, 4, row.tokens)
                 sqlite3_bind_int64(insertModel, 5, row.input)
-                sqlite3_bind_int64(insertModel, 6, row.output)
-                sqlite3_bind_double(insertModel, 7, row.cost)
-                sqlite3_bind_double(insertModel, 8, row.runtime)
+                sqlite3_bind_int64(insertModel, 6, row.cachedInput)
+                sqlite3_bind_int64(insertModel, 7, row.output)
+                sqlite3_bind_double(insertModel, 8, row.cost)
+                sqlite3_bind_double(insertModel, 9, row.runtime)
                 guard sqlite3_step(insertModel) == SQLITE_DONE else { throw databaseError() }
                 sqlite3_reset(insertModel)
                 sqlite3_clear_bindings(insertModel)
@@ -475,8 +478,8 @@ final class MetricsDatabase: @unchecked Sendable {
 
         guard let insertModel = prepare("""
             INSERT OR REPLACE INTO daily_model(
-                session_id, day, model, total_tokens, input_tokens, output_tokens, cost, active_runtime
-            ) VALUES(?,?,?,?,?,?,?,?)
+                session_id, day, model, total_tokens, input_tokens, cached_input, output_tokens, cost, active_runtime
+            ) VALUES(?,?,?,?,?,?,?,?,?)
             """) else { throw databaseError() }
         defer { sqlite3_finalize(insertModel) }
 
@@ -2104,6 +2107,20 @@ public actor HistoricalStore {
             return try metricsIndex(for: stored, pricing: pricing, calendar: calendar)
         }
         return .empty
+    }
+
+    /// Rebuilds every persisted metric-index row, including typed daily tables.
+    /// This is intentionally separate from the incremental index path so callers
+    /// can repair rows written by an older schema or indexing implementation.
+    public func rebuildMetricsIndex(
+        pricing: PricingHistory = .bundled,
+        calendar: Calendar = .current
+    ) throws -> MetricsIndexSnapshot {
+        let sessions = try load().sessions
+
+        metricsIndexCache = .empty
+        metricsIndexContext = nil
+        return try metricsIndex(for: sessions, pricing: pricing, calendar: calendar)
     }
 
     /// Incrementally replaces only the metric-index contribution for the
