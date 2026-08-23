@@ -228,6 +228,9 @@ final class MigrationTests: XCTestCase {
         XCTAssertEqual(Set(projectCosts.keys), ["s1", "s3"])
         XCTAssertEqual(projectCosts["s1"]?.totalTokens, 100)
         XCTAssertEqual(projectCosts["s3"]?.totalTokens, 400)
+
+        let visibleProjectCosts = try await store.sessionCosts(projectPath: "/proj/a", sessionIDs: ["s3"])
+        XCTAssertEqual(Set(visibleProjectCosts.keys), ["s3"])
     }
 }
 

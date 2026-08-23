@@ -543,7 +543,7 @@ final class MetricsDatabase: @unchecked Sendable {
         since startDate: Date?,
         before endDate: Date?
     ) throws -> DailyAggregateResult {
-        try lockedThrowing {
+        return try lockedThrowing {
             var sql = """
                 SELECT SUM(input_tokens), SUM(cached_input), SUM(cache_write),
                        SUM(output_tokens), SUM(reasoning), SUM(total_tokens),
@@ -816,6 +816,41 @@ final class MetricsDatabase: @unchecked Sendable {
                 """) else { throw databaseError() }
             defer { sqlite3_finalize(statement) }
             bind(projectPath, to: statement, at: 1)
+
+            var result: [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)] = [:]
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let idBytes = sqlite3_column_text(statement, 0) else { continue }
+                result[String(cString: idBytes)] = (
+                    Decimal(doubleOrZero(statement, 1)),
+                    int64OrZero(statement, 2),
+                    int64OrZero(statement, 3)
+                )
+            }
+            return result
+        }
+    }
+
+    func sessionCosts(
+        projectPath: String,
+        sessionIDs: Set<String>
+    ) throws -> [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)] {
+        guard !sessionIDs.isEmpty else { return [:] }
+        return try lockedThrowing {
+            let placeholders = Array(repeating: "?", count: sessionIDs.count).joined(separator: ",")
+            let sql = """
+                SELECT session_id, SUM(cost), SUM(covered_tokens), SUM(total_tokens)
+                FROM daily_contribution
+                WHERE project_path = ? AND session_id IN (
+                """ + placeholders + """
+                )
+                GROUP BY session_id
+                """
+            guard let statement = prepare(sql) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            bind(projectPath, to: statement, at: 1)
+            for (offset, sessionID) in sessionIDs.enumerated() {
+                bind(sessionID, to: statement, at: Int32(offset + 2))
+            }
 
             var result: [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)] = [:]
             while sqlite3_step(statement) == SQLITE_ROW {
@@ -1773,6 +1808,14 @@ public actor HistoricalStore {
     public func sessionCosts(projectPath: String) throws -> [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)] {
         guard let database else { return [:] }
         return try database.sessionCosts(projectPath: projectPath)
+    }
+
+    public func sessionCosts(
+        projectPath: String,
+        sessionIDs: Set<String>
+    ) throws -> [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)] {
+        guard let database else { return [:] }
+        return try database.sessionCosts(projectPath: projectPath, sessionIDs: sessionIDs)
     }
 
     public func mergedSessions(with indexed: [SessionMetric]) throws -> [SessionMetric] {

@@ -749,6 +749,8 @@ private struct MenuBarDashboardView: View {
             }
         }
         .frame(width: 390)
+        .onAppear { store.loadMenuBarPopover() }
+        .onDisappear { store.releaseMenuBarMemory() }
     }
 
     private var sectionDivider: some View {
@@ -921,11 +923,15 @@ private struct MenuBarDashboardView: View {
         let dailyByStart = Dictionary(store.menuBarDaily.map { (calendar.startOfDay(for: $0.start), $0) }) { _, latest in latest }
         let dayCount = calendar.range(of: .day, in: .month, for: interval.start)?.count ?? 1
 
-        return (0..<dayCount).compactMap { offset in
-            guard let date = calendar.date(byAdding: .day, value: offset, to: interval.start) else { return nil }
-            let start = calendar.startOfDay(for: date)
-            return MenuUsageDay(date: start, period: dailyByStart[start])
+        var days: [MenuUsageDay] = []
+        days.reserveCapacity(dayCount)
+        for offset in 0..<dayCount {
+            if let date = calendar.date(byAdding: .day, value: offset, to: interval.start) {
+                let start = calendar.startOfDay(for: date)
+                days.append(MenuUsageDay(date: start, period: dailyByStart[start]))
+            }
         }
+        return days
     }
 
     private func currentWeekDays(

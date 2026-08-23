@@ -339,7 +339,11 @@ struct ActivityChart: View {
     private var visiblePeriods: [PeriodMetric] {
         guard !periods.isEmpty else { return [] }
         let start = min(max(0, Int(scrollPosition.rounded())), max(0, periods.count - Int(visiblePeriodCount)))
-        return Array(periods[start..<min(periods.count, start + Int(visiblePeriodCount))])
+        let end = min(periods.count, start + Int(visiblePeriodCount))
+        var visible: [PeriodMetric] = []
+        visible.reserveCapacity(30)
+        visible.append(contentsOf: periods[start..<end])
+        return visible
     }
     private var axisPositions: [Double] {
         let step = max(1, Int(ceil(visiblePeriodCount / 8)))
@@ -885,8 +889,6 @@ struct ProjectsView: View {
         }
         .navigationTitle("Projects")
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search projects")
-        .onAppear { selectInitialProject() }
-        .onChange(of: store.allProjects.map(\.id)) { _, _ in selectInitialProject() }
         .onDisappear {
             selection = nil
             expandedProjects.removeAll()
@@ -919,7 +921,7 @@ struct ProjectsView: View {
 
                         if expandedProjects.contains(project.id) {
                             LazyVStack(spacing: 2) {
-                                ForEach(project.sessions.sorted { $0.updatedAt > $1.updatedAt }) { session in
+                                ForEach(project.sessions) { session in
                                     Button { selection = .session(session.id) } label: {
                                         SessionTreeRow(session: session)
                                     }
@@ -988,15 +990,23 @@ struct ProjectsView: View {
 
     private func toggle(_ projectID: String) {
         withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) {
-            if expandedProjects.contains(projectID) { expandedProjects.remove(projectID) }
-            else { expandedProjects.insert(projectID) }
+            if expandedProjects.contains(projectID) {
+                expandedProjects.remove(projectID)
+                guard let project = store.allProjects.first(where: { $0.id == projectID }) else { return }
+                switch selection {
+                case .project(let path) where path == project.path:
+                    selection = nil
+                case .session(let sessionID) where project.sessions.contains(where: { $0.id == sessionID }):
+                    selection = nil
+                default:
+                    break
+                }
+            } else {
+                expandedProjects.insert(projectID)
+            }
         }
     }
 
-    private func selectInitialProject() {
-        guard selection == nil, let first = store.allProjects.first else { return }
-        selection = .project(first.id)
-    }
 }
 
 private struct ProjectDetailLoaderView: View {
@@ -1052,10 +1062,10 @@ private struct ProjectDetailLoaderView: View {
             guard !Task.isCancelled else { return }
             indexed = aggregate
 
-            let visibleSessions = project.sessions.sorted { $0.updatedAt > $1.updatedAt }.prefix(8)
+            let visibleSessions = project.sessions.prefix(8)
             let visibleIDs = Set(visibleSessions.map(\.id))
             async let periodRows = store.projectPeriods(path: project.path, granularity: granularity)
-            async let indexedCosts = store.indexedSessionCosts(projectPath: project.path)
+            async let indexedCosts = store.indexedSessionCosts(projectPath: project.path, sessionIDs: visibleIDs)
 
             let allCosts = await indexedCosts
             let costs = allCosts.filter { visibleIDs.contains($0.key) }
@@ -1193,7 +1203,7 @@ private struct ProjectDetailView: View {
                 ActivityChart(periods: periods, granularity: granularity, metric: $activityMetric)
                 VStack(alignment: .leading, spacing: 12) {
                     SectionHeader(title: "Recent sessions", subtitle: "Sessions stay scoped to this project.")
-                    ForEach(project.sessions.sorted { $0.updatedAt > $1.updatedAt }.prefix(8)) { session in
+                    ForEach(project.sessions.prefix(8)) { session in
                         Button { onSelectSession(session) } label: {
                             HStack {
                                 VStack(alignment: .leading, spacing: 3) {
@@ -1516,41 +1526,49 @@ private struct ModelTrendChartData {
     }
 
     let dates: [Date]
-    let samples: [Sample]
+    private let pointsByModel: [String: [Date: ModelPeriodMetric]]
     let maximumTokens: Double
     let identity: String
 
     init(points: [ModelPeriodMetric], models: [ModelMetric]) {
         let preparedDates = Array(Set(points.map(\.start))).sorted()
-        let pointsByModel = Dictionary(grouping: points, by: \.model).mapValues { values in
+        self.pointsByModel = Dictionary(grouping: points, by: \.model).mapValues { values in
             Dictionary(uniqueKeysWithValues: values.map { ($0.start, $0) })
         }
+        let modelNames = Set(models.map(\.model))
         let preparedMaximumTokens = max(1, points
-            .filter { point in models.contains { $0.model == point.model } }
+            .filter { modelNames.contains($0.model) }
             .map { max(0, Double($0.usage.total)) }
             .max() ?? 1)
-        let preparedSamples = preparedDates.enumerated().flatMap { dateItem in
-            models.enumerated().map { modelItem in
-                let point = pointsByModel[modelItem.element.model]?[dateItem.element]
-                let usage = point?.usage ?? .zero
-                let cacheHitRate = min(1, max(0, usage.cacheHitRate))
-                return Sample(
-                    id: "\(modelItem.element.model)-\(dateItem.offset)",
-                    index: dateItem.offset,
-                    model: modelItem.element.model,
-                    modelIndex: modelItem.offset,
-                    tokens: max(0, Double(usage.total)),
-                    cacheRate: cacheHitRate * preparedMaximumTokens,
-                    cacheHitRate: cacheHitRate,
-                    tokenSeries: "\(modelItem.element.model) · tokens",
-                    cacheSeries: "\(modelItem.element.model) · cache"
-                )
-            }
-        }
         dates = preparedDates
-        samples = preparedSamples
         maximumTokens = preparedMaximumTokens
         identity = models.map(\.model).joined(separator: "|") + "#" + preparedDates.map(String.init(describing:)).joined(separator: "|")
+    }
+
+    func samples(from start: Int, to end: Int, models: [ModelMetric]) -> [Sample] {
+        guard start < end else { return [] }
+        var samples: [Sample] = []
+        samples.reserveCapacity((end - start) * models.count)
+        for index in start..<end {
+            let date = dates[index]
+            for (modelIndex, model) in models.enumerated() {
+                let point = pointsByModel[model.model]?[date]
+                let usage = point?.usage ?? .zero
+                let cacheHitRate = min(1, max(0, usage.cacheHitRate))
+                samples.append(Sample(
+                    id: "\(model.model)-\(index)",
+                    index: index,
+                    model: model.model,
+                    modelIndex: modelIndex,
+                    tokens: max(0, Double(usage.total)),
+                    cacheRate: cacheHitRate * maximumTokens,
+                    cacheHitRate: cacheHitRate,
+                    tokenSeries: "\(model.model) · tokens",
+                    cacheSeries: "\(model.model) · cache"
+                ))
+            }
+        }
+        return samples
     }
 }
 
@@ -1584,13 +1602,14 @@ private struct ModelTrendChart: View {
     private var visibleEnd: Int { min(dates.count, visibleStart + Int(visiblePeriodCount)) }
     private var axisPositions: [Double] {
         let step = max(1, Int(ceil(visiblePeriodCount / 8)))
-        var positions = stride(from: visibleStart, to: visibleEnd, by: step).map { Double($0) + 0.5 }
-        if visibleStart < visibleEnd { positions.append(Double(visibleEnd) - 0.5) }
+        let visibleCount = visibleEnd - visibleStart
+        var positions = stride(from: 0, to: visibleCount, by: step).map { Double($0) + 0.5 }
+        if visibleCount > 0 { positions.append(Double(visibleCount) - 0.5) }
         return Array(Set(positions)).sorted()
     }
 
     private var samples: [ModelTrendChartData.Sample] {
-        data.samples.filter { $0.index >= visibleStart && $0.index < visibleEnd }
+        data.samples(from: visibleStart, to: visibleEnd, models: models)
     }
 
     private var maximumTokens: Double {
@@ -1623,12 +1642,15 @@ private struct ModelTrendChart: View {
                         cachePointMark(for: sample)
                     }
                     if let hoveredIndex, dates.indices.contains(hoveredIndex) {
-                        RuleMark(x: .value("Hovered period", Double(hoveredIndex)))
+                        RuleMark(x: .value("Hovered period", Double(hoveredIndex - visibleStart)))
                             .lineStyle(.init(lineWidth: 1, dash: [4, 4]))
                             .foregroundStyle(.secondary.opacity(0.72))
                     }
                 }
-                .chartXScale(range: .plotDimension(startPadding: 20, endPadding: 24))
+                .chartXScale(
+                    domain: -0.5...max(0.5, visiblePeriodCount - 0.5),
+                    range: .plotDimension(startPadding: 20, endPadding: 24)
+                )
                 .chartYScale(domain: 0...maximumTokens)
                 .chartXAxis {
                     AxisMarks(values: axisPositions) { value in
@@ -1679,7 +1701,10 @@ private struct ModelTrendChart: View {
                                             hoverLocation = nil
                                             return
                                         }
-                                        let index = min(max(0, Int(rawIndex.rounded())), dates.count - 1)
+                                        let index = min(
+                                            max(visibleStart, visibleStart + Int(rawIndex.rounded())),
+                                            visibleEnd - 1
+                                        )
                                         hoveredIndex = index
                                         hoverLocation = location
                                     case .ended:
@@ -1851,7 +1876,7 @@ private struct ModelTrendChart: View {
 
     private func tokenMark(for sample: ModelTrendChartData.Sample) -> some ChartContent {
         LineMark(
-            x: .value("Period", Double(sample.index)),
+            x: .value("Period", Double(sample.index - visibleStart)),
             y: .value("Tokens", sample.tokens),
             series: .value("Series", sample.tokenSeries)
         )
@@ -1862,7 +1887,7 @@ private struct ModelTrendChart: View {
 
     private func cacheMark(for sample: ModelTrendChartData.Sample) -> some ChartContent {
         LineMark(
-            x: .value("Period", Double(sample.index)),
+            x: .value("Period", Double(sample.index - visibleStart)),
             y: .value("Cache hit rate", sample.cacheRate),
             series: .value("Series", sample.cacheSeries)
         )
@@ -1873,7 +1898,7 @@ private struct ModelTrendChart: View {
 
     private func tokenPointMark(for sample: ModelTrendChartData.Sample) -> some ChartContent {
         PointMark(
-            x: .value("Period", Double(sample.index)),
+            x: .value("Period", Double(sample.index - visibleStart)),
             y: .value("Tokens", sample.tokens)
         )
         .foregroundStyle(seriesColor(sample.modelIndex))
@@ -1882,7 +1907,7 @@ private struct ModelTrendChart: View {
 
     private func cachePointMark(for sample: ModelTrendChartData.Sample) -> some ChartContent {
         PointMark(
-            x: .value("Period", Double(sample.index)),
+            x: .value("Period", Double(sample.index - visibleStart)),
             y: .value("Cache hit rate", sample.cacheRate)
         )
         .foregroundStyle(seriesColor(sample.modelIndex).opacity(0.68))
@@ -1932,7 +1957,7 @@ private struct ModelTrendChart: View {
     }
 
     private func axisLabel(at position: Double) -> String? {
-        let index = Int(floor(position))
+        let index = visibleStart + Int(floor(position))
         guard dates.indices.contains(index) else { return nil }
         return axisPeriodLabel(dates[index])
     }
