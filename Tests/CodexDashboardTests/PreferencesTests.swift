@@ -22,4 +22,17 @@ final class PreferencesTests: XCTestCase {
         let restoredStore = DashboardStore(userHome: userHome, defaults: defaults)
         XCTAssertEqual(restoredStore.range, .week)
     }
+
+    @MainActor
+    func testMondayWeekCalendarIncludesSundayInTheCurrentWeek() {
+        let suiteName = "PreferencesTests.WeekCalendar.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = DashboardStore(defaults: defaults)
+        let calendar = store.analyticsCalendar
+        let sunday = calendar.date(from: DateComponents(year: 2026, month: 8, day: 23, hour: 12))!
+        let interval = calendar.dateInterval(of: .weekOfYear, for: sunday)!
+
+        XCTAssertEqual(calendar.component(.weekday, from: interval.start), 2)
+        XCTAssertTrue(interval.contains(sunday))
+    }
 }

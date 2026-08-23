@@ -251,7 +251,7 @@ struct OverviewView: View {
         case .day:
             return effectivePeriodStart.formatted(date: .long, time: .omitted)
         case .week:
-            let lastDay = Calendar.current.date(byAdding: .day, value: -1, to: interval.end) ?? interval.end
+            let lastDay = store.analyticsCalendar.date(byAdding: .day, value: -1, to: interval.end) ?? interval.end
             return "\(effectivePeriodStart.formatted(.dateTime.month(.abbreviated).day()))–\(lastDay.formatted(.dateTime.month(.abbreviated).day().year()))"
         case .month:
             return effectivePeriodStart.formatted(.dateTime.year().month(.wide))
@@ -265,7 +265,7 @@ struct OverviewView: View {
     }
 
     private func periodInterval(containing date: Date) -> DateInterval {
-        let calendar = Calendar.current
+        let calendar = store.analyticsCalendar
         let component: Calendar.Component = switch store.range.granularity {
         case .day: .day
         case .week: .weekOfYear
@@ -325,7 +325,12 @@ struct ActivityChart: View {
         let step = max(1, Int(ceil(visiblePeriodCount / 8)))
         var positions = stride(from: 0, to: periods.count, by: step).map { Double($0) + 0.5 }
         if !periods.isEmpty {
-            positions.append(Double(periods.count) - 0.5)
+            let finalPosition = Double(periods.count) - 0.5
+            if finalPosition - (positions.last ?? finalPosition) < Double(step) {
+                positions[positions.count - 1] = finalPosition
+            } else {
+                positions.append(finalPosition)
+            }
         }
         return Array(Set(positions)).sorted()
     }
@@ -410,7 +415,7 @@ struct ActivityChart: View {
             .chartXAxis {
                 AxisMarks(values: axisPositions) { value in
                     AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
-                    AxisValueLabel {
+                    AxisValueLabel(collisionResolution: .greedy(minimumSpacing: 4)) {
                         if let position = value.as(Double.self) {
                             let index = Int(floor(position))
                             if periods.indices.contains(index) {
@@ -2059,7 +2064,7 @@ struct BillingView: View {
         case .month: .month
         case .year: .year
         }
-        return Calendar.current.dateInterval(of: component, for: .now)
+        return store.analyticsCalendar.dateInterval(of: component, for: .now)
     }
 
     private var currentPeriodTitle: String {
@@ -2125,8 +2130,8 @@ struct BillingView: View {
         case .day:
             return start.formatted(date: .abbreviated, time: .omitted)
         case .week:
-            if let interval = Calendar.current.dateInterval(of: .weekOfYear, for: start) {
-                let end = Calendar.current.date(byAdding: .day, value: -1, to: interval.end) ?? interval.end
+            if let interval = store.analyticsCalendar.dateInterval(of: .weekOfYear, for: start) {
+                let end = store.analyticsCalendar.date(byAdding: .day, value: -1, to: interval.end) ?? interval.end
                 return "\(start.formatted(.dateTime.month(.abbreviated).day()))–\(end.formatted(.dateTime.month(.abbreviated).day().year()))"
             }
             return start.formatted(date: .abbreviated, time: .omitted)

@@ -56,6 +56,9 @@ final class MetricsDatabase: @unchecked Sendable {
         if !tableHasColumn("historical_session", named: "summary") {
             try execute("ALTER TABLE historical_session ADD COLUMN summary BLOB")
         }
+        if tableExists("daily_model") && !tableHasColumn("daily_model", named: "cached_input") {
+            try execute("ALTER TABLE daily_model ADD COLUMN cached_input INTEGER NOT NULL DEFAULT 0")
+        }
         try execute("""
             CREATE TABLE IF NOT EXISTS source_session_index (
                 source_key TEXT NOT NULL,
@@ -129,6 +132,7 @@ final class MetricsDatabase: @unchecked Sendable {
                 model           TEXT NOT NULL,
                 total_tokens    INTEGER NOT NULL DEFAULT 0,
                 input_tokens    INTEGER NOT NULL DEFAULT 0,
+                cached_input    INTEGER NOT NULL DEFAULT 0,
                 output_tokens   INTEGER NOT NULL DEFAULT 0,
                 cost            REAL NOT NULL DEFAULT 0,
                 active_runtime  REAL NOT NULL DEFAULT 0,
@@ -162,6 +166,51 @@ final class MetricsDatabase: @unchecked Sendable {
         if !tableExists("daily_contribution_filled") {
             try migrateDailyIndexToTyped()
             try execute("CREATE TABLE IF NOT EXISTS daily_contribution_filled (done INTEGER)")
+        }
+        // Re-run the typed migration when daily_model gains new columns so existing
+        // rows get backfilled with data that was not captured before.
+        if tableExists("metric_daily_index") && !tableExists("daily_model_cached_input_filled") {
+            try migrateDailyModelCachedInput()
+            try execute("CREATE TABLE IF NOT EXISTS daily_model_cached_input_filled (done INTEGER)")
+        }
+    }
+
+
+    /// One-time backfill: re-decode metric_daily_index blobs and update cached_input
+    /// in daily_model rows that were written before that column existed.
+    private func migrateDailyModelCachedInput() throws {
+        // Collect all updates first so we never mutate daily_model while its
+        // rows are being scanned by the open SELECT cursor.
+        let decoder = Self.decoder()
+        guard let select = prepare("""
+            SELECT m.session_id, m.day, d.metric FROM daily_model m
+            JOIN metric_daily_index d ON d.session_id = m.session_id AND d.day = m.day
+            WHERE m.cached_input = 0 AND d.metric IS NOT NULL
+            """) else { throw databaseError() }
+        defer { sqlite3_finalize(select) }
+
+        var updates: [(sessionID: String, day: Double, cachedInput: Int64)] = []
+        while sqlite3_step(select) == SQLITE_ROW {
+            guard let idBytes = sqlite3_column_text(select, 0),
+                  let blob = data(select, 2),
+                  let metric = try? decoder.decode(IndexedDailyMetrics.self, from: blob) else { continue }
+            let sessionID = String(cString: idBytes)
+            let dayKey = sqlite3_column_double(select, 1)
+            for model in metric.models where model.usage.cachedInput > 0 {
+                updates.append((sessionID, dayKey, model.usage.cachedInput))
+            }
+        }
+
+        guard !updates.isEmpty,
+              let update = prepare("UPDATE daily_model SET cached_input = ? WHERE session_id = ? AND day = ?") else { return }
+        defer { sqlite3_finalize(update) }
+        for entry in updates {
+            sqlite3_reset(update)
+            sqlite3_clear_bindings(update)
+            sqlite3_bind_int64(update, 1, entry.cachedInput)
+            bind(entry.sessionID, to: update, at: 2)
+            sqlite3_bind_double(update, 3, entry.day)
+            guard sqlite3_step(update) == SQLITE_DONE else { throw databaseError() }
         }
     }
 
@@ -439,9 +488,10 @@ final class MetricsDatabase: @unchecked Sendable {
             bind(model.model, to: insertModel, at: 3)
             sqlite3_bind_int64(insertModel, 4, model.usage.total)
             sqlite3_bind_int64(insertModel, 5, model.usage.input)
-            sqlite3_bind_int64(insertModel, 6, model.usage.output)
-            sqlite3_bind_double(insertModel, 7, NSDecimalNumber(decimal: model.estimatedCost).doubleValue)
-            sqlite3_bind_double(insertModel, 8, model.activeRuntime)
+            sqlite3_bind_int64(insertModel, 6, model.usage.cachedInput)
+            sqlite3_bind_int64(insertModel, 7, model.usage.output)
+            sqlite3_bind_double(insertModel, 8, NSDecimalNumber(decimal: model.estimatedCost).doubleValue)
+            sqlite3_bind_double(insertModel, 9, model.activeRuntime)
             guard sqlite3_step(insertModel) == SQLITE_DONE else { throw databaseError() }
         }
 
@@ -584,7 +634,7 @@ final class MetricsDatabase: @unchecked Sendable {
         try lockedThrowing {
             var sql = """
                 SELECT m.day, m.model,
-                       SUM(m.input_tokens), SUM(m.output_tokens), SUM(m.total_tokens),
+                       SUM(m.input_tokens), SUM(m.cached_input), SUM(m.output_tokens), SUM(m.total_tokens),
                        SUM(m.cost), SUM(m.active_runtime), COUNT(DISTINCT m.session_id)
                 FROM daily_model m
                 JOIN daily_contribution c ON c.session_id = m.session_id AND c.day = m.day
@@ -606,12 +656,12 @@ final class MetricsDatabase: @unchecked Sendable {
                 let day = Date(timeIntervalSince1970: sqlite3_column_double(statement, 0))
                 let model = textValue(statement, 1)
                 let inputTotal = int64OrZero(statement, 2)
-                let outputTotal = int64OrZero(statement, 3)
-                let grandTotal = int64OrZero(statement, 4)
-                // Synthesize cachedInput as 0 since daily_model doesn't store it separately.
+                let cachedTotal = int64OrZero(statement, 3)
+                let outputTotal = int64OrZero(statement, 4)
+                let grandTotal = int64OrZero(statement, 5)
                 let usage = TokenUsage(
                     input: inputTotal,
-                    cachedInput: 0,
+                    cachedInput: cachedTotal,
                     cacheWriteInput: 0,
                     output: outputTotal,
                     reasoningOutput: 0,
@@ -621,9 +671,9 @@ final class MetricsDatabase: @unchecked Sendable {
                     day: day,
                     model: model ?? "",
                     usage: usage,
-                    estimatedCost: doubleOrZero(statement, 5),
-                    activeRuntime: doubleOrZero(statement, 6),
-                    sessions: Int(int64OrZero(statement, 7))
+                    estimatedCost: doubleOrZero(statement, 6),
+                    activeRuntime: doubleOrZero(statement, 7),
+                    sessions: Int(int64OrZero(statement, 8))
                 ))
             }
             return rows
@@ -747,6 +797,30 @@ final class MetricsDatabase: @unchecked Sendable {
             let covered = int64OrZero(statement, 1)
             let total = int64OrZero(statement, 2)
             return (Decimal(costDouble), covered, total)
+        }
+    }
+
+    func sessionCosts(projectPath: String) throws -> [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)] {
+        try lockedThrowing {
+            guard let statement = prepare("""
+                SELECT session_id, SUM(cost), SUM(covered_tokens), SUM(total_tokens)
+                FROM daily_contribution
+                WHERE project_path = ?
+                GROUP BY session_id
+                """) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            bind(projectPath, to: statement, at: 1)
+
+            var result: [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)] = [:]
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let idBytes = sqlite3_column_text(statement, 0) else { continue }
+                result[String(cString: idBytes)] = (
+                    Decimal(doubleOrZero(statement, 1)),
+                    int64OrZero(statement, 2),
+                    int64OrZero(statement, 3)
+                )
+            }
+            return result
         }
     }
 
@@ -1557,6 +1631,11 @@ public actor HistoricalStore {
     public func sessionCost(sessionID: String) throws -> (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)? {
         guard let database else { return nil }
         return try database.sessionCost(sessionID: sessionID)
+    }
+
+    public func sessionCosts(projectPath: String) throws -> [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)] {
+        guard let database else { return [:] }
+        return try database.sessionCosts(projectPath: projectPath)
     }
 
     public func mergedSessions(with indexed: [SessionMetric]) throws -> [SessionMetric] {

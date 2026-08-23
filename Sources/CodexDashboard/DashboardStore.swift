@@ -431,6 +431,9 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var range: Range = .month
     @Published private(set) var codexHome: URL
     @Published private(set) var refreshInterval: TimeInterval
+    @Published private(set) var weekStartsMonday: Bool {
+        didSet { defaults.set(weekStartsMonday, forKey: "weekStartsMonday") }
+    }
     private let defaults: UserDefaults
     private var loadTask: Task<Void, Never>?
     private var enrichmentTask: Task<Void, Never>?
@@ -465,6 +468,20 @@ final class DashboardStore: ObservableObject {
         let savedInterval = defaults.object(forKey: "metricsRefreshInterval") as? Double
         refreshInterval = savedInterval ?? 60
         range = Range(rawValue: defaults.string(forKey: "dashboardRange") ?? "") ?? .month
+        weekStartsMonday = defaults.object(forKey: "weekStartsMonday") as? Bool ?? true
+    }
+
+    /// Calendar configured with the user's preferred first weekday for week bucketing.
+    var analyticsCalendar: Calendar {
+        var calendar = Calendar.current
+        calendar.firstWeekday = weekStartsMonday ? 2 : 1
+        return calendar
+    }
+
+    func updateWeekStartsMonday(_ value: Bool) {
+        guard value != weekStartsMonday else { return }
+        weekStartsMonday = value
+        scheduleAnalyticsRefresh()
     }
 
     var isBusy: Bool { isLoading || isEnriching }
@@ -529,7 +546,7 @@ final class DashboardStore: ObservableObject {
     var quotaWeekInterval: DateInterval? { quotaWeekAnalytics.interval }
     var quotaWeekUsage: TokenUsage { quotaWeekAnalytics.usage }
     var quotaWeekEstimatedCost: Decimal { quotaWeekAnalytics.estimatedCost }
-    private var projectAggregates: [String: SQLProjectAggregate] = [:]
+    @Published private(set) var projectAggregates: [String: SQLProjectAggregate] = [:]
 
     /// Project-scoped aggregate from typed SQL tables (cached from last refresh).
     func projectAggregate(path: String, since startDate: Date? = nil) -> SQLProjectAggregate {
@@ -540,12 +557,12 @@ final class DashboardStore: ObservableObject {
         )
     }
 
-    private var projectPeriodCache: [String: [PeriodMetric]] = [:]
+    @Published private(set) var projectPeriodCache: [String: [PeriodGranularity: [PeriodMetric]]] = [:]
     private var sessionCostCache: [String: IndexedSessionCost] = [:]
 
     /// Cached period rows for a project, refreshed alongside the aggregate.
     func cachedProjectPeriods(path: String, granularity: PeriodGranularity) -> [PeriodMetric] {
-        projectPeriodCache[path] ?? []
+        projectPeriodCache[path]?[granularity] ?? []
     }
 
     /// Cached per-session cost data for project sessions.
@@ -564,17 +581,20 @@ final class DashboardStore: ObservableObject {
         let tools = (try? await historicalStore.mergedTools(projectPath: path)) ?? []
         let skills = (try? await historicalStore.mergedSkills(projectPath: path)) ?? []
         let durations = (try? await historicalStore.durationArrays(projectPath: path)) ?? DurationArrays()
-        // Load chart period rows and per-session costs in the same pass.
+        let sessionCosts = (try? await historicalStore.sessionCosts(projectPath: path)) ?? [:]
+
+        // Query the project's daily rows once, then bucket those already-filtered
+        // rows locally for whichever chart granularity the view requests.
         if let rows = try? await historicalStore.dailyPeriodRows(projectPath: path) {
-            projectPeriodCache[path] = Self.bucketPeriodsFromRows(rows, granularity: .day)
+            projectPeriodCache[path] = Dictionary(uniqueKeysWithValues: PeriodGranularity.allCases.map { granularity in
+                (granularity, Self.bucketPeriodsFromRows(rows, granularity: granularity, calendar: analyticsCalendar))
+            })
         }
-        for session in sessions where session.projectPath == path {
-            if let cost = try? await historicalStore.sessionCost(sessionID: session.id) {
-                sessionCostCache[session.id] = IndexedSessionCost(
-                    estimatedCost: cost.estimatedCost, coveredTokens: cost.coveredTokens,
-                    totalTokens: cost.totalTokens
-                )
-            }
+        for (sessionID, cost) in sessionCosts {
+            sessionCostCache[sessionID] = IndexedSessionCost(
+                estimatedCost: cost.estimatedCost, coveredTokens: cost.coveredTokens,
+                totalTokens: cost.totalTokens
+            )
         }
 
         projectAggregates[path] = SQLProjectAggregate(
@@ -600,7 +620,7 @@ final class DashboardStore: ObservableObject {
 
     func projectPeriods(path: String, granularity: PeriodGranularity, since startDate: Date? = nil) async -> [PeriodMetric] {
         guard let rows = try? await historicalStore.dailyPeriodRows(projectPath: path, since: startDate) else { return [] }
-        return Self.bucketPeriodsFromRows(rows, granularity: granularity)
+        return Self.bucketPeriodsFromRows(rows, granularity: granularity, calendar: analyticsCalendar)
     }
 
     func indexedSession(_ id: String) async -> IndexedSessionCost? {
@@ -613,7 +633,6 @@ final class DashboardStore: ObservableObject {
     /// Period aggregate for the overview drill-down, computed from typed SQL.
     /// Uses pre-fetched duration arrays from the analytics refresh cycle.
     func periodAggregate(in interval: DateInterval) -> SQLProjectAggregate {
-        let startOfDay = Calendar.current.startOfDay(for: interval.start)
         let filteredTurns = latestDurations.turnDurations
         let filteredTTFT = latestDurations.firstTokenTimes
         return SQLProjectAggregate(
@@ -632,8 +651,9 @@ final class DashboardStore: ObservableObject {
     }
 
     static func bucketPeriodsFromRows(
-        _ rows: [DailyPeriodRow], granularity: PeriodGranularity, calendar: Calendar = .current
+        _ rows: [DailyPeriodRow], granularity: PeriodGranularity, calendar: Calendar? = nil
     ) -> [PeriodMetric] {
+        let calendar = calendar ?? Calendar.current
         struct Bucket {
             var usage = TokenUsage.zero
             var sessions = Set<String>()
@@ -1195,7 +1215,6 @@ final class DashboardStore: ObservableObject {
 
                 let feedbackStartedAt = ContinuousClock.now
                 let sessions = sessions
-                let pricing = pricing
                 let weeklyQuotaWindow = subscription?.windows.first { $0.windowMinutes == 10_080 }
 
                 // Fully SQL path: typed tables answer every dashboard question
@@ -1206,7 +1225,7 @@ final class DashboardStore: ObservableObject {
                 let tools = (try? await historicalStore.mergedTools()) ?? []
                 let skills = (try? await historicalStore.mergedSkills()) ?? []
                 let durations = (try? await historicalStore.durationArrays()) ?? DurationArrays()
-                let todayStart = Calendar.current.startOfDay(for: .now)
+                let todayStart = analyticsCalendar.startOfDay(for: .now)
                 let todayAggregateResult = (try? await historicalStore.aggregateDaily(since: todayStart)) ?? DailyAggregateResult()
 
                 var quotaWeekResult = QuotaWeekAnalytics.empty
@@ -1220,8 +1239,9 @@ final class DashboardStore: ObservableObject {
                     }
                 }
 
+                let analyticsCalendar = self.analyticsCalendar
                 let refreshed = await Task.detached(priority: .userInitiated) {
-                    let calendar = Calendar.current
+                    let calendar = analyticsCalendar
                     var selected = DashboardAnalytics.fromSQLResults(
                         sessions: sessions,
                         startDate: nil,

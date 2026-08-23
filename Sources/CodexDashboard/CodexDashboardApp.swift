@@ -882,7 +882,7 @@ private struct MenuBarDashboardView: View {
     }
 
     private var usageTrend: some View {
-        let calendar = Calendar.current
+        let calendar = store.analyticsCalendar
         let now = Date.now
         let todayInterval = calendar.dateInterval(of: .day, for: now)
             ?? DateInterval(start: calendar.startOfDay(for: now), duration: 86_400)
@@ -1428,6 +1428,7 @@ private struct DashboardSettingsView: View {
     @AppStorage("menuBarQuotaIconStyle") private var menuBarQuotaIconStyle = MenuBarQuotaIconStyle.rings.rawValue
     @AppStorage("showQuotaAlertMarker") private var showQuotaAlertMarker = false
     @AppStorage("quotaAlertUsedPercent") private var quotaAlertRemainingPercent = 80.0
+    @AppStorage("weekStartsMonday") private var weekStartsMonday = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchAtLoginError: String?
 
@@ -1483,6 +1484,17 @@ private struct DashboardSettingsView: View {
                         Text("Every 15 seconds").tag(TimeInterval(15))
                         Text("Every minute").tag(TimeInterval(60))
                         Text("Every 5 minutes").tag(TimeInterval(300))
+                    }
+                    .labelsHidden()
+                    .frame(width: 170)
+                }
+                LabeledContent("First day of week") {
+                    Picker("First day of week", selection: $weekStartsMonday) {
+                        Text("Monday").tag(true)
+                        Text("Sunday").tag(false)
+                    }
+                    .onChange(of: weekStartsMonday) { _, _ in
+                        store.updateWeekStartsMonday(weekStartsMonday)
                     }
                     .labelsHidden()
                     .frame(width: 170)
