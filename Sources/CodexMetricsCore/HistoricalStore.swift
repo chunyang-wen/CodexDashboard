@@ -308,6 +308,67 @@ final class MetricsDatabase: @unchecked Sendable {
                 sqlite3_reset(insertModel)
                 sqlite3_clear_bindings(insertModel)
             }
+
+            // Extract tool and skill data from the same decoded blobs
+            let decoder2 = Self.decoder()
+            var toolRows: [(sessionID: String, day: Double, tool: String, calls: Int32, attributedCalls: Int32, cost: Double)] = []
+            var skillRows: [(sessionID: String, day: Double, skill: String, calls: Int32)] = []
+            for rowData in rows {
+                guard let metric = try? decoder2.decode(IndexedDailyMetrics.self, from: rowData.data) else { continue }
+                for tool in metric.tools {
+                    toolRows.append((
+                        sessionID: rowData.sessionID,
+                        day: rowData.day,
+                        tool: tool.tool,
+                        calls: Int32(tool.calls),
+                        attributedCalls: Int32(tool.attributedCalls),
+                        cost: NSDecimalNumber(decimal: tool.estimatedCost).doubleValue
+                    ))
+                }
+                for skill in metric.skills {
+                    skillRows.append((
+                        sessionID: rowData.sessionID,
+                        day: rowData.day,
+                        skill: skill.skill,
+                        calls: Int32(skill.calls)
+                    ))
+                }
+            }
+
+            if !toolRows.isEmpty {
+                guard let insertTool = prepare("""
+                    INSERT OR REPLACE INTO tool_daily(session_id, day, tool, calls, attributed_calls, cost)
+                    VALUES(?,?,?,?,?,?)
+                    """) else { throw databaseError() }
+                defer { sqlite3_finalize(insertTool) }
+                for row in toolRows {
+                    bind(row.sessionID, to: insertTool, at: 1)
+                    sqlite3_bind_double(insertTool, 2, row.day)
+                    bind(row.tool, to: insertTool, at: 3)
+                    sqlite3_bind_int64(insertTool, 4, Int64(row.calls))
+                    sqlite3_bind_int64(insertTool, 5, Int64(row.attributedCalls))
+                    sqlite3_bind_double(insertTool, 6, row.cost)
+                    guard sqlite3_step(insertTool) == SQLITE_DONE else { throw databaseError() }
+                    sqlite3_reset(insertTool)
+                    sqlite3_clear_bindings(insertTool)
+                }
+            }
+
+            if !skillRows.isEmpty {
+                guard let insertSkill = prepare("""
+                    INSERT OR REPLACE INTO skill_daily(session_id, day, skill, calls) VALUES(?,?,?,?)
+                    """) else { throw databaseError() }
+                defer { sqlite3_finalize(insertSkill) }
+                for row in skillRows {
+                    bind(row.sessionID, to: insertSkill, at: 1)
+                    sqlite3_bind_double(insertSkill, 2, row.day)
+                    bind(row.skill, to: insertSkill, at: 3)
+                    sqlite3_bind_int64(insertSkill, 4, Int64(row.calls))
+                    guard sqlite3_step(insertSkill) == SQLITE_DONE else { throw databaseError() }
+                    sqlite3_reset(insertSkill)
+                    sqlite3_clear_bindings(insertSkill)
+                }
+            }
         }
     }
 
