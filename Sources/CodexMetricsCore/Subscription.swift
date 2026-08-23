@@ -12,6 +12,18 @@ public struct CodexAccountSnapshot: Codable, Hashable, Sendable {
     }
 }
 
+public enum CodexPlanDisplay {
+    public static func name(for planType: String) -> String {
+        let normalized = planType.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.isEmpty
+            || normalized.caseInsensitiveCompare("unknown") == .orderedSame
+            || normalized.caseInsensitiveCompare("api") == .orderedSame {
+            return "API"
+        }
+        return normalized.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+}
+
 public enum CodexAccountReader {
     /// Reads display-only identity claims from the locally stored ID token. The token
     /// is never returned, logged, persisted, or sent over the network.
@@ -107,8 +119,7 @@ public struct SubscriptionSnapshot: Codable, Hashable, Sendable {
     }
 
     public var displayPlan: String {
-        if planType.caseInsensitiveCompare("api") == .orderedSame { return "API" }
-        return planType.replacingOccurrences(of: "_", with: " ").capitalized
+        CodexPlanDisplay.name(for: planType)
     }
 
     /// Some providers, including OpenRouter, emit a `rate_limits` envelope with

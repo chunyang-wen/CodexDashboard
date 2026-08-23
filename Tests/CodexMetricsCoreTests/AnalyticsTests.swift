@@ -991,6 +991,18 @@ final class AnalyticsTests: XCTestCase {
             observedAt: Date(timeIntervalSince1970: 1_800_000_000)
         )
         XCTAssertEqual(explicitUnknown?.displayPlan, "API")
+
+        let cachedUnknown = SubscriptionSnapshot(
+            planType: "unknown",
+            limitID: "codex",
+            limitName: nil,
+            windows: [],
+            credits: nil,
+            rateLimitReachedType: nil,
+            observedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        XCTAssertEqual(cachedUnknown.displayPlan, "API")
+        XCTAssertEqual(CodexPlanDisplay.name(for: "unknown"), "API")
     }
 
     func testSubscriptionReaderIgnoresProviderPlaceholderQuota() throws {

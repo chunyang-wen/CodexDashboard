@@ -781,7 +781,7 @@ private struct MenuBarDashboardView: View {
 
     private var planLabel: String {
         if let plan = store.subscription?.displayPlan { return "ChatGPT \(plan)" }
-        if let plan = store.account?.planType { return "ChatGPT \(plan.capitalized)" }
+        if let plan = store.account?.planType { return "ChatGPT \(CodexPlanDisplay.name(for: plan))" }
         return "Plan not reported"
     }
 
