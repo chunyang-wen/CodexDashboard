@@ -20,11 +20,31 @@
 		A1000000000000000000000A /* MetricsIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000A /* MetricsIndex.swift */; };
 		A1000000000000000000000B /* CodexSourcePaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000B /* CodexSourcePaths.swift */; };
 		A20000000000000000000001 /* CodexDashboardApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* CodexDashboardApp.swift */; };
-		A20000000000000000000002 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* Components.swift */; };
-		A20000000000000000000003 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* ContentView.swift */; };
-		A20000000000000000000004 /* DashboardStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* DashboardStore.swift */; };
-		A20000000000000000000005 /* ConversationInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* ConversationInspectorView.swift */; };
-		A20000000000000000000006 /* CodexSourceWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* CodexSourceWatcher.swift */; };
+		A20000000000000000000007 /* MenuBarStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000007 /* MenuBarStore.swift */; };
+		A20000000000000000000008 /* DashboardProcessCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000008 /* DashboardProcessCoordinator.swift */; };
+		A20000000000000000000009 /* DashboardPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* DashboardPreferences.swift */; };
+		A2000000000000000000000A /* PopoverProcessProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* PopoverProcessProtocol.swift */; };
+		A2000000000000000000000B /* PopoverProcessCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000B /* PopoverProcessCoordinator.swift */; };
+		A2000000000000000000000C /* StatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000C /* StatusItemController.swift */; };
+		A70000000000000000000001 /* HelperMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000001 /* HelperMain.swift */; };
+		A70000000000000000000002 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000004 /* Assets.xcassets */; };
+		A70000000000000000000003 /* CodexDashboardUI.app in Embed Helpers */ = {isa = PBXBuildFile; fileRef = B70000000000000000000003 /* CodexDashboardUI.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		A70000000000000000000004 /* Components.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* Components.swift */; };
+		A70000000000000000000005 /* ContentView.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* ContentView.swift */; };
+		A70000000000000000000006 /* DashboardStore.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* DashboardStore.swift */; };
+		A70000000000000000000007 /* ConversationInspectorView.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* ConversationInspectorView.swift */; };
+		A70000000000000000000008 /* CodexSourceWatcher.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* CodexSourceWatcher.swift */; };
+		A7000000000000000000000A /* DashboardHelperView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000004 /* DashboardHelperView.swift */; };
+		A7000000000000000000000B /* DashboardPreferences.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* DashboardPreferences.swift */; };
+		A50000000000000000000005 /* CodexMetricsCore.framework in Helper Frameworks */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* CodexMetricsCore.framework */; };
+		A80000000000000000000001 /* PopoverMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000001 /* PopoverMain.swift */; };
+		A80000000000000000000002 /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000002 /* MenuBarPopoverView.swift */; };
+		A80000000000000000000003 /* MenuBarStore.swift in Popover Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000007 /* MenuBarStore.swift */; };
+		A80000000000000000000004 /* DashboardPreferences.swift in Popover Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* DashboardPreferences.swift */; };
+		A80000000000000000000005 /* PopoverProcessProtocol.swift in Popover Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* PopoverProcessProtocol.swift */; };
+		A80000000000000000000006 /* CodexMetricsCore.framework in Popover Frameworks */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* CodexMetricsCore.framework */; };
+		A80000000000000000000007 /* CodexMetricsCore.framework in Popover Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* CodexMetricsCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A80000000000000000000008 /* CodexDashboardPopoverUI.app in Embed Helpers */ = {isa = PBXBuildFile; fileRef = B80000000000000000000003 /* CodexDashboardPopoverUI.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		A30000000000000000000001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000001 /* main.swift */; };
 		A40000000000000000000001 /* AnalyticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40000000000000000000001 /* AnalyticsTests.swift */; };
 		A50000000000000000000001 /* CodexMetricsCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* CodexMetricsCore.framework */; };
@@ -56,6 +76,34 @@
 			remoteGlobalIDString = D10000000000000000000001;
 			remoteInfo = CodexMetricsCore;
 		};
+		C10000000000000000000004 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D50000000000000000000001;
+			remoteInfo = CodexDashboardUI;
+		};
+		C10000000000000000000005 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D10000000000000000000001;
+			remoteInfo = CodexMetricsCore;
+		};
+		C10000000000000000000006 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D10000000000000000000001;
+			remoteInfo = CodexMetricsCore;
+		};
+		C10000000000000000000007 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D60000000000000000000001;
+			remoteInfo = CodexDashboardPopoverUI;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -66,6 +114,29 @@
 			dstSubfolderSpec = 10;
 			files = (
 				A50000000000000000000004 /* CodexMetricsCore.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E20000000000000000000005 /* Embed Helpers */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "../Helpers";
+			dstSubfolderSpec = 13;
+			files = (
+				A70000000000000000000003 /* CodexDashboardUI.app in Embed Helpers */,
+				A80000000000000000000008 /* CodexDashboardPopoverUI.app in Embed Helpers */,
+			);
+			name = "Embed Helpers";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E60000000000000000000003 /* Popover Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				A80000000000000000000007 /* CodexMetricsCore.framework in Popover Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -91,12 +162,26 @@
 		B20000000000000000000004 /* DashboardStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardStore.swift; sourceTree = "<group>"; };
 		B20000000000000000000005 /* ConversationInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationInspectorView.swift; sourceTree = "<group>"; };
 		B20000000000000000000006 /* CodexSourceWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSourceWatcher.swift; sourceTree = "<group>"; };
+		B20000000000000000000007 /* MenuBarStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStore.swift; sourceTree = "<group>"; };
+		B20000000000000000000008 /* DashboardProcessCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardProcessCoordinator.swift; sourceTree = "<group>"; };
+		B20000000000000000000009 /* DashboardPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardPreferences.swift; sourceTree = "<group>"; };
+		B2000000000000000000000A /* PopoverProcessProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverProcessProtocol.swift; sourceTree = "<group>"; };
+		B2000000000000000000000B /* PopoverProcessCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverProcessCoordinator.swift; sourceTree = "<group>"; };
+		B2000000000000000000000C /* StatusItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusItemController.swift; sourceTree = "<group>"; };
+		B70000000000000000000001 /* HelperMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperMain.swift; sourceTree = "<group>"; };
+		B70000000000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B30000000000000000000001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		B40000000000000000000001 /* AnalyticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalyticsTests.swift; sourceTree = "<group>"; };
 		B50000000000000000000001 /* CodexMetricsCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = CodexMetricsCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		B50000000000000000000002 /* CodexDashboard.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexDashboard.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B50000000000000000000003 /* codex-metrics */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "codex-metrics"; sourceTree = BUILT_PRODUCTS_DIR; };
 		B50000000000000000000004 /* CodexMetricsCoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CodexMetricsCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B70000000000000000000003 /* CodexDashboardUI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexDashboardUI.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B70000000000000000000004 /* DashboardHelperView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardHelperView.swift; sourceTree = "<group>"; };
+		B80000000000000000000001 /* PopoverMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverMain.swift; sourceTree = "<group>"; };
+		B80000000000000000000002 /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../CodexDashboardUI/MenuBarPopoverView.swift; sourceTree = "<group>"; };
+		B80000000000000000000003 /* CodexDashboardPopoverUI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexDashboardPopoverUI.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B80000000000000000000004 /* Popover Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B60000000000000000000001 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		B60000000000000000000002 /* METRICS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = METRICS.md; sourceTree = "<group>"; };
 		B60000000000000000000003 /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Package.swift; sourceTree = "<group>"; };
@@ -136,6 +221,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E50000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A50000000000000000000005 /* CodexMetricsCore.framework in Helper Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E60000000000000000000002 /* Popover Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A80000000000000000000006 /* CodexMetricsCore.framework in Popover Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -154,9 +255,11 @@
 		F10000000000000000000002 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
-				F10000000000000000000003 /* CodexMetricsCore */,
-				F10000000000000000000004 /* CodexDashboard */,
-				F10000000000000000000005 /* CodexMetricsCLI */,
+					F10000000000000000000003 /* CodexMetricsCore */,
+					F10000000000000000000004 /* CodexDashboard */,
+					F10000000000000000000009 /* CodexDashboardUI */,
+					F1000000000000000000000A /* CodexDashboardPopoverUI */,
+					F10000000000000000000005 /* CodexMetricsCLI */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -184,14 +287,40 @@
 			children = (
 				64486C0F3039A9F800BD3175 /* Info.plist */,
 				B20000000000000000000001 /* CodexDashboardApp.swift */,
+				B20000000000000000000008 /* DashboardProcessCoordinator.swift */,
 				B20000000000000000000002 /* Components.swift */,
 				B20000000000000000000003 /* ContentView.swift */,
 				B20000000000000000000004 /* DashboardStore.swift */,
 				B20000000000000000000005 /* ConversationInspectorView.swift */,
 				B20000000000000000000006 /* CodexSourceWatcher.swift */,
+				B20000000000000000000007 /* MenuBarStore.swift */,
+				B20000000000000000000009 /* DashboardPreferences.swift */,
+				B2000000000000000000000A /* PopoverProcessProtocol.swift */,
+				B2000000000000000000000B /* PopoverProcessCoordinator.swift */,
+				B2000000000000000000000C /* StatusItemController.swift */,
 				B60000000000000000000004 /* Assets.xcassets */,
 			);
 			path = CodexDashboard;
+			sourceTree = "<group>";
+		};
+		F10000000000000000000009 /* CodexDashboardUI */ = {
+			isa = PBXGroup;
+			children = (
+				B70000000000000000000004 /* DashboardHelperView.swift */,
+				B70000000000000000000001 /* HelperMain.swift */,
+				B70000000000000000000002 /* Info.plist */,
+			);
+			path = CodexDashboardUI;
+			sourceTree = "<group>";
+		};
+		F1000000000000000000000A /* CodexDashboardPopoverUI */ = {
+			isa = PBXGroup;
+			children = (
+				B80000000000000000000001 /* PopoverMain.swift */,
+				B80000000000000000000002 /* MenuBarPopoverView.swift */,
+				B80000000000000000000004 /* Popover Info.plist */,
+			);
+			path = CodexDashboardPopoverUI;
 			sourceTree = "<group>";
 		};
 		F10000000000000000000005 /* CodexMetricsCLI */ = {
@@ -215,6 +344,8 @@
 			children = (
 				B50000000000000000000001 /* CodexMetricsCore.framework */,
 				B50000000000000000000002 /* CodexDashboard.app */,
+				B70000000000000000000003 /* CodexDashboardUI.app */,
+				B80000000000000000000003 /* CodexDashboardPopoverUI.app */,
 				B50000000000000000000003 /* codex-metrics */,
 				B50000000000000000000004 /* CodexMetricsCoreTests.xctest */,
 			);
@@ -256,15 +387,54 @@
 				E20000000000000000000002 /* Frameworks */,
 				E20000000000000000000004 /* Resources */,
 				E20000000000000000000003 /* Embed Frameworks */,
+				E20000000000000000000005 /* Embed Helpers */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				C20000000000000000000001 /* PBXTargetDependency */,
+				C20000000000000000000004 /* PBXTargetDependency */,
+				C20000000000000000000007 /* PBXTargetDependency */,
 			);
 			name = CodexDashboard;
 			productName = CodexDashboard;
 			productReference = B50000000000000000000002 /* CodexDashboard.app */;
+			productType = "com.apple.product-type.application";
+		};
+		D50000000000000000000001 /* CodexDashboardUI */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F35000000000000000000001 /* Build configuration list for PBXNativeTarget "CodexDashboardUI" */;
+			buildPhases = (
+				E50000000000000000000001 /* Sources */,
+				E50000000000000000000002 /* Frameworks */,
+				E50000000000000000000004 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C20000000000000000000005 /* PBXTargetDependency */,
+			);
+			name = CodexDashboardUI;
+			productName = CodexDashboardUI;
+			productReference = B70000000000000000000003 /* CodexDashboardUI.app */;
+			productType = "com.apple.product-type.application";
+		};
+		D60000000000000000000001 /* CodexDashboardPopoverUI */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F36000000000000000000001 /* Build configuration list for PBXNativeTarget "CodexDashboardPopoverUI" */;
+			buildPhases = (
+				E60000000000000000000001 /* Sources */,
+				E60000000000000000000002 /* Frameworks */,
+				E60000000000000000000003 /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C20000000000000000000006 /* PBXTargetDependency */,
+			);
+			name = CodexDashboardPopoverUI;
+			productName = CodexDashboardPopoverUI;
+			productReference = B80000000000000000000003 /* CodexDashboardPopoverUI.app */;
 			productType = "com.apple.product-type.application";
 		};
 		D30000000000000000000001 /* CodexMetricsCLI */ = {
@@ -317,6 +487,12 @@
 					D20000000000000000000001 = {
 						CreatedOnToolsVersion = 26.0;
 					};
+					D50000000000000000000001 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					D60000000000000000000001 = {
+						CreatedOnToolsVersion = 26.0;
+					};
 					D30000000000000000000001 = {
 						CreatedOnToolsVersion = 26.0;
 					};
@@ -341,16 +517,26 @@
 			productRefGroup = F10000000000000000000007 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
-			targets = (
-				D20000000000000000000001 /* CodexDashboard */,
-				D10000000000000000000001 /* CodexMetricsCore */,
-				D30000000000000000000001 /* CodexMetricsCLI */,
+				targets = (
+					D20000000000000000000001 /* CodexDashboard */,
+					D10000000000000000000001 /* CodexMetricsCore */,
+					D50000000000000000000001 /* CodexDashboardUI */,
+					D60000000000000000000001 /* CodexDashboardPopoverUI */,
+					D30000000000000000000001 /* CodexMetricsCLI */,
 				D40000000000000000000001 /* CodexMetricsCoreTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		E50000000000000000000004 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A70000000000000000000002 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		E20000000000000000000004 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -385,11 +571,12 @@
 			buildActionMask = 2147483647;
 			files = (
 				A20000000000000000000001 /* CodexDashboardApp.swift in Sources */,
-				A20000000000000000000002 /* Components.swift in Sources */,
-				A20000000000000000000003 /* ContentView.swift in Sources */,
-				A20000000000000000000004 /* DashboardStore.swift in Sources */,
-				A20000000000000000000005 /* ConversationInspectorView.swift in Sources */,
-				A20000000000000000000006 /* CodexSourceWatcher.swift in Sources */,
+				A20000000000000000000007 /* MenuBarStore.swift in Sources */,
+				A20000000000000000000008 /* DashboardProcessCoordinator.swift in Sources */,
+				A20000000000000000000009 /* DashboardPreferences.swift in Sources */,
+				A2000000000000000000000A /* PopoverProcessProtocol.swift in Sources */,
+				A2000000000000000000000B /* PopoverProcessCoordinator.swift in Sources */,
+				A2000000000000000000000C /* StatusItemController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -406,6 +593,33 @@
 			buildActionMask = 2147483647;
 			files = (
 				A40000000000000000000001 /* AnalyticsTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E50000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A70000000000000000000001 /* HelperMain.swift in Sources */,
+				A70000000000000000000004 /* Components.swift in Helper Sources */,
+				A70000000000000000000005 /* ContentView.swift in Helper Sources */,
+				A70000000000000000000006 /* DashboardStore.swift in Helper Sources */,
+				A70000000000000000000007 /* ConversationInspectorView.swift in Helper Sources */,
+				A70000000000000000000008 /* CodexSourceWatcher.swift in Helper Sources */,
+				A7000000000000000000000A /* DashboardHelperView.swift in Sources */,
+				A7000000000000000000000B /* DashboardPreferences.swift in Helper Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E60000000000000000000001 /* Popover Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A80000000000000000000001 /* PopoverMain.swift in Sources */,
+				A80000000000000000000002 /* MenuBarPopoverView.swift in Sources */,
+				A80000000000000000000003 /* MenuBarStore.swift in Popover Sources */,
+				A80000000000000000000004 /* DashboardPreferences.swift in Popover Sources */,
+				A80000000000000000000005 /* PopoverProcessProtocol.swift in Popover Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -426,6 +640,26 @@
 			isa = PBXTargetDependency;
 			target = D10000000000000000000001 /* CodexMetricsCore */;
 			targetProxy = C10000000000000000000003 /* PBXContainerItemProxy */;
+		};
+		C20000000000000000000004 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D50000000000000000000001 /* CodexDashboardUI */;
+			targetProxy = C10000000000000000000004 /* PBXContainerItemProxy */;
+		};
+		C20000000000000000000005 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D10000000000000000000001 /* CodexMetricsCore */;
+			 targetProxy = C10000000000000000000005 /* PBXContainerItemProxy */;
+		};
+		C20000000000000000000006 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D10000000000000000000001 /* CodexMetricsCore */;
+			targetProxy = C10000000000000000000006 /* PBXContainerItemProxy */;
+		};
+		C20000000000000000000007 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D60000000000000000000001 /* CodexDashboardPopoverUI */;
+			targetProxy = C10000000000000000000007 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -557,6 +791,92 @@
 			};
 			name = Release;
 		};
+		F45000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 20260823190317;
+				DEVELOPMENT_TEAM = 4LK28PK96X;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Sources/CodexDashboardUI/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.5;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chunyangwen.CodexDashboard.DashboardUI;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		F45000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 20260823190317;
+				DEVELOPMENT_TEAM = 4LK28PK96X;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Sources/CodexDashboardUI/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.5;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chunyangwen.CodexDashboard.DashboardUI;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		F46000000000000000000001 /* Popover Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 20260823190317;
+				DEVELOPMENT_TEAM = 4LK28PK96X;
+				ENABLE_HARDENED_RUNTIME = YES;
+				INFOPLIST_FILE = Sources/CodexDashboardPopoverUI/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.5;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chunyangwen.CodexDashboard.PopoverUI;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		F46000000000000000000002 /* Popover Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 20260823190317;
+				DEVELOPMENT_TEAM = 4LK28PK96X;
+				ENABLE_HARDENED_RUNTIME = YES;
+				INFOPLIST_FILE = Sources/CodexDashboardPopoverUI/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.5;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chunyangwen.CodexDashboard.PopoverUI;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
 		F43000000000000000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -643,6 +963,24 @@
 			buildConfigurations = (
 				F42000000000000000000001 /* Debug */,
 				F42000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F35000000000000000000001 /* Build configuration list for PBXNativeTarget "CodexDashboardUI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F45000000000000000000001 /* Debug */,
+				F45000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F36000000000000000000001 /* Build configuration list for PBXNativeTarget "CodexDashboardPopoverUI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F46000000000000000000001 /* Popover Debug */,
+				F46000000000000000000002 /* Popover Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -17,7 +17,7 @@ final class PreferencesTests: XCTestCase {
         XCTAssertEqual(initialStore.range, .month)
 
         initialStore.updateRange(.week)
-        XCTAssertEqual(defaults.string(forKey: "dashboardRange"), "Week")
+        XCTAssertEqual(defaults.string(forKey: DashboardPreferences.dashboardRangeKey), "Week")
 
         let restoredStore = DashboardStore(userHome: userHome, defaults: defaults)
         XCTAssertEqual(restoredStore.range, .week)
@@ -34,5 +34,25 @@ final class PreferencesTests: XCTestCase {
 
         XCTAssertEqual(calendar.component(.weekday, from: interval.start), 2)
         XCTAssertTrue(interval.contains(sunday))
+    }
+
+    func testPersistedKeysAreCentralized() {
+        XCTAssertEqual(
+            DashboardPreferences.allPersistedKeys,
+            Set([
+                DashboardPreferences.migrationVersionKey,
+                DashboardPreferences.codexDataPathKey,
+                DashboardPreferences.metricsRefreshIntervalKey,
+                DashboardPreferences.weekStartsMondayKey,
+                DashboardPreferences.dashboardRangeKey,
+                DashboardPreferences.overviewActivityMetricKey,
+                DashboardPreferences.projectActivityMetricKey,
+                DashboardPreferences.showMenuBarIconKey,
+                DashboardPreferences.menuBarQuotaIconStyleKey,
+                DashboardPreferences.showQuotaAlertMarkerKey,
+                DashboardPreferences.quotaAlertUsedPercentKey,
+                DashboardPreferences.menuBarUsageTrendMetricKey
+            ])
+        )
     }
 }

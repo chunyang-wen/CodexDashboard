@@ -1223,15 +1223,24 @@ final class MetricsDatabase: @unchecked Sendable {
         try storeMetadata(subscription, key: "subscription")
     }
 
-    func menuBarMetrics() throws -> MenuBarMetricsSnapshot? {
+    func menuBarMetrics(maxDays: Int? = nil) throws -> MenuBarMetricsSnapshot? {
         let days: [MenuBarDayMetrics] = try lockedThrowing {
-            guard let statement = prepare("SELECT metric FROM menu_bar_daily ORDER BY day") else { throw databaseError() }
+            let query = maxDays == nil
+                ? "SELECT metric FROM menu_bar_daily ORDER BY day"
+                : "SELECT metric FROM menu_bar_daily ORDER BY day DESC LIMIT ?"
+            guard let statement = prepare(query) else { throw databaseError() }
             defer { sqlite3_finalize(statement) }
+            if let maxDays {
+                sqlite3_bind_int64(statement, 1, Int64(max(0, maxDays)))
+            }
             let decoder = Self.decoder()
             var result: [MenuBarDayMetrics] = []
             while sqlite3_step(statement) == SQLITE_ROW {
                 guard let bytes = data(statement, 0) else { continue }
                 result.append(try decoder.decode(MenuBarDayMetrics.self, from: bytes))
+            }
+            if maxDays != nil {
+                result.reverse()
             }
             return result
         }
@@ -1240,7 +1249,17 @@ final class MetricsDatabase: @unchecked Sendable {
             return MenuBarMetricsSnapshot(generatedAt: generatedAt, days: days)
         }
         // Compatibility read for databases created before the per-day projection.
-        return try metadata(MenuBarMetricsSnapshot.self, key: "menu_bar_metrics")
+        guard let snapshot = try metadata(MenuBarMetricsSnapshot.self, key: "menu_bar_metrics") else {
+            return nil
+        }
+        let orderedDays = snapshot.days.sorted { $0.day < $1.day }
+        guard let maxDays, orderedDays.count > maxDays else {
+            return MenuBarMetricsSnapshot(generatedAt: snapshot.generatedAt, days: orderedDays)
+        }
+        return MenuBarMetricsSnapshot(
+            generatedAt: snapshot.generatedAt,
+            days: Array(orderedDays.suffix(max(0, maxDays)))
+        )
     }
 
     func storeMenuBarMetrics(_ snapshot: MenuBarMetricsSnapshot) throws {
@@ -1722,6 +1741,8 @@ public struct DurationArrays: Sendable {
 }
 
 public actor HistoricalStore {
+    public static let menuBarMetricsReadWindowDays = 45
+
     public let url: URL
     private var archive: HistoricalArchive?
     private let database: MetricsDatabase?
@@ -2045,8 +2066,10 @@ public actor HistoricalStore {
         return try database?.historicalSessionCount() == 0
     }
 
-    public func menuBarMetricsSnapshot() throws -> MenuBarMetricsSnapshot? {
-        try database?.menuBarMetrics()
+    public func menuBarMetricsSnapshot(
+        maxDays: Int = HistoricalStore.menuBarMetricsReadWindowDays
+    ) throws -> MenuBarMetricsSnapshot? {
+        try database?.menuBarMetrics(maxDays: maxDays)
     }
 
     public func menuBarMetricsFromDaily(since: Date) throws -> MenuBarMetricsSnapshot? {
@@ -2057,7 +2080,7 @@ public actor HistoricalStore {
         // generatedAt changes on every refresh; compare the actual compact
         // metrics so an unchanged snapshot does not create another SQLite/WAL
         // transaction.
-        if let existing = try database?.menuBarMetrics(), existing.days == snapshot.days {
+        if let existing = try database?.menuBarMetrics(maxDays: nil), existing.days == snapshot.days {
             return
         }
         try database?.storeMenuBarMetrics(snapshot)

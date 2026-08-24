@@ -2,10 +2,25 @@ import AppKit
 import CodexMetricsCore
 import SwiftUI
 
-struct ConversationWindowRequest: Codable, Hashable {
+struct ConversationWindowRequest: Codable, Hashable, Sendable {
     let rolloutPath: String
     let sessionTitle: String
     let projectName: String
+}
+
+struct DashboardConversationOpenAction: @unchecked Sendable {
+    let open: @MainActor @Sendable (ConversationWindowRequest) -> Void
+}
+
+private struct DashboardConversationOpenActionKey: EnvironmentKey {
+    static let defaultValue: DashboardConversationOpenAction? = nil
+}
+
+extension EnvironmentValues {
+    var dashboardConversationOpenAction: DashboardConversationOpenAction? {
+        get { self[DashboardConversationOpenActionKey.self] }
+        set { self[DashboardConversationOpenActionKey.self] = newValue }
+    }
 }
 
 struct ConversationDebuggerWindow: View {
