@@ -105,6 +105,15 @@ final class MigrationTests: XCTestCase {
                 value BLOB NOT NULL
             )
             """)
+        try sqlite.execute("""
+            CREATE TABLE IF NOT EXISTS skill_daily (
+                session_id TEXT NOT NULL,
+                day REAL NOT NULL,
+                skill TEXT NOT NULL,
+                calls INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(session_id, day, skill)
+            )
+            """)
 
         // Insert a JSON blob that matches the old format
         let day = Date(timeIntervalSince1970: 1_700_000_000)
@@ -118,11 +127,18 @@ final class MigrationTests: XCTestCase {
             activeRuntime: 120,
             models: [ModelMetric(model: "gpt-4o", sessions: 1, usage: .init(input: 100, cachedInput: 50, cacheWriteInput: 0, output: 200, reasoningOutput: 20, total: 300), activeRuntime: 120, estimatedCost: 0.05)],
             tools: [],
-            skills: [],
+            skills: [SkillMetric(
+                skill: "frontend-design",
+                calls: 2,
+                attributedCalls: 2,
+                sessions: 1,
+                attributedUsage: .init(input: 10, output: 2, total: 12),
+                estimatedCost: 0.07
+            )],
             turnDurations: [60, 120],
             firstTokenTimes: [1.2],
             toolCalls: 3,
-            skillCalls: 1,
+            skillCalls: 2,
             completedTurns: 2
         )
         let encoder = JSONEncoder()
@@ -144,6 +160,8 @@ final class MigrationTests: XCTestCase {
         let modelCount = try sqlite.queryInt("SELECT COUNT(*) FROM daily_model")
         XCTAssertEqual(contributionCount, 1, "daily_contribution should have the migrated row")
         XCTAssertEqual(modelCount, 1, "daily_model should have the migrated model row")
+        let skillCost = try sqlite.queryDouble("SELECT cost FROM skill_daily WHERE skill = 'frontend-design'")
+        XCTAssertEqual(skillCost, 0.07, accuracy: 0.000001)
 
         // Verify the data is correct
         let totalTokens = try sqlite.queryInt("SELECT total_tokens FROM daily_contribution WHERE session_id = 'old-session-1'")
@@ -173,6 +191,12 @@ final class MigrationTests: XCTestCase {
         XCTAssertEqual(modelRows[0].usage.output, 200)
         XCTAssertEqual(modelRows[0].estimatedCost, 0.05)
         XCTAssertEqual(modelRows[0].activeRuntime, 120)
+
+        let skills = try await store.mergedSkills()
+        XCTAssertEqual(skills.count, 1)
+        XCTAssertEqual(skills[0].skill, "frontend-design")
+        XCTAssertEqual(skills[0].attributedCalls, 2)
+        XCTAssertEqual(skills[0].estimatedCost, 0.07, accuracy: 0.000001)
     }
 
     func testAggregateQueriesFilterByProjectAndDate() async throws {
@@ -268,6 +292,16 @@ final class SQLiteTestHelper {
         }
         defer { sqlite3_finalize(stmt) }
         return sqlite3_column_int64(stmt!, 0)
+    }
+
+    func queryDouble(_ sql: String) throws -> Double {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK,
+              sqlite3_step(stmt!) == SQLITE_ROW else {
+            throw NSError(domain: "test", code: 4)
+        }
+        defer { sqlite3_finalize(stmt) }
+        return sqlite3_column_double(stmt!, 0)
     }
 
     func queryText(_ sql: String) throws -> String {

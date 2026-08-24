@@ -783,9 +783,9 @@ final class DashboardStore: ObservableObject {
                                        estimatedCost: Decimal(tool.estimatedCost))
                         },
                         skills: skills.map { skill in
-                            SkillMetric(skill: skill.skill, calls: skill.calls, attributedCalls: 0,
+                            SkillMetric(skill: skill.skill, calls: skill.calls, attributedCalls: skill.attributedCalls,
                                         sessions: skill.sessions, attributedUsage: .zero,
-                                        estimatedCost: 0)
+                                        estimatedCost: Decimal(skill.estimatedCost))
                         },
                         granularity: granularity
                     )

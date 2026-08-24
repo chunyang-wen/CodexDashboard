@@ -157,9 +157,17 @@ final class MetricsDatabase: @unchecked Sendable {
                 day             REAL NOT NULL,
                 skill           TEXT NOT NULL,
                 calls           INTEGER NOT NULL DEFAULT 0,
+                attributed_calls INTEGER NOT NULL DEFAULT 0,
+                cost            REAL NOT NULL DEFAULT 0,
                 PRIMARY KEY(session_id, day, skill)
             )
             """)
+        if tableExists("skill_daily") && !tableHasColumn("skill_daily", named: "attributed_calls") {
+            try execute("ALTER TABLE skill_daily ADD COLUMN attributed_calls INTEGER NOT NULL DEFAULT 0")
+        }
+        if tableExists("skill_daily") && !tableHasColumn("skill_daily", named: "cost") {
+            try execute("ALTER TABLE skill_daily ADD COLUMN cost REAL NOT NULL DEFAULT 0")
+        }
         try execute("CREATE INDEX IF NOT EXISTS idx_daily_day ON daily_contribution(day)")
         try execute("CREATE INDEX IF NOT EXISTS idx_daily_project_day ON daily_contribution(project_path, day)")
         try execute("CREATE INDEX IF NOT EXISTS idx_daily_model_model ON daily_model(model)")
@@ -172,6 +180,10 @@ final class MetricsDatabase: @unchecked Sendable {
         if tableExists("metric_daily_index") && !tableExists("daily_model_cached_input_filled") {
             try migrateDailyModelCachedInput()
             try execute("CREATE TABLE IF NOT EXISTS daily_model_cached_input_filled (done INTEGER)")
+        }
+        if tableExists("metric_daily_index") && !tableExists("skill_daily_attribution_filled") {
+            try migrateSkillDailyAttribution()
+            try execute("CREATE TABLE IF NOT EXISTS skill_daily_attribution_filled (done INTEGER)")
         }
     }
 
@@ -211,6 +223,54 @@ final class MetricsDatabase: @unchecked Sendable {
             bind(entry.sessionID, to: update, at: 2)
             sqlite3_bind_double(update, 3, entry.day)
             guard sqlite3_step(update) == SQLITE_DONE else { throw databaseError() }
+        }
+    }
+
+    /// One-time backfill for skill attribution columns added after skill names
+    /// were first moved into the typed daily index.
+    private func migrateSkillDailyAttribution() throws {
+        let decoder = Self.decoder()
+        let rows: [(sessionID: String, day: Double, data: Data)] = try lockedThrowing {
+            guard let statement = prepare("SELECT session_id, day, metric FROM metric_daily_index") else {
+                throw databaseError()
+            }
+            defer { sqlite3_finalize(statement) }
+            var result: [(String, Double, Data)] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let idBytes = sqlite3_column_text(statement, 0),
+                      let blob = data(statement, 2) else { continue }
+                result.append((String(cString: idBytes), sqlite3_column_double(statement, 1), blob))
+            }
+            return result
+        }
+
+        struct SkillRow {
+            let sessionID: String
+            let day: Double
+            let skill: SkillMetric
+        }
+        let skillRows = rows.flatMap { row -> [SkillRow] in
+            guard let metric = try? decoder.decode(IndexedDailyMetrics.self, from: row.data) else { return [] }
+            return metric.skills.map { SkillRow(sessionID: row.sessionID, day: row.day, skill: $0) }
+        }
+
+        try transaction {
+            guard let insertSkill = prepare("""
+                INSERT OR REPLACE INTO skill_daily(session_id, day, skill, calls, attributed_calls, cost)
+                VALUES(?,?,?,?,?,?)
+                """) else { throw databaseError() }
+            defer { sqlite3_finalize(insertSkill) }
+            for row in skillRows {
+                sqlite3_reset(insertSkill)
+                sqlite3_clear_bindings(insertSkill)
+                bind(row.sessionID, to: insertSkill, at: 1)
+                sqlite3_bind_double(insertSkill, 2, row.day)
+                bind(row.skill.skill, to: insertSkill, at: 3)
+                sqlite3_bind_int64(insertSkill, 4, Int64(row.skill.calls))
+                sqlite3_bind_int64(insertSkill, 5, Int64(row.skill.attributedCalls))
+                sqlite3_bind_double(insertSkill, 6, NSDecimalNumber(decimal: row.skill.estimatedCost).doubleValue)
+                guard sqlite3_step(insertSkill) == SQLITE_DONE else { throw databaseError() }
+            }
         }
     }
 
@@ -364,7 +424,7 @@ final class MetricsDatabase: @unchecked Sendable {
             // Extract tool and skill data from the same decoded blobs
             let decoder2 = Self.decoder()
             var toolRows: [(sessionID: String, day: Double, tool: String, calls: Int32, attributedCalls: Int32, cost: Double)] = []
-            var skillRows: [(sessionID: String, day: Double, skill: String, calls: Int32)] = []
+            var skillRows: [(sessionID: String, day: Double, skill: String, calls: Int32, attributedCalls: Int32, cost: Double)] = []
             for rowData in rows {
                 guard let metric = try? decoder2.decode(IndexedDailyMetrics.self, from: rowData.data) else { continue }
                 for tool in metric.tools {
@@ -382,7 +442,9 @@ final class MetricsDatabase: @unchecked Sendable {
                         sessionID: rowData.sessionID,
                         day: rowData.day,
                         skill: skill.skill,
-                        calls: Int32(skill.calls)
+                        calls: Int32(skill.calls),
+                        attributedCalls: Int32(skill.attributedCalls),
+                        cost: NSDecimalNumber(decimal: skill.estimatedCost).doubleValue
                     ))
                 }
             }
@@ -408,7 +470,8 @@ final class MetricsDatabase: @unchecked Sendable {
 
             if !skillRows.isEmpty {
                 guard let insertSkill = prepare("""
-                    INSERT OR REPLACE INTO skill_daily(session_id, day, skill, calls) VALUES(?,?,?,?)
+                    INSERT OR REPLACE INTO skill_daily(session_id, day, skill, calls, attributed_calls, cost)
+                    VALUES(?,?,?,?,?,?)
                     """) else { throw databaseError() }
                 defer { sqlite3_finalize(insertSkill) }
                 for row in skillRows {
@@ -416,6 +479,8 @@ final class MetricsDatabase: @unchecked Sendable {
                     sqlite3_bind_double(insertSkill, 2, row.day)
                     bind(row.skill, to: insertSkill, at: 3)
                     sqlite3_bind_int64(insertSkill, 4, Int64(row.calls))
+                    sqlite3_bind_int64(insertSkill, 5, Int64(row.attributedCalls))
+                    sqlite3_bind_double(insertSkill, 6, row.cost)
                     guard sqlite3_step(insertSkill) == SQLITE_DONE else { throw databaseError() }
                     sqlite3_reset(insertSkill)
                     sqlite3_clear_bindings(insertSkill)
@@ -521,7 +586,8 @@ final class MetricsDatabase: @unchecked Sendable {
         }
         if !day.skills.isEmpty {
             guard let insertSkill = prepare("""
-                INSERT OR REPLACE INTO skill_daily(session_id, day, skill, calls) VALUES(?,?,?,?)
+                INSERT OR REPLACE INTO skill_daily(session_id, day, skill, calls, attributed_calls, cost)
+                VALUES(?,?,?,?,?,?)
                 """) else { throw databaseError() }
             defer { sqlite3_finalize(insertSkill) }
             for skill in day.skills {
@@ -531,6 +597,8 @@ final class MetricsDatabase: @unchecked Sendable {
                 sqlite3_bind_double(insertSkill, 2, dayKey)
                 bind(skill.skill, to: insertSkill, at: 3)
                 sqlite3_bind_int64(insertSkill, 4, Int64(skill.calls))
+                sqlite3_bind_int64(insertSkill, 5, Int64(skill.attributedCalls))
+                sqlite3_bind_double(insertSkill, 6, NSDecimalNumber(decimal: skill.estimatedCost).doubleValue)
                 guard sqlite3_step(insertSkill) == SQLITE_DONE else { throw databaseError() }
             }
         }
@@ -958,7 +1026,7 @@ final class MetricsDatabase: @unchecked Sendable {
     ) throws -> [MergedSkillResult] {
         try lockedThrowing {
             var sql = """
-                SELECT s.skill, SUM(s.calls), COUNT(DISTINCT s.session_id)
+                SELECT s.skill, SUM(s.calls), SUM(s.attributed_calls), COUNT(DISTINCT s.session_id), SUM(s.cost)
                 FROM skill_daily s
                 JOIN daily_contribution c ON c.session_id = s.session_id AND c.day = s.day
                 WHERE 1=1
@@ -979,7 +1047,9 @@ final class MetricsDatabase: @unchecked Sendable {
                 results.append(MergedSkillResult(
                     skill: String(cString: bytes),
                     calls: Int(int64OrZero(statement, 1)),
-                    sessions: Int(int64OrZero(statement, 2))
+                    attributedCalls: Int(int64OrZero(statement, 2)),
+                    sessions: Int(int64OrZero(statement, 3)),
+                    estimatedCost: doubleOrZero(statement, 4)
                 ))
             }
             return results
@@ -2032,7 +2102,9 @@ public struct MergedToolResult: Sendable {
 public struct MergedSkillResult: Sendable {
     public let skill: String
     public let calls: Int
+    public let attributedCalls: Int
     public let sessions: Int
+    public let estimatedCost: Double
 }
 
 /// Duration arrays extracted from typed daily blobs.
