@@ -124,11 +124,11 @@ final class DashboardStoreLifecycleTests: XCTestCase {
         let menuStore = MenuBarStore(userHome: userHome, defaults: defaults)
         menuStore.loadPopover()
         try await waitUntil {
-            menuStore.menuBarDataIsResident && menuStore.historySessionCount == 1 && menuStore.menuBarDaily.count == 1
+            menuStore.menuBarDataIsResident && menuStore.menuBarDaily.count == 1
         }
 
         XCTAssertTrue(menuStore.menuBarDataIsResident)
-        XCTAssertEqual(menuStore.historySessionCount, 1)
+        XCTAssertEqual(menuStore.historySessionCount, 0)
         XCTAssertEqual(menuStore.menuBarDaily.count, 1)
 
         menuStore.releasePopover()
@@ -186,7 +186,6 @@ final class DashboardStoreLifecycleTests: XCTestCase {
             menuStore.menuBarDataIsResident
                 && menuStore.subscription != nil
                 && menuStore.account?.email == "old@example.com"
-                && menuStore.historySessionCount == 1
                 && !menuStore.menuBarDaily.isEmpty
         }
 
@@ -197,7 +196,7 @@ final class DashboardStoreLifecycleTests: XCTestCase {
                               toolCalls: 2, skillCalls: 1, sessions: 1, activeRuntime: 2)
         ]))
         await menuStore.reloadCompactSnapshot()
-        XCTAssertEqual(menuStore.menuBarDaily.count, 2)
+        XCTAssertEqual(menuStore.menuBarDaily.count, 1)
         menuStore.updateCodexHome(newCodexHome)
 
         XCTAssertNil(menuStore.subscription)

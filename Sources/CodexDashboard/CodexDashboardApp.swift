@@ -89,7 +89,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
 
     let dashboardCoordinator: DashboardProcessCoordinator
     let menuStore: MenuBarStore
-    let popoverCoordinator: PopoverProcessCoordinator
     private var statusItemController: StatusItemController?
     private var updaterController: SPUStandardUpdaterController!
     private var lifecycleObservation: AnyObject?
@@ -99,18 +98,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
         let defaults = DashboardPreferences.migrateLegacyDefaults()
         let helperURL = Bundle.main.bundleURL
             .appendingPathComponent("Contents/Helpers/CodexDashboardUI.app", isDirectory: true)
-        let popoverURL = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/Helpers/CodexDashboardPopoverUI.app", isDirectory: true)
         dashboardCoordinator = DashboardProcessCoordinator(helperURL: helperURL)
         menuStore = MenuBarStore(defaults: defaults)
-        popoverCoordinator = PopoverProcessCoordinator(popoverURL: popoverURL)
         super.init()
         Self.shared = self
         menuStore.settingsDidChange = { [weak self] in
             self?.dashboardCoordinator.settingsChanged()
-        }
-        popoverCoordinator.commandHandler = { [weak self] command in
-            self?.handlePopoverCommand(command)
         }
         dashboardCoordinator.stateDidChange = { state in
             if state == .stopped { AppActivationPolicy.hideDockIconIfNoManagedWindowIsVisible() }
@@ -131,13 +124,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if popoverCoordinator.state != .stopped {
-            popoverCoordinator.terminate { [weak self] in
-                NSApp.reply(toApplicationShouldTerminate: true)
-                self?.popoverCoordinator.helperDidTerminate()
-            }
-            return .terminateLater
-        }
+        statusItemController?.dismissPopover()
         return productTerminationGate.applicationShouldTerminate(
             helperState: dashboardCoordinator.state,
             terminateHelper: { [weak self] completion in
@@ -150,7 +137,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        requestDashboardAfterPopover()
+        requestDashboard()
         return true
     }
 
@@ -164,8 +151,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
         NSApp.setActivationPolicy(.regular)
         statusItemController = StatusItemController(
             store: menuStore,
-            popoverCoordinator: popoverCoordinator,
-            defaults: DashboardPreferences.sharedDefaults()
+            defaults: DashboardPreferences.sharedDefaults(),
+            commandHandler: { [weak self] command in self?.handlePopoverCommand(command) }
         )
         menuStore.startMenuBarMonitoring()
         lifecycleObservation = DistributedDashboardLifecycleBus().observe { [weak self] message in
@@ -192,7 +179,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
             object: nil
         )
 
-        requestDashboardAfterPopover()
+        requestDashboard()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(windowWillClose(_:)),
@@ -219,10 +206,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
     }
 
     private func requestProductQuit() {
-        guard popoverCoordinator.state == .stopped else {
-            popoverCoordinator.terminate { [weak self] in self?.requestProductQuit() }
-            return
-        }
+        statusItemController?.dismissPopover()
         productTerminationGate.requestFromHelper(
             helperState: dashboardCoordinator.state,
             terminateHelper: { [weak self] completion in
@@ -234,27 +218,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
         )
     }
 
-    private func handlePopoverCommand(_ command: PopoverLifecycleCommand) {
+    private func handlePopoverCommand(_ command: MenuBarPopoverCommand) {
         switch command {
         case .openDashboard:
-            requestDashboardAfterPopover()
+            requestDashboard()
         case .openSettings:
-            popoverCoordinator.terminate {
-                AppActivationPolicy.showDockIcon()
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-            }
+            AppActivationPolicy.showDockIcon()
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         case .quitProduct:
             requestProductQuit()
-        case .ready, .closing, .focus:
-            break
         }
     }
 
-    private func requestDashboardAfterPopover() {
-        guard popoverCoordinator.state == .stopped else {
-            popoverCoordinator.terminate { [weak self] in self?.dashboardCoordinator.requestDashboard() }
-            return
-        }
+    private func requestDashboard() {
+        statusItemController?.dismissPopover()
         dashboardCoordinator.requestDashboard()
     }
 

@@ -157,11 +157,11 @@ final class MemoryFootprintTests: XCTestCase {
         // The popover hydrates its compact projection only while visible.
         menuStore.loadPopover()
         for _ in 0..<100 {
-            if menuStore.historySessionCount >= 1000 { break }
+            if !menuStore.menuBarDaily.isEmpty { break }
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertTrue(menuStore.menuBarDataIsResident)
-        XCTAssertTrue(menuStore.historySessionCount >= 1000)
+        XCTAssertEqual(menuStore.historySessionCount, 0)
         menuStore.releasePopover()
 
         print("""

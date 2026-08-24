@@ -76,7 +76,6 @@ struct MenuBarDashboardView: View {
                 .stroke(.separator.opacity(0.55), lineWidth: 0.5)
         }
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .onDisappear { store.releasePopover() }
     }
 
     private var sectionDivider: some View {

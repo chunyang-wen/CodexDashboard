@@ -1,4 +1,5 @@
 @testable import CodexDashboard
+import CodexMetricsCore
 import Foundation
 import XCTest
 

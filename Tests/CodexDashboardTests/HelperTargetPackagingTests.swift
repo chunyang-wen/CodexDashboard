@@ -20,12 +20,9 @@ final class HelperTargetPackagingTests: XCTestCase {
             encoding: .utf8
         )
         let popoverSource = try String(
-            contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboardPopoverUI/PopoverMain.swift"),
+            contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboard/MenuBarPopoverView.swift"),
             encoding: .utf8
         )
-        let popoverInfo = try XCTUnwrap(NSDictionary(
-            contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboardPopoverUI/Info.plist")
-        ) as? [String: Any])
         let statusItemSource = try String(
             contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboard/StatusItemController.swift"),
             encoding: .utf8
@@ -46,8 +43,8 @@ final class HelperTargetPackagingTests: XCTestCase {
         let info = try XCTUnwrap(NSDictionary(contentsOf: infoURL) as? [String: Any])
 
         XCTAssertTrue(project.contains("CodexDashboardUI"))
-        XCTAssertTrue(project.contains("CodexDashboardPopoverUI"))
-        XCTAssertTrue(project.contains("com.chunyangwen.CodexDashboard.PopoverUI"))
+        XCTAssertFalse(project.contains("CodexDashboardPopoverUI"))
+        XCTAssertFalse(project.contains("com.chunyangwen.CodexDashboard.PopoverUI"))
         XCTAssertTrue(project.contains("com.chunyangwen.CodexDashboard.DashboardUI"))
         XCTAssertTrue(project.contains("dstPath = \"../Helpers\";"))
         XCTAssertTrue(project.contains("dstSubfolderSpec = 13;"))
@@ -56,8 +53,6 @@ final class HelperTargetPackagingTests: XCTestCase {
         XCTAssertEqual(info["LSUIElement"] as? Bool, true)
         XCTAssertEqual(info["CFBundleIconName"] as? String, "AppIcon")
         XCTAssertNil(info["CFBundleDocumentTypes"])
-        XCTAssertEqual(popoverInfo["LSUIElement"] as? Bool, true)
-        XCTAssertEqual(popoverInfo["CFBundleDisplayName"] as? String, "Codex quota")
         XCTAssertFalse(project.contains("CodexDashboardUI" + " /* Sparkle"))
         XCTAssertFalse(helperSource.contains("Sparkle"))
         XCTAssertFalse(helperSource.contains("MenuBarExtra"))
@@ -100,12 +95,13 @@ final class HelperTargetPackagingTests: XCTestCase {
         XCTAssertTrue(statusItemSource.contains("com.chunyangwen.CodexDashboard.status-item"))
         XCTAssertTrue(statusItemSource.contains("setAccessibilityIdentifier"))
         XCTAssertTrue(statusItemSource.contains("setAccessibilityHelp"))
+        XCTAssertTrue(statusItemSource.contains("MenuBarPanel"))
+        XCTAssertTrue(statusItemSource.contains("MenuBarDashboardView"))
+        XCTAssertFalse(statusItemSource.contains("PopoverProcessCoordinator"))
         XCTAssertTrue(statusItemGateSource.contains("com.chunyangwen.CodexDashboard.status-item"))
         XCTAssertTrue(statusItemGateSource.contains("refusing an ordinal click"))
         XCTAssertFalse(statusItemGateSource.contains("UI elements of menu bar 1)[26]"))
         XCTAssertTrue(popoverSource.contains("MenuBarDashboardView"))
-        XCTAssertTrue(popoverSource.contains("PopoverProcessProtocol.hostToPopoverNotification"))
-        XCTAssertTrue(popoverSource.contains("NSApp.setActivationPolicy(.accessory)"))
-        XCTAssertTrue(popoverSource.contains("NSApp.terminate(nil)"))
+        XCTAssertFalse(hostSource.contains("PopoverProcessCoordinator"))
     }
 }
