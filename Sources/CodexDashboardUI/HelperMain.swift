@@ -125,7 +125,8 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
-        window.setContentSize(NSSize(width: 1280, height: 820))
+        window.contentMinSize = NSSize(width: 1280, height: 700)
+        window.setContentSize(NSSize(width: 1440, height: 820))
         window.center()
         window.delegate = self
         dashboardWindow = window

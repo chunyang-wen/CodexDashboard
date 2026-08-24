@@ -58,13 +58,14 @@ private struct MetricProgressBar: View {
 struct ContentView: View {
     @EnvironmentObject private var store: DashboardStore
     @State private var selection: DashboardPage? = .overview
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             List(DashboardPage.allCases, selection: $selection) { page in
                 Label(page.rawValue, systemImage: page.icon).tag(page)
             }
-            .navigationSplitViewColumnWidth(min: 188, ideal: 210)
+            .navigationSplitViewColumnWidth(min: 210, ideal: 210)
             .safeAreaInset(edge: .bottom) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("LOCAL DATA").font(.caption2.weight(.bold)).tracking(0.8).foregroundStyle(.secondary)
@@ -100,6 +101,15 @@ struct ContentView: View {
                 }
             }
             .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        columnVisibility = columnVisibility == .all ? .detailOnly : .all
+                    } label: {
+                        Image(systemName: "sidebar.leading")
+                    }
+                    .help(columnVisibility == .all ? "Hide Sidebar" : "Show Sidebar")
+                    .accessibilityLabel(columnVisibility == .all ? "Hide Sidebar" : "Show Sidebar")
+                }
                 ToolbarItemGroup {
                     Picker("Aggregation", selection: Binding(
                         get: { store.range },
@@ -893,6 +903,7 @@ struct ProjectsView: View {
             selection = nil
             expandedProjects.removeAll()
         }
+        .frame(minWidth: 870, maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var projectTree: some View {

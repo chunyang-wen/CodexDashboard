@@ -13,6 +13,6 @@ struct DashboardHelperRoot: View {
         ContentView()
             .environmentObject(store)
             .environment(\.dashboardConversationOpenAction, DashboardConversationOpenAction(open: openConversation))
-            .frame(minWidth: 1060, minHeight: 700)
+            .frame(minWidth: 1280, minHeight: 700)
     }
 }
