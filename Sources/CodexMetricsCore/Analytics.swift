@@ -7,7 +7,7 @@ public enum PeriodGranularity: String, CaseIterable, Hashable, Sendable {
 public enum Analytics {
     public static func projects(from sessions: [SessionSummary]) -> [ProjectMetric] {
         Dictionary(grouping: sessions, by: \.projectPath)
-            .map { ProjectMetric(path: $0.key, sessions: $0.value) }
+            .map { ProjectMetric(path: $0.key, sessions: $0.value.sorted { $0.updatedAt > $1.updatedAt }) }
             .sorted { $0.lastActivity > $1.lastActivity }
     }
 
@@ -402,4 +402,3 @@ public enum MetricFormatters {
 private extension Decimal {
     var doubleValue: Double { NSDecimalNumber(decimal: self).doubleValue }
 }
-

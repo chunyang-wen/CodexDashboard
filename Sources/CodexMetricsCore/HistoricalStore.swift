@@ -543,7 +543,7 @@ final class MetricsDatabase: @unchecked Sendable {
         since startDate: Date?,
         before endDate: Date?
     ) throws -> DailyAggregateResult {
-        try lockedThrowing {
+        return try lockedThrowing {
             var sql = """
                 SELECT SUM(input_tokens), SUM(cached_input), SUM(cache_write),
                        SUM(output_tokens), SUM(reasoning), SUM(total_tokens),
@@ -816,6 +816,41 @@ final class MetricsDatabase: @unchecked Sendable {
                 """) else { throw databaseError() }
             defer { sqlite3_finalize(statement) }
             bind(projectPath, to: statement, at: 1)
+
+            var result: [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)] = [:]
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let idBytes = sqlite3_column_text(statement, 0) else { continue }
+                result[String(cString: idBytes)] = (
+                    Decimal(doubleOrZero(statement, 1)),
+                    int64OrZero(statement, 2),
+                    int64OrZero(statement, 3)
+                )
+            }
+            return result
+        }
+    }
+
+    func sessionCosts(
+        projectPath: String,
+        sessionIDs: Set<String>
+    ) throws -> [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)] {
+        guard !sessionIDs.isEmpty else { return [:] }
+        return try lockedThrowing {
+            let placeholders = Array(repeating: "?", count: sessionIDs.count).joined(separator: ",")
+            let sql = """
+                SELECT session_id, SUM(cost), SUM(covered_tokens), SUM(total_tokens)
+                FROM daily_contribution
+                WHERE project_path = ? AND session_id IN (
+                """ + placeholders + """
+                )
+                GROUP BY session_id
+                """
+            guard let statement = prepare(sql) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            bind(projectPath, to: statement, at: 1)
+            for (offset, sessionID) in sessionIDs.enumerated() {
+                bind(sessionID, to: statement, at: Int32(offset + 2))
+            }
 
             var result: [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)] = [:]
             while sqlite3_step(statement) == SQLITE_ROW {
@@ -1259,6 +1294,47 @@ final class MetricsDatabase: @unchecked Sendable {
             }
             bind(generatedAt, to: metadata, at: 1)
             guard sqlite3_step(metadata) == SQLITE_DONE else { throw databaseError() }
+        }
+    }
+
+    /// Builds the small menu-bar projection directly from typed daily rows.
+    /// This is intentionally independent of the session and metrics-index
+    /// blobs, so an idle launch never has to hydrate every historical session.
+    func menuBarMetricsFromDaily(since: Date) throws -> MenuBarMetricsSnapshot? {
+        try lockedThrowing {
+            guard let statement = prepare("""
+                SELECT day,
+                       SUM(input_tokens), SUM(cached_input), SUM(cache_write),
+                       SUM(output_tokens), SUM(reasoning), SUM(total_tokens),
+                       SUM(cost), SUM(active_runtime),
+                       SUM(tool_calls), SUM(skill_calls), COUNT(DISTINCT session_id)
+                FROM daily_contribution
+                WHERE day >= ?
+                GROUP BY day ORDER BY day
+                """) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_double(statement, 1, since.timeIntervalSince1970)
+
+            var days: [MenuBarDayMetrics] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                days.append(MenuBarDayMetrics(
+                    day: Date(timeIntervalSince1970: sqlite3_column_double(statement, 0)),
+                    usage: TokenUsage(
+                        input: int64OrZero(statement, 1),
+                        cachedInput: int64OrZero(statement, 2),
+                        cacheWriteInput: int64OrZero(statement, 3),
+                        output: int64OrZero(statement, 4),
+                        reasoningOutput: int64OrZero(statement, 5),
+                        total: int64OrZero(statement, 6)
+                    ),
+                    estimatedCost: Decimal(doubleOrZero(statement, 7)),
+                    toolCalls: Int(int64OrZero(statement, 9)),
+                    skillCalls: Int(int64OrZero(statement, 10)),
+                    sessions: Int(int64OrZero(statement, 11)),
+                    activeRuntime: doubleOrZero(statement, 8)
+                ))
+            }
+            return days.isEmpty ? nil : MenuBarMetricsSnapshot(days: days)
         }
     }
 
@@ -1734,6 +1810,14 @@ public actor HistoricalStore {
         return try database.sessionCosts(projectPath: projectPath)
     }
 
+    public func sessionCosts(
+        projectPath: String,
+        sessionIDs: Set<String>
+    ) throws -> [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)] {
+        guard let database else { return [:] }
+        return try database.sessionCosts(projectPath: projectPath, sessionIDs: sessionIDs)
+    }
+
     public func mergedSessions(with indexed: [SessionMetric]) throws -> [SessionMetric] {
         let stored = try load().sessions
         let storedByID = Dictionary(uniqueKeysWithValues: stored.map { ($0.id, $0) })
@@ -1963,6 +2047,10 @@ public actor HistoricalStore {
 
     public func menuBarMetricsSnapshot() throws -> MenuBarMetricsSnapshot? {
         try database?.menuBarMetrics()
+    }
+
+    public func menuBarMetricsFromDaily(since: Date) throws -> MenuBarMetricsSnapshot? {
+        try database?.menuBarMetricsFromDaily(since: since)
     }
 
     public func recordMenuBarMetrics(_ snapshot: MenuBarMetricsSnapshot) throws {

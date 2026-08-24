@@ -105,7 +105,7 @@ final class MemoryFootprintTests: XCTestCase {
         XCTAssertEqual(store.sessions.count, 0, "No full session arrays should be resident in Menu-Bar mode")
         XCTAssertEqual(store.filteredSessions.count, 0)
         XCTAssertEqual(store.allProjects.count, 0)
-        XCTAssertTrue(store.historySessionCount >= 1000)
+        XCTAssertEqual(store.historySessionCount, 0, "Closed menu-bar mode should not retain history metadata")
 
         // -------------------------------------------------------------
         // SCENARIO 2: Dashboard Window Opened (Summaries & Analytics Loaded)
@@ -152,6 +152,16 @@ final class MemoryFootprintTests: XCTestCase {
         XCTAssertEqual(store.sessions.count, 0, "All session arrays released from memory")
         XCTAssertEqual(store.filteredSessions.count, 0)
         XCTAssertEqual(store.allProjects.count, 0)
+
+        // The popover hydrates its compact projection only while visible.
+        store.loadMenuBarPopover()
+        for _ in 0..<100 {
+            if store.historySessionCount >= 1000 { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(store.menuBarDataIsResident)
+        XCTAssertTrue(store.historySessionCount >= 1000)
+        store.releaseMenuBarMemory()
 
         print("""
         =======================================================================
