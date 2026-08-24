@@ -43,11 +43,77 @@ The helper is an embedded, signed `.app`, launched with
 `NSWorkspace.openApplication`. Its executable must never be launched directly
 with `Process`, and it must never be opened as a document.
 
+## IPC trust model and lifecycle authentication
+
+The lifecycle channel uses `DistributedNotificationCenter` for small routing
+messages. Notification names are global, and any local process can post a
+notification with arbitrary user information. The launch token is passed in
+the helper's launch arguments, which are also visible to local process
+inspection. Neither the notification names nor the launch arguments are a
+security boundary; the launch token is a per-launch correlation value and must
+not be treated as a secret, credential, or proof of code identity.
+
+The current implementation is deliberately an authenticated-cooperating-
+process protocol. The host creates a fresh token and generation for each
+launch. Both sides include the following values in lifecycle messages, and the
+host accepts a message only when they match the currently tracked launch:
+
+- the launch token;
+- the host PID;
+- the helper PID; and
+- the launch generation.
+
+The host also records the helper's `NSWorkspace` process identity. Termination
+events are accepted only for the tracked PID and matching launch date when
+available, or for the expected embedded helper bundle URL when the PID is not
+already known. This prevents an unrelated process or a stale process reusing a
+PID from being treated as the dashboard helper. The helper performs the
+corresponding token, host-PID, target-PID, and generation checks before acting
+on host commands.
+
+Stale and out-of-state messages are rejected: ready is accepted only while a
+launch is in progress; commands are accepted only in the ready state for the
+current helper PID; and token, PID, and generation mismatches are ignored.
+Abandoned launch tokens are retained long enough to terminate a late launch
+completion rather than binding it to a newer generation. The host has one
+lifecycle-bus observer, owned by `DashboardProcessCoordinator`; `AppDelegate`
+receives only the coordinator's already-validated helper-command callback.
+
+Lifecycle behavior is bounded even when a notification is lost. Startup and
+ready-handshake phases each have a 10-second deadline, host-initiated helper
+termination has a 2-second completion fallback, and both processes retain a
+5-second liveness fallback alongside `NSWorkspace` termination notifications.
+For product quit, the host sends the authenticated `quitProduct` command. The
+helper sets `isTerminatingForHost`, posts the authenticated
+`quitAcknowledged` command, and then calls `NSApp.terminate`. The coordinator
+accepts a matching `quitAcknowledged` message and calls `runtime.terminate` for
+the helper; its two-second termination fallback still completes the lifecycle
+if the acknowledgement or termination event is lost. `helperClosing` remains
+the helper's acknowledgement for its normal last-owned-window close path, not
+a security assertion.
+
+This is an intentional threat-model decision for a personal menu-bar app: a
+hostile local process is out of scope, and these checks are routing and stale-
+message mitigations rather than authorization. Supporting a hostile-local-
+process threat model would require a protected IPC boundary, such as an XPC
+service/connection with peer audit-token and code-signing identity checks (and
+possibly authenticated per-connection state), instead of relying on global
+distributed notifications and visible launch arguments. That redesign is out
+of scope for this process separation.
+
 ## Resource tradeoffs
 
 - Closed-dashboard memory should fall to the untouched menu-host baseline.
-- Combined memory may be higher while the dashboard is open because two
-  processes are alive.
+- `vmmap -summary` physical footprint is the primary process-memory metric.
+  `ps` RSS is retained as a secondary diagnostic only; summing RSS for the
+  host and `Contents/Helpers/CodexDashboardUI.app` can double-count shared
+  framework pages and must not be presented as physical memory.
+- Open-state evidence records separate `host/open` and `helper/open`
+  physical-footprint samples, plus RSS and any private/shared indicators that
+  the installed `vmmap` exposes. A per-process physical-footprint sum may be
+  reported as a diagnostic, but it is not a whole-system physical-memory
+  total. If an open-state budget is adopted, it must be expressed in those
+  separate `vmmap` measurements rather than summed RSS.
 - Reopening the dashboard incurs a cold-start CPU and disk-I/O cost. The helper
   must not be prewarmed because that would retain the memory this design is
   intended to reclaim.
@@ -191,7 +257,13 @@ Final measurable gates:
 - Helper PID disappears within two seconds after its last window closes.
 - No orphan helper remains after host exit.
 - Host physical footprint after helper exit is within 5 MB of its pre-helper
-  baseline and does not trend upward across 20 cycles.
+  baseline on every one of 20 cycles and does not show a sustained upward
+  trend across those cycles. The installed gate uses the average of the first
+  and last five closed-host samples; the last window may be at most 1 MB above
+  the first window to allow normal measurement noise.
+- The open state has distinguishable `host/open` and `helper/open` physical-
+  footprint samples. Any optional open-state budget is evaluated against those
+  `vmmap` values; RSS is never treated as the combined physical-memory value.
 - `vmmap` shows no Charts/dashboard residency in the host.
 - `heap` shows no dashboard data types in the host.
 - All Swift tests and Debug/Release Xcode builds pass.

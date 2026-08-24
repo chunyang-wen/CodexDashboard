@@ -587,15 +587,16 @@ final class MetricsDatabase: @unchecked Sendable {
 
     func dailyPeriodRows(
         projectPath: String?,
-        since startDate: Date?
+        since startDate: Date?,
+        includeSessionIDs: Bool = false
     ) throws -> [DailyPeriodRow] {
         try lockedThrowing {
+            let sessionProjection = includeSessionIDs ? ", GROUP_CONCAT(DISTINCT session_id)" : ""
             var sql = """
                 SELECT day,
                        SUM(input_tokens), SUM(cached_input), SUM(cache_write),
                        SUM(output_tokens), SUM(reasoning), SUM(total_tokens),
-                       SUM(cost), SUM(active_runtime), COUNT(DISTINCT session_id),
-                       GROUP_CONCAT(DISTINCT session_id)
+                       SUM(cost), SUM(active_runtime), COUNT(DISTINCT session_id)\(sessionProjection)
                 FROM daily_contribution WHERE 1=1
                 """
             if projectPath != nil { sql += " AND project_path = ?" }
@@ -625,7 +626,9 @@ final class MetricsDatabase: @unchecked Sendable {
                     estimatedCost: doubleOrZero(statement, 7),
                     activeRuntime: doubleOrZero(statement, 8),
                     sessions: Int(int64OrZero(statement, 9)),
-                    sessionIDs: Set((textValue(statement, 10) ?? "").split(separator: ",").map(String.init))
+                    sessionIDs: includeSessionIDs
+                        ? Set((textValue(statement, 10) ?? "").split(separator: ",").map(String.init))
+                        : []
                 ))
             }
             return rows
@@ -634,14 +637,15 @@ final class MetricsDatabase: @unchecked Sendable {
 
     func dailyModelRows(
         projectPath: String?,
-        since startDate: Date?
+        since startDate: Date?,
+        includeSessionIDs: Bool = false
     ) throws -> [DailyModelRow] {
         try lockedThrowing {
+            let sessionProjection = includeSessionIDs ? ", GROUP_CONCAT(DISTINCT m.session_id)" : ""
             var sql = """
                 SELECT m.day, m.model,
                        SUM(m.input_tokens), SUM(m.cached_input), SUM(m.output_tokens), SUM(m.total_tokens),
-                       SUM(m.cost), SUM(m.active_runtime), COUNT(DISTINCT m.session_id),
-                       GROUP_CONCAT(DISTINCT m.session_id)
+                       SUM(m.cost), SUM(m.active_runtime), COUNT(DISTINCT m.session_id)\(sessionProjection)
                 FROM daily_model m
                 JOIN daily_contribution c ON c.session_id = m.session_id AND c.day = m.day
                 WHERE 1=1
@@ -680,11 +684,236 @@ final class MetricsDatabase: @unchecked Sendable {
                     estimatedCost: doubleOrZero(statement, 6),
                     activeRuntime: doubleOrZero(statement, 7),
                     sessions: Int(int64OrZero(statement, 8)),
-                    sessionIDs: Set((textValue(statement, 9) ?? "").split(separator: ",").map(String.init))
+                    sessionIDs: includeSessionIDs
+                        ? Set((textValue(statement, 9) ?? "").split(separator: ",").map(String.init))
+                        : []
                 ))
             }
             return rows
         }
+    }
+
+    func periodMetrics(
+        projectPath: String?,
+        since startDate: Date?,
+        granularity: PeriodGranularity,
+        calendar: Calendar
+    ) throws -> [PeriodMetric] {
+        try lockedThrowing {
+            let periods = try periodIntervals(
+                source: "daily_contribution d",
+                dayColumn: "d.day",
+                projectPredicate: "d.project_path = ?",
+                projectPath: projectPath,
+                startDate: startDate,
+                granularity: granularity,
+                calendar: calendar
+            )
+            guard !periods.isEmpty else { return [] }
+
+            var sql = "SELECT CASE"
+            for period in periods {
+                let start = try sqliteDateLiteral(period.start)
+                let end = try sqliteDateLiteral(period.end)
+                sql += " WHEN d.day >= \(start) AND d.day < \(end) THEN \(start)"
+            }
+            sql += """
+                 END AS period_start,
+                       SUM(d.input_tokens), SUM(d.cached_input), SUM(d.cache_write),
+                       SUM(d.output_tokens), SUM(d.reasoning), SUM(d.total_tokens),
+                       SUM(d.cost), SUM(d.active_runtime), COUNT(DISTINCT d.session_id)
+                FROM daily_contribution d
+                WHERE 1=1
+                """
+            if projectPath != nil { sql += " AND d.project_path = ?" }
+            if startDate != nil { sql += " AND d.day >= ?" }
+            sql += " GROUP BY period_start ORDER BY period_start"
+
+            guard let statement = prepare(sql) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            var index: Int32 = 1
+            if let projectPath { bind(projectPath, to: statement, at: index); index += 1 }
+            if let startDate { sqlite3_bind_double(statement, index, startDate.timeIntervalSince1970) }
+
+            var rows: [PeriodMetric] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                rows.append(PeriodMetric(
+                    start: Date(timeIntervalSince1970: sqlite3_column_double(statement, 0)),
+                    usage: TokenUsage(
+                        input: int64OrZero(statement, 1),
+                        cachedInput: int64OrZero(statement, 2),
+                        cacheWriteInput: int64OrZero(statement, 3),
+                        output: int64OrZero(statement, 4),
+                        reasoningOutput: int64OrZero(statement, 5),
+                        total: int64OrZero(statement, 6)
+                    ),
+                    sessions: Int(int64OrZero(statement, 9)),
+                    activeRuntime: doubleOrZero(statement, 8),
+                    estimatedCost: Decimal(doubleOrZero(statement, 7))
+                ))
+            }
+            return rows
+        }
+    }
+
+    func modelPeriodMetrics(
+        projectPath: String?,
+        since startDate: Date?,
+        granularity: PeriodGranularity,
+        calendar: Calendar
+    ) throws -> [ModelPeriodMetric] {
+        try lockedThrowing {
+            let periods = try periodIntervals(
+                source: "daily_model m JOIN daily_contribution c ON c.session_id = m.session_id AND c.day = m.day",
+                dayColumn: "m.day",
+                projectPredicate: "c.project_path = ?",
+                projectPath: projectPath,
+                startDate: startDate,
+                granularity: granularity,
+                calendar: calendar
+            )
+            guard !periods.isEmpty else { return [] }
+
+            var sql = "SELECT CASE"
+            for period in periods {
+                let start = try sqliteDateLiteral(period.start)
+                let end = try sqliteDateLiteral(period.end)
+                sql += " WHEN m.day >= \(start) AND m.day < \(end) THEN \(start)"
+            }
+            sql += """
+                 END AS period_start, m.model,
+                       SUM(m.input_tokens), SUM(m.cached_input), SUM(m.output_tokens), SUM(m.total_tokens),
+                       SUM(m.cost), SUM(m.active_runtime), COUNT(DISTINCT m.session_id)
+                FROM daily_model m
+                JOIN daily_contribution c ON c.session_id = m.session_id AND c.day = m.day
+                WHERE 1=1
+                """
+            if projectPath != nil { sql += " AND c.project_path = ?" }
+            if startDate != nil { sql += " AND m.day >= ?" }
+            sql += " GROUP BY period_start, m.model ORDER BY period_start, m.model"
+
+            guard let statement = prepare(sql) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            var index: Int32 = 1
+            if let projectPath { bind(projectPath, to: statement, at: index); index += 1 }
+            if let startDate { sqlite3_bind_double(statement, index, startDate.timeIntervalSince1970) }
+
+            var rows: [ModelPeriodMetric] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let model = textValue(statement, 1) else { continue }
+                rows.append(ModelPeriodMetric(
+                    start: Date(timeIntervalSince1970: sqlite3_column_double(statement, 0)),
+                    model: model,
+                    usage: TokenUsage(
+                        input: int64OrZero(statement, 2),
+                        cachedInput: int64OrZero(statement, 3),
+                        output: int64OrZero(statement, 4),
+                        total: int64OrZero(statement, 5)
+                    ),
+                    sessions: Int(int64OrZero(statement, 8)),
+                    activeRuntime: doubleOrZero(statement, 7),
+                    estimatedCost: Decimal(doubleOrZero(statement, 6))
+                ))
+            }
+            return rows
+        }
+    }
+
+    func modelMetrics(projectPath: String?, since startDate: Date?) throws -> [ModelMetric] {
+        try lockedThrowing {
+            var sql = """
+                SELECT m.model, SUM(m.input_tokens), SUM(m.cached_input), SUM(m.output_tokens),
+                       SUM(m.total_tokens), SUM(m.cost), SUM(m.active_runtime), COUNT(DISTINCT m.session_id)
+                FROM daily_model m
+                JOIN daily_contribution c ON c.session_id = m.session_id AND c.day = m.day
+                WHERE 1=1
+                """
+            if projectPath != nil { sql += " AND c.project_path = ?" }
+            if startDate != nil { sql += " AND m.day >= ?" }
+            sql += " GROUP BY m.model ORDER BY SUM(m.total_tokens) DESC"
+
+            guard let statement = prepare(sql) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            var index: Int32 = 1
+            if let projectPath { bind(projectPath, to: statement, at: index); index += 1 }
+            if let startDate { sqlite3_bind_double(statement, index, startDate.timeIntervalSince1970) }
+
+            var rows: [ModelMetric] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let model = textValue(statement, 0) else { continue }
+                rows.append(ModelMetric(
+                    model: model,
+                    sessions: Int(int64OrZero(statement, 7)),
+                    usage: TokenUsage(
+                        input: int64OrZero(statement, 1),
+                        cachedInput: int64OrZero(statement, 2),
+                        output: int64OrZero(statement, 3),
+                        total: int64OrZero(statement, 4)
+                    ),
+                    activeRuntime: doubleOrZero(statement, 6),
+                    estimatedCost: Decimal(doubleOrZero(statement, 5))
+                ))
+            }
+            return rows
+        }
+    }
+
+    private func periodIntervals(
+        source: String,
+        dayColumn: String,
+        projectPredicate: String,
+        projectPath: String?,
+        startDate: Date?,
+        granularity: PeriodGranularity,
+        calendar: Calendar
+    ) throws -> [DateInterval] {
+        var sql = "SELECT DISTINCT \(dayColumn) FROM \(source) WHERE 1=1"
+        if projectPath != nil { sql += " AND \(projectPredicate)" }
+        if startDate != nil { sql += " AND \(dayColumn) >= ?" }
+        sql += " ORDER BY \(dayColumn)"
+
+        guard let statement = prepare(sql) else { throw databaseError() }
+        defer { sqlite3_finalize(statement) }
+        var index: Int32 = 1
+        if let projectPath { bind(projectPath, to: statement, at: index); index += 1 }
+        if let startDate { sqlite3_bind_double(statement, index, startDate.timeIntervalSince1970) }
+
+        var starts = Set<Date>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let day = Date(timeIntervalSince1970: sqlite3_column_double(statement, 0))
+            starts.insert(periodStart(day, granularity: granularity, calendar: calendar))
+        }
+        return starts.sorted().compactMap { start in
+            let component: Calendar.Component
+            switch granularity {
+            case .day: component = .day
+            case .week: component = .weekOfYear
+            case .month: component = .month
+            case .year: component = .year
+            }
+            guard let end = calendar.date(byAdding: component, value: 1, to: start) else { return nil }
+            return DateInterval(start: start, end: end)
+        }
+    }
+
+    private func periodStart(_ date: Date, granularity: PeriodGranularity, calendar: Calendar) -> Date {
+        switch granularity {
+        case .day: calendar.startOfDay(for: date)
+        case .week: calendar.dateInterval(of: .weekOfYear, for: date)?.start ?? calendar.startOfDay(for: date)
+        case .month: calendar.dateInterval(of: .month, for: date)?.start ?? calendar.startOfDay(for: date)
+        case .year: calendar.dateInterval(of: .year, for: date)?.start ?? calendar.startOfDay(for: date)
+        }
+    }
+
+    /// Period boundaries are generated internally from Date values. Embedding
+    /// their invariant numeric representation keeps SQLite's host-parameter
+    /// count bounded even when the history spans thousands of periods.
+    private func sqliteDateLiteral(_ date: Date) throws -> String {
+        let seconds = date.timeIntervalSince1970
+        guard seconds.isFinite else {
+            throw CodexStoreError.queryFailed("Invalid generated period date")
+        }
+        return seconds.description
     }
 
     func mergedTools(
@@ -1855,18 +2084,66 @@ public actor HistoricalStore {
 
     public func dailyPeriodRows(
         projectPath: String? = nil,
-        since startDate: Date? = nil
+        since startDate: Date? = nil,
+        includeSessionIDs: Bool = false
     ) throws -> [DailyPeriodRow] {
         guard let database else { return [] }
-        return try database.dailyPeriodRows(projectPath: projectPath, since: startDate)
+        return try database.dailyPeriodRows(
+            projectPath: projectPath,
+            since: startDate,
+            includeSessionIDs: includeSessionIDs
+        )
     }
 
     public func dailyModelRows(
         projectPath: String? = nil,
-        since startDate: Date? = nil
+        since startDate: Date? = nil,
+        includeSessionIDs: Bool = false
     ) throws -> [DailyModelRow] {
         guard let database else { return [] }
-        return try database.dailyModelRows(projectPath: projectPath, since: startDate)
+        return try database.dailyModelRows(
+            projectPath: projectPath,
+            since: startDate,
+            includeSessionIDs: includeSessionIDs
+        )
+    }
+
+    public func periodMetrics(
+        projectPath: String? = nil,
+        since startDate: Date? = nil,
+        granularity: PeriodGranularity,
+        calendar: Calendar = .current
+    ) throws -> [PeriodMetric] {
+        guard let database else { return [] }
+        return try database.periodMetrics(
+            projectPath: projectPath,
+            since: startDate,
+            granularity: granularity,
+            calendar: calendar
+        )
+    }
+
+    public func modelPeriodMetrics(
+        projectPath: String? = nil,
+        since startDate: Date? = nil,
+        granularity: PeriodGranularity,
+        calendar: Calendar = .current
+    ) throws -> [ModelPeriodMetric] {
+        guard let database else { return [] }
+        return try database.modelPeriodMetrics(
+            projectPath: projectPath,
+            since: startDate,
+            granularity: granularity,
+            calendar: calendar
+        )
+    }
+
+    public func modelMetrics(
+        projectPath: String? = nil,
+        since startDate: Date? = nil
+    ) throws -> [ModelMetric] {
+        guard let database else { return [] }
+        return try database.modelMetrics(projectPath: projectPath, since: startDate)
     }
 
     public func mergedTools(

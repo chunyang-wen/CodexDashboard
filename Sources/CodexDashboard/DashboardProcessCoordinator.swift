@@ -469,8 +469,14 @@ private final class DashboardScheduledActionBox: @unchecked Sendable {
 
 @MainActor
 final class DashboardProcessCoordinator {
-    nonisolated static let defaultLaunchTimeout: TimeInterval = 5
+    nonisolated static let defaultLaunchTimeout: TimeInterval = 10
     nonisolated static let defaultTerminationTimeout: TimeInterval = 2
+    nonisolated static let defaultHelperLivenessFallbackInterval: TimeInterval = 5
+
+    private enum LaunchPhase: Equatable {
+        case starting
+        case waitingForReady
+    }
 
     private let helperURL: URL
     private let hostPID: Int32
@@ -484,15 +490,17 @@ final class DashboardProcessCoordinator {
     private var runtimeObservation: AnyObject?
     private var lifecycleObservation: AnyObject?
     private var timeoutObservation: AnyObject?
-    private var helperLivenessTimer: Timer?
+    private var helperLivenessFallbackTimer: Timer?
     private var abandonedLaunchTokens: Set<String> = []
     private var terminationWaiters: [@MainActor () -> Void] = []
+    private var launchPhase: LaunchPhase?
     private(set) var state: DashboardProcessState = .stopped
     private(set) var currentHelperPID: Int32?
     private(set) var currentHelperLaunchDate: Date?
     private(set) var currentLaunchToken: String?
     private(set) var currentGeneration: UInt64 = 0
     var stateDidChange: (@MainActor (DashboardProcessState) -> Void)?
+    var helperCommandHandler: (@MainActor (DashboardLifecycleCommand) -> Void)?
 
     init(
         helperURL: URL,
@@ -563,18 +571,13 @@ final class DashboardProcessCoordinator {
         )
     }
 
-    func acceptsHelperCommand(_ message: DashboardLifecycleMessage) -> Bool {
-        state == .ready
-            && message.command != .ready
-            && message.hostPID == hostPID
-            && message.helperPID == currentHelperPID
-            && message.token == currentLaunchToken
-            && message.generation == currentGeneration
-    }
-
     func terminateForHostQuit(completion: (@MainActor () -> Void)? = nil) {
         if state == .stopped {
             completion?()
+            return
+        }
+        if state == .terminating {
+            if let completion { terminationWaiters.append(completion) }
             return
         }
         if let completion { terminationWaiters.append(completion) }
@@ -583,7 +586,7 @@ final class DashboardProcessCoordinator {
         }
         updateState(.terminating)
         timeoutObservation = scheduler.schedule(after: terminationTimeout) { [weak self] in
-            self?.finishStopped()
+            self?.handleTerminationTimeout()
         }
         guard let helperPID = currentHelperPID else {
             finishStopped()
@@ -605,6 +608,7 @@ final class DashboardProcessCoordinator {
         currentLaunchToken = token
         currentHelperPID = nil
         currentHelperLaunchDate = nil
+        launchPhase = .starting
         updateState(.launching)
 
         let arguments = [
@@ -616,7 +620,11 @@ final class DashboardProcessCoordinator {
         } ?? [])
         let generation = currentGeneration
         timeoutObservation = scheduler.schedule(after: launchTimeout) { [weak self] in
-            self?.handleLaunchTimeout(token: token, generation: generation)
+            self?.handleLaunchTimeout(
+                token: token,
+                generation: generation,
+                phase: .starting
+            )
         }
         runtime.launch(arguments: arguments) { [weak self] result in
             self?.handleLaunchResult(result, token: token, generation: generation)
@@ -640,6 +648,15 @@ final class DashboardProcessCoordinator {
         case .success(let identity):
             currentHelperPID = identity.pid
             currentHelperLaunchDate = identity.launchDate
+            launchPhase = .waitingForReady
+            timeoutObservation = nil
+            timeoutObservation = scheduler.schedule(after: launchTimeout) { [weak self] in
+                self?.handleLaunchTimeout(
+                    token: token,
+                    generation: generation,
+                    phase: .waitingForReady
+                )
+            }
         case .failure:
             finishStopped()
         }
@@ -676,14 +693,26 @@ final class DashboardProcessCoordinator {
             return
         }
 
-        guard state == .launching, message.command == .ready else { return }
-        if let currentHelperPID, currentHelperPID != message.helperPID { return }
+        if message.command == .ready {
+            guard state == .launching else { return }
+            if let currentHelperPID, currentHelperPID != message.helperPID { return }
 
-        currentHelperPID = message.helperPID
-        updateState(.ready)
-        timeoutObservation = nil
-        startHelperLivenessMonitor()
-        focusHelper()
+            currentHelperPID = message.helperPID
+            updateState(.ready)
+            launchPhase = nil
+            timeoutObservation = nil
+            startHelperLivenessMonitor()
+            focusHelper()
+            return
+        }
+
+        guard state == .ready, currentHelperPID == message.helperPID else { return }
+        switch message.command {
+        case .openSettings, .checkForUpdates, .quitProduct:
+            helperCommandHandler?(message.command)
+        case .ready, .helperClosing, .focus, .refreshMetrics, .rebuildHistoryIndex, .settingsChanged:
+            break
+        }
     }
 
     private func focusHelper() {
@@ -711,8 +740,15 @@ final class DashboardProcessCoordinator {
         ))
     }
 
-    private func handleLaunchTimeout(token: String, generation: UInt64) {
-        guard state == .launching, currentLaunchToken == token, currentGeneration == generation else { return }
+    private func handleLaunchTimeout(
+        token: String,
+        generation: UInt64,
+        phase: LaunchPhase
+    ) {
+        guard state == .launching,
+              currentLaunchToken == token,
+              currentGeneration == generation,
+              launchPhase == phase else { return }
         abandonedLaunchTokens.insert(token)
         let helperPID = currentHelperPID
         finishStopped()
@@ -721,10 +757,16 @@ final class DashboardProcessCoordinator {
         }
     }
 
+    private func handleTerminationTimeout() {
+        guard state == .terminating else { return }
+        finishStopped()
+    }
+
     private func finishStopped() {
         timeoutObservation = nil
-        helperLivenessTimer?.invalidate()
-        helperLivenessTimer = nil
+        launchPhase = nil
+        helperLivenessFallbackTimer?.invalidate()
+        helperLivenessFallbackTimer = nil
         updateState(.stopped)
         currentHelperPID = nil
         currentHelperLaunchDate = nil
@@ -741,8 +783,11 @@ final class DashboardProcessCoordinator {
     }
 
     private func startHelperLivenessMonitor() {
-        helperLivenessTimer?.invalidate()
-        helperLivenessTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        helperLivenessFallbackTimer?.invalidate()
+        helperLivenessFallbackTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.defaultHelperLivenessFallbackInterval,
+            repeats: true
+        ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self,
                       self.state == .ready,

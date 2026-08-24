@@ -29,7 +29,8 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
     private var dashboardStore: DashboardStore!
     private var dashboardWindow: NSWindow?
     private var conversationWindows: [ConversationWindowRequest: NSWindow] = [:]
-    private var hostWatchdog: Timer?
+    private var hostFallbackWatchdog: Timer?
+    private var hostTerminationObserver: NSObjectProtocol?
     private var launchToken: String?
     private var hostProcessIdentifier: pid_t?
     private var launchGeneration: UInt64 = 0
@@ -69,8 +70,12 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
     func applicationWillTerminate(_ notification: Notification) {
         lifecycleCenter.removeObserver(self, name: HelperLifecycleNotification.hostToHelper, object: nil)
         observesLifecycleCommands = false
-        hostWatchdog?.invalidate()
-        hostWatchdog = nil
+        if let hostTerminationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(hostTerminationObserver)
+            self.hostTerminationObserver = nil
+        }
+        hostFallbackWatchdog?.invalidate()
+        hostFallbackWatchdog = nil
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -279,7 +284,6 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
               window === dashboardWindow,
               window.isVisible,
               !window.isMiniaturized,
-              NSApp.windows.filter(\.isVisible).count == 1,
               let launchToken,
               let hostProcessIdentifier else { return }
 
@@ -298,20 +302,47 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
 
     private func startHostWatchdog() {
         guard hostProcessIdentifier != nil else { return }
-        hostWatchdog = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        let notificationCenter = NSWorkspace.shared.notificationCenter
+        hostTerminationObserver = notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
+                return
+            }
+            let terminatedPID = application.processIdentifier
+            Task { @MainActor [weak self] in
+                guard let self, self.hostProcessIdentifier == terminatedPID else { return }
+                self.terminateAfterHostDisappearance()
+            }
+        }
+        hostFallbackWatchdog = Timer.scheduledTimer(
+            withTimeInterval: 5,
+            repeats: true
+        ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self,
                       let hostProcessIdentifier = self.hostProcessIdentifier,
                       let host = NSRunningApplication(processIdentifier: hostProcessIdentifier),
                       !host.isTerminated else {
-                    self?.hostWatchdog?.invalidate()
-                    self?.hostWatchdog = nil
-                    self?.isTerminatingForHost = true
-                    NSApp.terminate(nil)
+                    self?.terminateAfterHostDisappearance()
                     return
                 }
             }
         }
+    }
+
+    private func terminateAfterHostDisappearance() {
+        guard !isTerminatingForHost else { return }
+        isTerminatingForHost = true
+        hostFallbackWatchdog?.invalidate()
+        hostFallbackWatchdog = nil
+        if let hostTerminationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(hostTerminationObserver)
+            self.hostTerminationObserver = nil
+        }
+        NSApp.terminate(nil)
     }
 }
 

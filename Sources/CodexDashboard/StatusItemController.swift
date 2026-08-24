@@ -7,6 +7,50 @@ private final class MenuBarPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
+struct MenuPanelScreenGeometry: Equatable {
+    let frame: NSRect
+    let visibleFrame: NSRect
+}
+
+func menuPanelScreen(
+    containing anchor: NSRect,
+    screens: [MenuPanelScreenGeometry]
+) -> MenuPanelScreenGeometry? {
+    let anchorPoint = NSPoint(x: anchor.midX, y: anchor.midY)
+    return screens.first { $0.frame.contains(anchorPoint) }
+        ?? screens.first { $0.frame.intersects(anchor) }
+}
+
+func menuPanelOrigin(anchor: NSRect, size: NSSize, visibleFrame: NSRect) -> NSPoint {
+    let inset: CGFloat = 8
+    let horizontalInset = min(inset, max(0, visibleFrame.width / 2))
+    let verticalInset = min(inset, max(0, visibleFrame.height / 2))
+    let minimumX = visibleFrame.minX + horizontalInset
+    let maximumX = visibleFrame.maxX - size.width - horizontalInset
+    let centeredX = anchor.midX - size.width / 2
+    let x = maximumX >= minimumX
+        ? min(max(centeredX, minimumX), maximumX)
+        : visibleFrame.minX + horizontalInset
+
+    let minimumY = visibleFrame.minY + verticalInset
+    let maximumY = visibleFrame.maxY - size.height - verticalInset
+    guard maximumY >= minimumY else {
+        return NSPoint(x: x, y: visibleFrame.minY + verticalInset)
+    }
+
+    let belowY = anchor.minY - size.height
+    let aboveY = anchor.maxY
+    let y: CGFloat
+    if belowY >= minimumY, belowY <= maximumY {
+        y = belowY
+    } else if aboveY >= minimumY, aboveY <= maximumY {
+        y = aboveY
+    } else {
+        y = min(max(belowY, minimumY), maximumY)
+    }
+    return NSPoint(x: x, y: y)
+}
+
 @MainActor
 final class StatusItemController: NSObject {
     static let accessibilityIdentifier = "com.chunyangwen.CodexDashboard.status-item"
@@ -103,11 +147,16 @@ final class StatusItemController: NSObject {
     }
 
     private func panelOrigin(anchor: NSRect, size: NSSize) -> NSPoint {
-        let visible = NSScreen.main?.visibleFrame
+        let screenGeometry = menuPanelScreen(
+            containing: anchor,
+            screens: NSScreen.screens.map {
+                MenuPanelScreenGeometry(frame: $0.frame, visibleFrame: $0.visibleFrame)
+            }
+        )
+        let visible = screenGeometry?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: size.width + 16, height: size.height + 16)
-        let x = min(max(anchor.midX - size.width / 2, visible.minX + 8), visible.maxX - size.width - 8)
-        let y = max(visible.minY + 8, anchor.minY - size.height)
-        return NSPoint(x: x, y: y)
+        return menuPanelOrigin(anchor: anchor, size: size, visibleFrame: visible)
     }
 
     private func installClickMonitors() {

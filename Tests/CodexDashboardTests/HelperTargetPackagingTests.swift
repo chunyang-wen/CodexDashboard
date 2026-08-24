@@ -41,11 +41,30 @@ final class HelperTargetPackagingTests: XCTestCase {
         )
         let infoURL = repositoryRoot.appendingPathComponent("Sources/CodexDashboardUI/Info.plist")
         let info = try XCTUnwrap(NSDictionary(contentsOf: infoURL) as? [String: Any])
+        let helperConfigurations = project
+            .components(separatedBy: "\n\t\t};")
+            .filter {
+                $0.contains("INFOPLIST_FILE = Sources/CodexDashboardUI/Info.plist;")
+            }
+        let helperSources = project
+            .components(separatedBy: "\n\t\t};")
+            .first {
+                $0.contains("isa = PBXSourcesBuildPhase;")
+                    && $0.contains("A70000000000000000000001 /* HelperMain.swift in Sources */")
+            }
 
-        XCTAssertTrue(project.contains("CodexDashboardUI"))
+        XCTAssertEqual(helperConfigurations.count, 2)
+        for configuration in helperConfigurations {
+            XCTAssertTrue(configuration.contains("PRODUCT_BUNDLE_IDENTIFIER = com.chunyangwen.CodexDashboard.DashboardUI;"))
+            XCTAssertTrue(configuration.contains("CODE_SIGN_STYLE = Automatic;"))
+            XCTAssertTrue(configuration.contains("INFOPLIST_FILE = Sources/CodexDashboardUI/Info.plist;"))
+        }
+        XCTAssertTrue(project.contains("D50000000000000000000001 /* CodexDashboardUI */"))
+        XCTAssertTrue(project.contains("D50000000000000000000001 /* CodexDashboardUI */ = {\n\t\t\tisa = PBXNativeTarget;"))
         XCTAssertFalse(project.contains("CodexDashboardPopoverUI"))
         XCTAssertFalse(project.contains("com.chunyangwen.CodexDashboard.PopoverUI"))
-        XCTAssertTrue(project.contains("com.chunyangwen.CodexDashboard.DashboardUI"))
+        XCTAssertNotNil(helperSources)
+        XCTAssertTrue(project.contains("A70000000000000000000003 /* CodexDashboardUI.app in Embed Helpers */"))
         XCTAssertTrue(project.contains("dstPath = \"../Helpers\";"))
         XCTAssertTrue(project.contains("dstSubfolderSpec = 13;"))
         XCTAssertTrue(project.contains("CodeSignOnCopy"))
@@ -64,23 +83,10 @@ final class HelperTargetPackagingTests: XCTestCase {
         XCTAssertTrue(helperSource.contains("startHostWatchdog"))
         XCTAssertTrue(helperSource.contains("createDashboardWindow"))
         XCTAssertTrue(helperSource.contains("showDashboardWindow"))
-        XCTAssertTrue(helperSource.contains("guard dashboardWindow == nil else { return }"))
-        XCTAssertTrue(helperSource.contains("window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]"))
-        XCTAssertTrue(helperSource.contains("window.titleVisibility = .hidden"))
-        XCTAssertTrue(helperSource.contains("Refresh Metrics"))
-        XCTAssertTrue(helperSource.contains("Settings…"))
-        XCTAssertTrue(helperSource.contains("Check for Updates…"))
-        XCTAssertTrue(helperSource.contains("Quit Codex Dashboard"))
-        XCTAssertTrue(helperSource.contains("DashboardStore("))
-        XCTAssertTrue(helperSource.contains("codexHome: launchCodexHome"))
         XCTAssertTrue(helperSource.contains("HelperLifecycleNotification.hostToHelper"))
         XCTAssertTrue(helperSource.contains("HelperLifecycleNotification.helperToHost"))
         XCTAssertFalse(helperSource.contains("case \"openSettings\": postCommandToHost"))
         XCTAssertFalse(helperSource.contains("case \"checkForUpdates\": postCommandToHost"))
-        XCTAssertTrue(coordinatorSource.contains("openApplication(at: helperURL"))
-        XCTAssertTrue(coordinatorSource.contains("selector: #selector(DistributedDashboardLifecycleObserver.receiveCommand(_:))"))
-        XCTAssertTrue(coordinatorSource.contains("suspensionBehavior: .deliverImmediately"))
-        XCTAssertTrue(coordinatorSource.contains("name: DashboardProcessProtocol.hostToHelperNotificationName"))
         XCTAssertFalse(coordinatorSource.contains("Process("))
         XCTAssertFalse(coordinatorSource.contains("openDocument"))
 

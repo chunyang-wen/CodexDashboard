@@ -19,6 +19,9 @@ Record these before the first launch:
 | Installed app path | `/Applications/CodexDashboard.app` |
 | App version/build | |
 | Git revision used for the installed build | |
+| Host architecture(s) | `lipo -archs /Applications/CodexDashboard.app/Contents/MacOS/CodexDashboard` |
+| Embedded helper architecture(s) | `lipo -archs /Applications/CodexDashboard.app/Contents/Helpers/CodexDashboardUI.app/Contents/MacOS/CodexDashboardUI` |
+| Embedded helper bundle | `/Applications/CodexDashboard.app/Contents/Helpers/CodexDashboardUI.app` (`com.chunyangwen.CodexDashboard.DashboardUI`) |
 | Data directory / fixture profile | |
 | Display scaling and attached displays | |
 
@@ -49,15 +52,32 @@ pass from a command alone.
 
 Run the sampler only while the installed app is already open. It discovers the
 bundle executable from the installed `Info.plist`, finds its PID with
-`pgrep -x`, and prints a verifying `ps` row before sampling. If discovery finds
-more than one process, choose the PID manually and pass `--pid`; do not kill a
-process to make the result fit the checklist.
+`pgrep -x`, and prints a verifying `ps` row before sampling. It labels each
+sample by role and state so host, helper, open, and closed measurements cannot
+be confused. If discovery finds more than one process, choose the PID manually
+and pass `--pid`; do not kill a process to make the result fit the checklist.
+
+`vmmap -summary` physical footprint is the primary process-memory metric. The
+sampler prints `ps` RSS only as a secondary diagnostic and warns that summing
+RSS across host and helper can double-count shared framework pages. Record
+private/shared indicators when `vmmap` exposes them; otherwise retain the
+sampler's explicit unavailable note.
 
 ```bash
 cd /Users/chunyangwen/Documents/Ideas/CodexDashboard
 zsh docs/dashboard-installed-process-sample.sh \
   --app /Applications/CodexDashboard.app \
+  --role host --state closed-host-baseline \
   > /tmp/codexdashboard-installed-baseline-$(date +%Y%m%d-%H%M%S).txt
+```
+
+While the dashboard is open, sample the embedded helper separately:
+
+```bash
+zsh docs/dashboard-installed-process-sample.sh \
+  --app /Applications/CodexDashboard.app/Contents/Helpers/CodexDashboardUI.app \
+  --role helper --state open \
+  > /tmp/codexdashboard-helper-open-$(date +%Y%m%d-%H%M%S).txt
 ```
 
 To identify the PID without the sampler, read the installed executable name and
@@ -83,12 +103,12 @@ vmmap -summary PID
 heap PID
 ```
 
-Record the sampler file name, timestamp, PID, `rss` from `ps`, the physical
-footprint / dirty / swapped totals reported by `vmmap -summary`, and the
-headline allocation totals or errors reported by `heap`. Tool availability and
-permissions vary by Xcode/Command Line Tools installation; retain the exact
-error text when a command cannot run. A full map can be saved separately when
-needed:
+Record the sampler file name, timestamp, role/state label, PID, the physical
+footprint from `vmmap -summary`, any private/shared indicators, `rss` from `ps`
+as a secondary diagnostic, and the headline allocation totals or errors from
+`heap`. Tool availability and permissions vary by Xcode/Command Line Tools
+installation; retain the exact error text when a command cannot run. A full
+map can be saved separately when needed:
 
 ```bash
 vmmap PID > /tmp/codexdashboard-vmmap-PID.txt
@@ -100,18 +120,21 @@ The `/tmp` examples are explicit output files; no command above writes to
 
 Take at least these samples and label them in the notes:
 
-1. **Host baseline:** after launch settles, before opening the dashboard if
-   that state is reachable.
-2. **Dashboard open:** while the dashboard and one representative auxiliary
-   window are visible.
-3. **Dashboard closed:** after closing dashboard-owned windows and waiting for
-   background work to settle.
-4. **Final:** after product Quit, to confirm no PID remains (a failed `ps`
-   lookup is the expected result).
+1. **Host / closed-host-baseline:** after launch settles, before opening the
+   dashboard if that state is reachable.
+2. **Host / open** and **helper / open:** while the dashboard and one
+   representative auxiliary window are visible.
+3. **Host / closed:** after closing dashboard-owned windows and waiting for
+   helper exit and background work to settle.
+4. **Final:** after product Quit, to confirm no host or helper PID remains (a
+   failed `ps` lookup is the expected result).
 
-For the current single-process build, label the samples accurately rather than
-calling them host/helper measurements. The separate host/helper memory gate
-belongs to later milestones.
+The current installed architecture is a persistent `CodexDashboard` host plus
+the embedded `CodexDashboardUI.app` helper. Use those current bundle paths and
+identities; do not substitute a historical PopoverUI target. The open-state
+samples are separate per-process measurements. Do not report summed RSS as
+physical memory; if a combined diagnostic is recorded, label it as the sum of
+per-process `vmmap` values and note that it is not a whole-system total.
 
 ## Repeat and crash checks
 
@@ -153,6 +176,7 @@ not the current uninstalled checkout.
 | macOS | 26.6.1 (25G76), arm64 |
 | Installed bundle | `/Applications/CodexDashboard.app` |
 | Installed version/build | 0.1.5 / 20260823190317 |
+| Current target layout | `CodexDashboard.app` host plus embedded `Contents/Helpers/CodexDashboardUI.app` helper |
 | Process | PID 48748, executable inside the installed bundle |
 | First presentation | One accessible standard window titled `Overview`, identifier `CodexDashboard.dashboard` |
 | Visible dashboard structure | One sidebar and one dashboard content area; Overview, Projects, Models, and Usage & Billing navigation present |
@@ -160,7 +184,9 @@ not the current uninstalled checkout.
 | Close behavior | Earlier close verification left the process alive with no accessible dashboard window and released full dashboard model arrays |
 | Reopen behavior | Activating the installed app returned one `Overview` window rather than a duplicate |
 
-Measured process evidence from the same launch:
+Measured process evidence from the same launch. These are single-process
+baseline observations from before helper separation; the later release gate
+must record host/helper roles separately:
 
 | State | Physical footprint | Heap evidence |
 | --- | ---: | --- |

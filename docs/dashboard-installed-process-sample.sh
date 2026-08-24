@@ -4,6 +4,8 @@ set -euo pipefail
 
 app_path="/Applications/CodexDashboard.app"
 requested_pid=""
+measurement_role="unspecified"
+measurement_state="unspecified"
 
 usage() {
   cat <<'EOF'
@@ -14,6 +16,8 @@ Read-only sample of a running installed CodexDashboard process.
 Options:
   --app PATH   Installed .app bundle to inspect (default: /Applications/CodexDashboard.app)
   --pid PID    Process to sample; otherwise discover the app executable PID
+  --role ROLE  Measurement role: host or helper (default: unspecified)
+  --state STATE Measurement state, such as open, closed, or baseline
   --help       Show this help
 
 The command prints process metadata, `ps`, `vmmap -summary`, and `heap`
@@ -38,6 +42,22 @@ while (( $# > 0 )); do
         exit 2
       fi
       requested_pid="$2"
+      shift 2
+      ;;
+    --role)
+      if (( $# < 2 )); then
+        print -u2 "--role requires host or helper"
+        exit 2
+      fi
+      measurement_role="$2"
+      shift 2
+      ;;
+    --state)
+      if (( $# < 2 )); then
+        print -u2 "--state requires a label"
+        exit 2
+      fi
+      measurement_state="$2"
       shift 2
       ;;
     --help|-h)
@@ -125,6 +145,10 @@ print "version: $short_version"
 print "build: $build_version"
 print "executable: $executable_path"
 print "pid: $pid"
+print "measurement role: $measurement_role"
+print "measurement state: $measurement_state"
+print "primary memory metric: vmmap physical footprint"
+print "secondary diagnostic: ps RSS; do not sum RSS across host/helper because shared framework pages can be double-counted"
 print
 
 print "--- process metadata ---"
@@ -134,8 +158,25 @@ print
 status=0
 if command -v vmmap >/dev/null 2>&1; then
   print "--- vmmap -summary $pid ---"
-  if ! vmmap -summary "$pid"; then
+  vmmap_summary=""
+  if ! vmmap_summary="$(vmmap -summary "$pid" 2>&1)"; then
+    print -r -- "$vmmap_summary"
     status=1
+  else
+    print -r -- "$vmmap_summary"
+    print
+    print "--- vmmap primary and private/shared indicators ---"
+    print -r -- "$vmmap_summary" | awk '
+      BEGIN { IGNORECASE = 1 }
+      /physical footprint/ || /private/ || /shared/ || /compressed/ || /swapped/ { print }
+    '
+    if ! print -r -- "$vmmap_summary" | awk '
+      BEGIN { IGNORECASE = 1; found = 0 }
+      /physical footprint/ || /private/ || /shared/ || /compressed/ || /swapped/ { found = 1 }
+      END { exit(found ? 0 : 1) }
+    '; then
+      print "vmmap -summary exposed no private/shared indicator lines on this system"
+    fi
   fi
 else
   print "--- vmmap -summary $pid ---"

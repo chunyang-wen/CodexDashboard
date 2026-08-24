@@ -4,6 +4,44 @@ import XCTest
 
 @MainActor
 final class DashboardProcessCoordinatorTests: XCTestCase {
+    func testDashboardReadinessIsNotBlockedByExtraVisibleWindows() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let helperSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboardUI/HelperMain.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(helperSource.contains("window === dashboardWindow"))
+        XCTAssertFalse(helperSource.contains("NSApp.windows.filter(\\.isVisible).count == 1"))
+    }
+
+    func testLifecycleUsesWorkspaceTerminationNotificationsAndNoHalfSecondPolls() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let coordinatorSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboard/DashboardProcessCoordinator.swift"),
+            encoding: .utf8
+        )
+        let helperSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboardUI/HelperMain.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(coordinatorSource.contains("NSWorkspace.didTerminateApplicationNotification"))
+        XCTAssertTrue(coordinatorSource.contains("defaultHelperLivenessFallbackInterval: TimeInterval = 5"))
+        XCTAssertFalse(coordinatorSource.contains("withTimeInterval: 0.5"))
+
+        XCTAssertTrue(helperSource.contains("NSWorkspace.didTerminateApplicationNotification"))
+        XCTAssertTrue(helperSource.contains("hostFallbackWatchdog"))
+        XCTAssertTrue(helperSource.contains("withTimeInterval: 5"))
+        XCTAssertFalse(helperSource.contains("withTimeInterval: 0.5"))
+    }
+
     func testLaunchAndReadyHandshake() {
         let harness = Harness()
         harness.coordinator.requestDashboard()
@@ -21,6 +59,29 @@ final class DashboardProcessCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.coordinator.state, .ready)
         XCTAssertEqual(harness.coordinator.currentHelperPID, 9001)
         XCTAssertEqual(harness.runtime.activations, [9001])
+    }
+
+    func testCoordinatorRegistersExactlyOneLifecycleObserver() {
+        let harness = Harness()
+        _ = harness.coordinator
+
+        XCTAssertEqual(harness.bus.observeCount, 1)
+    }
+
+    func testLaunchAndReadyUseIndependentTimeoutPhases() {
+        let harness = Harness(launchTimeout: 10)
+        harness.coordinator.requestDashboard()
+        let launch = harness.runtime.launches[0]
+
+        harness.runtime.completeLaunch(pid: 9001, arguments: launch.arguments)
+        XCTAssertEqual(harness.scheduler.delays, [10, 10])
+
+        harness.scheduler.fireNext()
+        XCTAssertEqual(harness.coordinator.state, .launching)
+
+        harness.scheduler.fireNext()
+        XCTAssertEqual(harness.coordinator.state, .stopped)
+        XCTAssertEqual(harness.runtime.terminations, [9001])
     }
 
     func testReadyRequestFocusesWithoutRelaunching() {
@@ -72,17 +133,60 @@ final class DashboardProcessCoordinatorTests: XCTestCase {
         XCTAssertEqual(message.refreshInterval, 15)
         XCTAssertEqual(message.weekStartsMonday, false)
 
-        XCTAssertTrue(harness.coordinator.acceptsHelperCommand(message))
-        XCTAssertFalse(harness.coordinator.acceptsHelperCommand(DashboardLifecycleMessage(
-            command: .settingsChanged,
-            token: message.token,
-            hostPID: message.hostPID,
-            helperPID: message.helperPID,
-            generation: message.generation + 1,
-            codexDataPath: message.codexDataPath,
-            refreshInterval: message.refreshInterval,
-            weekStartsMonday: message.weekStartsMonday
-        )))
+    }
+
+    func testAuthenticatedExternalHelperCommandsReachCallbackOnce() {
+        let harness = Harness()
+        harness.launchAndReady()
+        var receivedCommands: [DashboardLifecycleCommand] = []
+        harness.coordinator.helperCommandHandler = { command in
+            receivedCommands.append(command)
+        }
+
+        let token = harness.coordinator.currentLaunchToken!
+        let helperPID = harness.coordinator.currentHelperPID!
+        let generation = harness.coordinator.currentGeneration
+        let commands: [DashboardLifecycleCommand] = [.openSettings, .checkForUpdates, .quitProduct]
+        for command in commands {
+            harness.bus.send(DashboardLifecycleMessage(
+                command: command,
+                token: token,
+                hostPID: 4242,
+                helperPID: helperPID,
+                generation: generation
+            ))
+        }
+
+        XCTAssertEqual(receivedCommands, commands)
+    }
+
+    func testInvalidOrInternalHelperMessagesDoNotReachExternalCommandCallback() {
+        let harness = Harness()
+        harness.launchAndReady()
+        var receivedCommands: [DashboardLifecycleCommand] = []
+        harness.coordinator.helperCommandHandler = { command in
+            receivedCommands.append(command)
+        }
+
+        let valid = DashboardLifecycleMessage(
+            command: .openSettings,
+            token: harness.coordinator.currentLaunchToken!,
+            hostPID: 4242,
+            helperPID: harness.coordinator.currentHelperPID!,
+            generation: harness.coordinator.currentGeneration
+        )
+        for message in [
+            DashboardLifecycleMessage(command: .openSettings, token: "stale-token", hostPID: valid.hostPID, helperPID: valid.helperPID, generation: valid.generation),
+            DashboardLifecycleMessage(command: .checkForUpdates, token: valid.token, hostPID: valid.hostPID + 1, helperPID: valid.helperPID, generation: valid.generation),
+            DashboardLifecycleMessage(command: .quitProduct, token: valid.token, hostPID: valid.hostPID, helperPID: valid.helperPID + 1, generation: valid.generation),
+            DashboardLifecycleMessage(command: .openSettings, token: valid.token, hostPID: valid.hostPID, helperPID: valid.helperPID, generation: valid.generation + 1),
+            DashboardLifecycleMessage(command: .ready, token: valid.token, hostPID: valid.hostPID, helperPID: valid.helperPID, generation: valid.generation),
+            DashboardLifecycleMessage(command: .helperClosing, token: valid.token, hostPID: valid.hostPID, helperPID: valid.helperPID, generation: valid.generation)
+        ] {
+            harness.bus.send(message)
+        }
+
+        XCTAssertTrue(receivedCommands.isEmpty)
     }
 
     func testTenRapidRequestsProduceOneLaunch() {
@@ -258,15 +362,21 @@ final class DashboardProcessCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.coordinator.state, .stopped)
     }
 
-    func testHostQuitTerminatesHelperAndStops() {
+    func testHostQuitPostsBeforeTerminatingHelper() {
         let harness = Harness()
         harness.launchAndReady()
+        var events: [String] = []
+        harness.bus.onPost = { _ in events.append("post") }
+        harness.runtime.onTerminate = { _ in
+            events.append("terminate")
+        }
 
         harness.coordinator.terminateForHostQuit()
 
         XCTAssertEqual(harness.coordinator.state, .terminating)
-        XCTAssertEqual(harness.runtime.terminations, [9001])
+        XCTAssertEqual(events, ["post", "terminate"])
         XCTAssertEqual(harness.bus.messages.last?.command, .quitProduct)
+        XCTAssertEqual(harness.runtime.terminations, [9001])
         harness.runtime.sendTermination(pid: 9001, arguments: harness.runtime.launches[0].arguments)
         XCTAssertEqual(harness.coordinator.state, .stopped)
     }
@@ -278,6 +388,7 @@ final class DashboardProcessCoordinatorTests: XCTestCase {
         harness.coordinator.terminateForHostQuit()
         harness.scheduler.fireLast()
 
+        XCTAssertEqual(harness.runtime.terminations, [9001])
         XCTAssertEqual(harness.coordinator.state, .stopped)
         XCTAssertNil(harness.coordinator.currentHelperPID)
     }
@@ -449,21 +560,23 @@ final class DashboardProcessCoordinatorTests: XCTestCase {
         let bus = FakeBus()
         let scheduler = FakeScheduler()
         let defaults: UserDefaults?
+        let launchTimeout: TimeInterval
         lazy var coordinator = DashboardProcessCoordinator(
             helperURL: URL(fileURLWithPath: "/tmp/CodexDashboardUI.app"),
             hostPID: 4242,
             runtime: runtime,
             lifecycleBus: bus,
             scheduler: scheduler,
-            launchTimeout: 5,
+            launchTimeout: launchTimeout,
             preferences: defaults ?? DashboardPreferences.sharedDefaults(),
             codexDataPathProvider: {
                 self.defaults?.string(forKey: DashboardPreferences.codexDataPathKey)
             }
         )
 
-        init(defaults: UserDefaults? = nil) {
+        init(defaults: UserDefaults? = nil, launchTimeout: TimeInterval = 5) {
             self.defaults = defaults
+            self.launchTimeout = launchTimeout
         }
 
         func launchAndReady() {
@@ -549,6 +662,7 @@ final class DashboardProcessCoordinatorTests: XCTestCase {
         var launches: [Launch] = []
         var activations: [Int32] = []
         var terminations: [Int32] = []
+        var onTerminate: ((Int32) -> Void)?
         private var handler: (@MainActor (DashboardProcessRuntimeEvent) -> Void)?
 
         func launch(arguments: [String], completion: @escaping @MainActor (Result<DashboardProcessIdentity, Error>) -> Void) {
@@ -561,6 +675,7 @@ final class DashboardProcessCoordinatorTests: XCTestCase {
 
         func terminate(pid: Int32) {
             terminations.append(pid)
+            onTerminate?(pid)
         }
 
         @discardableResult
@@ -597,16 +712,24 @@ final class DashboardProcessCoordinatorTests: XCTestCase {
     @MainActor
     private final class FakeBus: DashboardLifecycleBus {
         var messages: [DashboardLifecycleMessage] = []
+        var onPost: ((DashboardLifecycleMessage) -> Void)?
+        private(set) var observeCount = 0
         private var handler: (@MainActor (DashboardLifecycleMessage) -> Void)?
 
         @discardableResult
         func observe(_ handler: @escaping @MainActor (DashboardLifecycleMessage) -> Void) -> AnyObject {
+            observeCount += 1
             self.handler = handler
             return Token()
         }
 
         func post(_ message: DashboardLifecycleMessage) {
             messages.append(message)
+            onPost?(message)
+        }
+
+        func send(_ message: DashboardLifecycleMessage) {
+            handler?(message)
         }
 
         func sendReady(token: String, helperPID: Int32, generation: UInt64) {
@@ -628,14 +751,17 @@ final class DashboardProcessCoordinatorTests: XCTestCase {
                 generation: generation
             ))
         }
+
     }
 
     @MainActor
     private final class FakeScheduler: DashboardCoordinatorScheduler {
         private var actions: [@MainActor () -> Void] = []
+        private(set) var delays: [TimeInterval] = []
 
         @discardableResult
         func schedule(after delay: TimeInterval, _ action: @escaping @MainActor () -> Void) -> AnyObject {
+            delays.append(delay)
             actions.append(action)
             return Token()
         }

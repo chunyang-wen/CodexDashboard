@@ -49,15 +49,15 @@ private struct DashboardAnalytics: Sendable {
         sessions: [SessionSummary],
         startDate: Date?,
         aggregate: DailyAggregateResult,
-        periodRows: [DailyPeriodRow],
-        modelRows: [DailyModelRow],
+        periods: [PeriodMetric],
+        modelPeriods: [ModelPeriodMetric],
+        models: [ModelMetric],
         allTimeModels: [ModelMetric],
         tools: [ToolMetric],
         skills: [SkillMetric],
         granularity: PeriodGranularity = .month,
         turnDurations: [TimeInterval] = [],
-        firstTokenTimes: [TimeInterval] = [],
-        calendar: Calendar = .current
+        firstTokenTimes: [TimeInterval] = []
     ) -> DashboardAnalytics {
         let filtered = sessions.filter { session in
             startDate.map { session.updatedAt >= $0 } ?? true
@@ -65,8 +65,6 @@ private struct DashboardAnalytics: Sendable {
         // Keep only the projection selected by the dashboard. Building all four
         // granularities here multiplied the chart data retained by the store,
         // even though each page renders one granularity at a time.
-        let periods = Self.bucketPeriods(periodRows, granularity: granularity, calendar: calendar)
-        let modelPeriods = Self.bucketModelPeriods(modelRows, granularity: granularity, calendar: calendar)
         let usage = aggregate.usage
         return DashboardAnalytics(
             filteredSessions: filtered,
@@ -76,7 +74,7 @@ private struct DashboardAnalytics: Sendable {
             estimatedCost: Decimal(aggregate.estimatedCost),
             costCoverage: usage.total > 0 ? Double(aggregate.coveredTokens) / Double(usage.total) : 0,
             runtime: aggregate.activeRuntime,
-            models: mergeModelRows(modelRows, projectPath: nil),
+            models: models,
             allTimeModels: allTimeModels,
             tools: tools,
             skills: skills,
@@ -96,108 +94,6 @@ private struct DashboardAnalytics: Sendable {
             completedTurns: aggregate.completedTurns,
             abortedTurns: 0
         )
-    }
-
-    private static func bucketPeriods(
-        _ rows: [DailyPeriodRow], granularity: PeriodGranularity, calendar: Calendar
-    ) -> [PeriodMetric] {
-        struct Bucket {
-            var usage = TokenUsage.zero
-            var sessionIDs = Set<String>()
-            var fallbackSessionCount = 0
-            var runtime: TimeInterval = 0
-            var cost = 0.0
-        }
-        var buckets: [Date: Bucket] = [:]
-        for row in rows {
-            let start = Self.periodStart(row.day, granularity: granularity, calendar: calendar)
-            var bucket = buckets[start, default: Bucket()]
-            bucket.usage = bucket.usage + row.usage
-            bucket.sessionIDs.formUnion(row.sessionIDs)
-            bucket.fallbackSessionCount += row.sessions
-            bucket.runtime += row.activeRuntime
-            bucket.cost += row.estimatedCost
-            buckets[start] = bucket
-        }
-        return buckets.map { start, bucket in
-            let sessions = bucket.sessionIDs.isEmpty ? bucket.fallbackSessionCount : bucket.sessionIDs.count
-            return PeriodMetric(start: start, usage: bucket.usage, sessions: sessions,
-                                activeRuntime: bucket.runtime, estimatedCost: Decimal(bucket.cost))
-        }.sorted { $0.start < $1.start }
-    }
-
-    private static func bucketModelPeriods(
-        _ rows: [DailyModelRow], granularity: PeriodGranularity, calendar: Calendar
-    ) -> [ModelPeriodMetric] {
-        struct Bucket {
-            var usage = TokenUsage.zero
-            var sessionIDs = Set<String>()
-            var fallbackSessionCount = 0
-            var runtime: TimeInterval = 0
-            var cost = 0.0
-        }
-        var buckets: [String: [Date: Bucket]] = [:]
-        for row in rows {
-            let start = Self.periodStart(row.day, granularity: granularity, calendar: calendar)
-            var modelBuckets = buckets[row.model, default: [:]]
-            var bucket = modelBuckets[start, default: Bucket()]
-            bucket.usage = bucket.usage + row.usage
-            bucket.sessionIDs.formUnion(row.sessionIDs)
-            bucket.fallbackSessionCount += row.sessions
-            bucket.runtime += row.activeRuntime
-            bucket.cost += row.estimatedCost
-            modelBuckets[start] = bucket
-            buckets[row.model] = modelBuckets
-        }
-        return buckets.flatMap { model, modelBuckets in
-            modelBuckets.map { start, bucket in
-                let sessions = bucket.sessionIDs.isEmpty ? bucket.fallbackSessionCount : bucket.sessionIDs.count
-                return ModelPeriodMetric(start: start, model: model, usage: bucket.usage,
-                                         sessions: sessions, activeRuntime: bucket.runtime,
-                                         estimatedCost: Decimal(bucket.cost))
-            }
-        }.sorted {
-            if $0.start != $1.start { return $0.start < $1.start }
-            return $0.model.localizedStandardCompare($1.model) == .orderedAscending
-        }
-    }
-
-    static func mergeModelRowsPublic(_ rows: [DailyModelRow]) -> [ModelMetric] {
-        mergeModelRows(rows, projectPath: nil)
-    }
-
-    private static func mergeModelRows(_ rows: [DailyModelRow], projectPath: String?) -> [ModelMetric] {
-        struct Bucket {
-            var usage = TokenUsage.zero
-            var sessionIDs = Set<String>()
-            var fallbackSessionCount = 0
-            var runtime = 0.0
-            var cost = 0.0
-        }
-        var buckets: [String: Bucket] = [:]
-        for row in rows {
-            var bucket = buckets[row.model, default: Bucket()]
-            bucket.usage = bucket.usage + row.usage
-            bucket.sessionIDs.formUnion(row.sessionIDs)
-            bucket.fallbackSessionCount += row.sessions
-            bucket.runtime += row.activeRuntime
-            bucket.cost += row.estimatedCost
-            buckets[row.model] = bucket
-        }
-        return buckets.map { model, bucket in
-            let sessions = bucket.sessionIDs.isEmpty ? bucket.fallbackSessionCount : bucket.sessionIDs.count
-            return ModelMetric(model: model, sessions: sessions, usage: bucket.usage,
-                               activeRuntime: bucket.runtime, estimatedCost: Decimal(bucket.cost))
-        }.sorted { $0.usage.total > $1.usage.total }
-    }
-
-    private static func periodStart(_ date: Date, granularity: PeriodGranularity, calendar: Calendar) -> Date {
-        switch granularity {
-        case .day: calendar.startOfDay(for: date)
-        case .week: calendar.dateInterval(of: .weekOfYear, for: date)?.start ?? calendar.startOfDay(for: date)
-        case .month: calendar.dateInterval(of: .month, for: date)?.start ?? calendar.startOfDay(for: date)
-        case .year: calendar.dateInterval(of: .year, for: date)?.start ?? calendar.startOfDay(for: date)
-        }
     }
 
     static func calculate(
@@ -505,8 +401,12 @@ final class DashboardStore: ObservableObject {
     }
 
     func projectPeriods(path: String, granularity: PeriodGranularity, since startDate: Date? = nil) async -> [PeriodMetric] {
-        guard let rows = try? await historicalStore.dailyPeriodRows(projectPath: path, since: startDate) else { return [] }
-        return Self.bucketPeriodsFromRows(rows, granularity: granularity, calendar: analyticsCalendar)
+        (try? await historicalStore.periodMetrics(
+            projectPath: path,
+            since: startDate,
+            granularity: granularity,
+            calendar: analyticsCalendar
+        )) ?? []
     }
 
     func indexedSessionCosts(projectPath: String, sessionIDs: Set<String>? = nil) async -> [String: IndexedSessionCost] {
@@ -1075,11 +975,15 @@ final class DashboardStore: ObservableObject {
                 // without decoding any JSON blobs.
                 let aggregate = (try? await historicalStore.aggregateDaily()) ?? DailyAggregateResult()
                 let periodRows = (page == .overview || page == .billing)
-                    ? ((try? await historicalStore.dailyPeriodRows()) ?? [])
+                    ? ((try? await historicalStore.periodMetrics(granularity: granularity, calendar: self.analyticsCalendar)) ?? [])
                     : []
                 let modelRows = (page == .overview || page == .models)
-                    ? ((try? await historicalStore.dailyModelRows()) ?? [])
+                    ? ((try? await historicalStore.modelPeriodMetrics(granularity: granularity, calendar: self.analyticsCalendar)) ?? [])
                     : []
+                let models = (page == .overview || page == .models)
+                    ? ((try? await historicalStore.modelMetrics()) ?? [])
+                    : []
+                let allTimeModels = page == .models ? models : []
                 let tools = page == .overview
                     ? ((try? await historicalStore.mergedTools()) ?? [])
                     : []
@@ -1100,18 +1004,15 @@ final class DashboardStore: ObservableObject {
                     }
                 }
 
-                let analyticsCalendar = self.analyticsCalendar
                 let refreshed = await Task.detached(priority: .userInitiated) {
-                    let calendar = analyticsCalendar
                     var selected = DashboardAnalytics.fromSQLResults(
                         sessions: page == .overview || page == .projects ? sessions : [],
                         startDate: nil,
                         aggregate: aggregate,
-                        periodRows: periodRows,
-                        modelRows: modelRows,
-                        allTimeModels: page == .models
-                            ? DashboardAnalytics.mergeModelRowsPublic(modelRows)
-                            : [],
+                        periods: periodRows,
+                        modelPeriods: modelRows,
+                        models: models,
+                        allTimeModels: allTimeModels,
                         tools: tools.map { tool in
                             ToolMetric(tool: tool.tool, calls: tool.calls, attributedCalls: tool.attributedCalls,
                                        sessions: tool.sessions, attributedUsage: .zero,
@@ -1122,8 +1023,7 @@ final class DashboardStore: ObservableObject {
                                         sessions: skill.sessions, attributedUsage: .zero,
                                         estimatedCost: 0)
                         },
-                        granularity: granularity,
-                        calendar: calendar
+                        granularity: granularity
                     )
                     selected.abortedTurns = 0
                     let todayAggregate = todayAggregateResult

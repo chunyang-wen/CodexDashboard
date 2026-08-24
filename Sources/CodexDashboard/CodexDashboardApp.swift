@@ -91,7 +91,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
     let menuStore: MenuBarStore
     private var statusItemController: StatusItemController?
     private var updaterController: SPUStandardUpdaterController!
-    private var lifecycleObservation: AnyObject?
     private let productTerminationGate = DashboardProductTerminationGate()
 
     override init() {
@@ -102,6 +101,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
         menuStore = MenuBarStore(defaults: defaults)
         super.init()
         Self.shared = self
+        dashboardCoordinator.helperCommandHandler = { [weak self] command in
+            self?.handleHelperCommand(command)
+        }
         menuStore.settingsDidChange = { [weak self] in
             self?.dashboardCoordinator.settingsChanged()
         }
@@ -155,22 +157,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
             commandHandler: { [weak self] command in self?.handlePopoverCommand(command) }
         )
         menuStore.startMenuBarMonitoring()
-        lifecycleObservation = DistributedDashboardLifecycleBus().observe { [weak self] message in
-            guard let self,
-                  message.command != .ready,
-                  dashboardCoordinator.acceptsHelperCommand(message) else { return }
-            switch message.command {
-            case .openSettings:
-                AppActivationPolicy.showDockIcon()
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-            case .checkForUpdates:
-                AppUpdater.shared.checkForUpdates()
-            case .quitProduct:
-                requestProductQuit()
-            case .ready, .helperClosing, .focus, .refreshMetrics, .rebuildHistoryIndex, .settingsChanged:
-                break
-            }
-        }
 
         NotificationCenter.default.addObserver(
             self,
@@ -216,6 +202,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
                 NSApp.terminate(nil)
             }
         )
+    }
+
+    private func handleHelperCommand(_ command: DashboardLifecycleCommand) {
+        switch command {
+        case .openSettings:
+            AppActivationPolicy.showDockIcon()
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        case .checkForUpdates:
+            AppUpdater.shared.checkForUpdates()
+        case .quitProduct:
+            requestProductQuit()
+        case .ready, .helperClosing, .focus, .refreshMetrics, .rebuildHistoryIndex, .settingsChanged:
+            break
+        }
     }
 
     private func handlePopoverCommand(_ command: MenuBarPopoverCommand) {
