@@ -723,11 +723,8 @@ private struct MenuBarAppIcon: View {
 
     @MainActor
     private static let cachedAppIcon: NSImage = {
-        let mainAppURL = Bundle.main.bundleURL
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let original = NSWorkspace.shared.icon(forFile: mainAppURL.path)
+        let original = NSApp.applicationIconImage
+            ?? NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
         let size = NSSize(width: 32, height: 32)
         let image = NSImage(size: size)
         image.lockFocus()
