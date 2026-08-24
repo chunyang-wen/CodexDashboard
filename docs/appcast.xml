@@ -3,23 +3,6 @@
     <channel>
         <title>CodexDashboard</title>
         <item>
-            <title>0.1.6</title>
-            <description sparkle:format="html"><![CDATA[
-                <h3>What’s new</h3>
-                <ul>
-                    <li>Separated the persistent menu-bar host from the dashboard UI, so dashboard-owned data and windows can be released when the dashboard closes.</li>
-                    <li>Moved Codex source watching into the persistent menu-bar host, keeping cost and quota-derived metrics current while the dashboard window is closed.</li>
-                    <li>Refined activity-chart hover cards, scrolling affordances, and model-visibility controls.</li>
-                    <li>Improved dashboard lifecycle handling and memory-focused behavior across the host and helper processes.</li>
-                </ul>
-            ]]></description>
-            <pubDate>Mon, 24 Aug 2026 21:02:34 +0800</pubDate>
-            <sparkle:version>20260824203723</sparkle:version>
-            <sparkle:shortVersionString>0.1.6</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.6/CodexDashboard-0.1.6.zip" length="11329013" type="application/octet-stream" sparkle:edSignature="gbXkPc1unbF3rNdVz4QYZ8u6VrMCk1KXZOVGeoYSFGRH9sZ+AuQSXZZRz13laP/ZMzsW3qR/q9sNK6Jhnew+Bw=="/>
-        </item>
-        <item>
             <title>0.1.5</title>
             <description sparkle:format="html"><![CDATA[
                 <h3>What’s new</h3>
