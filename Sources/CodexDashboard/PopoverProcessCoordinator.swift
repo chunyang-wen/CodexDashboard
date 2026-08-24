@@ -165,6 +165,8 @@ final class PopoverProcessCoordinator {
             terminationTimer?.invalidate()
             terminationTimer = nil
             state = .ready
+            // Acknowledge the helper's retryable ready handshake.
+            send(.focus)
         case .closing:
             finishStopped()
         case .openDashboard, .openSettings, .quitProduct:

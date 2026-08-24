@@ -162,6 +162,7 @@ final class MigrationTests: XCTestCase {
         XCTAssertEqual(periods.count, 1)
         XCTAssertEqual(periods[0].usage.total, 300)
         XCTAssertEqual(periods[0].sessions, 1)
+        XCTAssertEqual(periods[0].sessionIDs, ["old-session-1"])
 
         let modelRows = try await store.dailyModelRows()
         XCTAssertEqual(modelRows.count, 1)
@@ -223,6 +224,7 @@ final class MigrationTests: XCTestCase {
         XCTAssertEqual(projAPeriods.count, 2)
         let projATokens = Set(projAPeriods.map(\.usage.total))
         XCTAssertEqual(projATokens, [100, 400])
+        XCTAssertEqual(Set(projAPeriods.flatMap(\.sessionIDs)), ["s1", "s3"])
 
         let projectCosts = try await store.sessionCosts(projectPath: "/proj/a")
         XCTAssertEqual(Set(projectCosts.keys), ["s1", "s3"])

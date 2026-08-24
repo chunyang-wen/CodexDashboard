@@ -23,60 +23,59 @@ struct MenuBarDashboardView: View {
     }
 
     var body: some View {
-        ZStack {
-            Rectangle().fill(.ultraThinMaterial)
+        VStack(spacing: 0) {
+            header
 
-            VStack(spacing: 0) {
-                header
-
-                if let windows = store.subscription?.windows, !windows.isEmpty {
-                    sectionDivider
-                    VStack(spacing: 0) {
-                        ForEach(windows) { quotaRow($0) }
-                    }
-                }
-
-                if let bankedResets = store.bankedResets, bankedResets.availableCount > 0 {
-                    sectionDivider
-                    bankedResetSection(bankedResets)
-                }
-
+            if let windows = store.subscription?.windows, !windows.isEmpty {
                 sectionDivider
-                usageTrend
-
-                sectionDivider
-                HStack(spacing: 0) {
-                    MenuBarActionButton(
-                        title: "Open Dashboard",
-                        systemImage: "rectangle.grid.2x2.fill",
-                        tint: .teal
-                    ) {
-                        onCommand(.openDashboard)
-                    }
-                    toolbarDivider
-                    MenuBarActionButton(
-                        title: "Settings",
-                        systemImage: "gearshape.fill"
-                    ) {
-                        onCommand(.openSettings)
-                    }
-                    .keyboardShortcut(",", modifiers: .command)
-                    toolbarDivider
-                    MenuBarActionButton(
-                        title: "Quit Codex Dashboard",
-                        systemImage: "power",
-                        tint: .red
-                    ) {
-                        onCommand(.quitProduct)
-                    }
-                    .keyboardShortcut("q", modifiers: .command)
-                }
-                .frame(height: 44)
-                .background(Color.primary.opacity(0.025))
+                quotaSection(windows)
             }
+
+            if let bankedResets = store.bankedResets, bankedResets.availableCount > 0 {
+                sectionDivider
+                bankedResetSection(bankedResets)
+            }
+
+            sectionDivider
+            usageTrend
+
+            sectionDivider
+            HStack(spacing: 0) {
+                MenuBarActionButton(
+                    title: "Open Dashboard",
+                    systemImage: "rectangle.grid.2x2.fill",
+                    tint: .teal
+                ) {
+                    onCommand(.openDashboard)
+                }
+                toolbarDivider
+                MenuBarActionButton(
+                    title: "Settings",
+                    systemImage: "gearshape.fill"
+                ) {
+                    onCommand(.openSettings)
+                }
+                .keyboardShortcut(",", modifiers: .command)
+                toolbarDivider
+                MenuBarActionButton(
+                    title: "Quit Codex Dashboard",
+                    systemImage: "power",
+                    tint: .red
+                ) {
+                    onCommand(.quitProduct)
+                }
+                .keyboardShortcut("q", modifiers: .command)
+            }
+            .frame(height: 44)
+            .background(Color.primary.opacity(0.025))
         }
         .frame(width: 390)
-        .onAppear { store.loadPopover() }
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(.separator.opacity(0.55), lineWidth: 0.5)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .onDisappear { store.releasePopover() }
     }
 
@@ -112,10 +111,10 @@ struct MenuBarDashboardView: View {
     }
 
     private var headerQuotaColor: Color? {
-        store.subscription?.windows
-            .map(\.remainingPercent)
-            .min()
-            .map { quotaColor(for: $0) }
+        guard let remaining = store.subscription?.windows.max(by: {
+            $0.windowMinutes < $1.windowMinutes
+        })?.remainingPercent else { return nil }
+        return quotaColor(for: remaining)
     }
 
     private var planLabel: String {
@@ -125,75 +124,68 @@ struct MenuBarDashboardView: View {
     }
 
     private func bankedResetSection(_ snapshot: BankedResetSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline) {
-                Label("Banked resets", systemImage: "arrow.counterclockwise.circle.fill")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Text(snapshot.availableCount.formatted())
-                    .font(.title2.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(.teal)
-            }
-
-            if let credits = snapshot.credits, !credits.isEmpty {
-                VStack(alignment: .leading, spacing: 5) {
-                    ForEach(credits.prefix(3)) { credit in
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(credit.title ?? "Codex reset")
-                                .lineLimit(1)
-                            Spacer(minLength: 8)
-                            if let expiresAt = credit.expiresAt {
-                                Text("Expires \(expiresAt, style: .relative)")
-                            } else {
-                                Text("No expiry reported")
-                            }
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                }
-            } else {
-                Text("Available to use when needed")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if let credits = snapshot.credits,
-               snapshot.availableCount > credits.count {
-                Text("OpenAI reports \(snapshot.availableCount - credits.count) more reset\(snapshot.availableCount - credits.count == 1 ? "" : "s") available.")
+        HStack(spacing: 10) {
+            Label("Banked resets", systemImage: "arrow.counterclockwise.circle.fill")
+                .font(.subheadline.weight(.semibold))
+            Spacer()
+            Text(snapshot.availableCount.formatted())
+                .font(.headline.monospacedDigit())
+                .foregroundStyle(.teal)
+            if let expiry = snapshot.credits?.compactMap(\.expiresAt).min() {
+                Text("expires \(expiry, style: .relative)")
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.vertical, 10)
         .accessibilityElement(children: .combine)
     }
 
-    private func quotaRow(_ window: UsageQuotaWindow) -> some View {
+    private func quotaSection(_ windows: [UsageQuotaWindow]) -> some View {
+        let orderedWindows = windows.sorted { $0.windowMinutes > $1.windowMinutes }
+        let primaryWindow = orderedWindows[0]
+        let secondaryWindows = Array(orderedWindows.dropFirst())
+
+        return VStack(spacing: 0) {
+            quotaRow(primaryWindow, showsAlertMarker: true)
+
+            if !secondaryWindows.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(secondaryWindows) { window in
+                        secondaryQuota(window)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 12)
+            }
+        }
+    }
+
+    private func quotaRow(_ window: UsageQuotaWindow, showsAlertMarker: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text(window.displayName)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.headline.weight(.semibold))
                 Spacer()
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text("\(window.remainingPercent.formatted(.number.precision(.fractionLength(0))))%")
-                        .font(.title2.monospacedDigit().weight(.semibold))
+                        .font(.system(size: 28, weight: .bold, design: .rounded).monospacedDigit())
                         .foregroundStyle(quotaColor(for: window.remainingPercent))
                     Text("remaining")
-                        .font(.caption)
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
             }
             QuotaRemainingBar(
                 remainingPercent: window.remainingPercent,
                 alertRemainingPercent: $quotaAlertRemainingPercent,
-                showsAlertMarker: showQuotaAlertMarker
+                showsAlertMarker: showsAlertMarker && showQuotaAlertMarker
             )
             HStack {
                 Text("Resets \(window.resetsAt, style: .relative)")
                 Spacer()
-                if showQuotaAlertMarker {
+                if showsAlertMarker && showQuotaAlertMarker {
                     HStack(spacing: 4) {
                         Circle()
                             .fill(.red)
@@ -216,7 +208,35 @@ struct MenuBarDashboardView: View {
             .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 13)
+        .padding(.vertical, 14)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func secondaryQuota(_ window: UsageQuotaWindow) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(quotaColor(for: window.remainingPercent))
+                .frame(width: 7, height: 7)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(window.displayName)
+                    .font(.caption2.weight(.semibold))
+                    .lineLimit(1)
+                Text("\(window.remainingPercent.formatted(.number.precision(.fractionLength(0))))% · \(window.resetsAt, style: .relative)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(.separator.opacity(0.35), lineWidth: 0.5)
+        }
         .accessibilityElement(children: .combine)
     }
 
@@ -704,7 +724,11 @@ private struct MenuBarAppIcon: View {
 
     @MainActor
     private static let cachedAppIcon: NSImage = {
-        let original = NSApp.applicationIconImage ?? NSImage()
+        let mainAppURL = Bundle.main.bundleURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let original = NSWorkspace.shared.icon(forFile: mainAppURL.path)
         let size = NSSize(width: 32, height: 32)
         let image = NSImage(size: size)
         image.lockFocus()
@@ -754,11 +778,16 @@ private struct MenuBarActionButton: View {
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(isHovering ? tint : Color.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(isHovering ? tint.opacity(0.11) : Color.clear)
+                .background(
+                    isHovering ? tint.opacity(0.11) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
                 .contentShape(Rectangle())
+                .padding(5)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .buttonStyle(.plain)
+        .focusEffectDisabled()
         .onHover { isHovering = $0 }
         .help(title)
         .accessibilityLabel(title)

@@ -43,6 +43,7 @@ final class StatusItemController: NSObject {
 
     @objc private func statusItemPressed(_ sender: NSStatusBarButton?) {
         guard let sender, isVisible else { return }
+        store.loadMenuBar()
         let anchor = sender.window?.convertToScreen(sender.frame) ?? .zero
         popoverCoordinator.requestPopover(anchor: anchor)
     }
@@ -65,6 +66,10 @@ final class StatusItemController: NSObject {
             : nil
         button.image = MenuBarQuotaIconRenderer.image(windows: windows, style: style, alertRemainingPercent: alert)
         button.image?.isTemplate = alert == nil
-        button.setAccessibilityValue("Quota unavailable")
+        let quotaDescription = windows.isEmpty
+            ? "Quota unavailable"
+            : windows.map { "\($0.displayName) \(Int($0.remainingPercent.rounded()))% remaining" }.joined(separator: ", ")
+        button.setAccessibilityValue(quotaDescription)
+        button.toolTip = quotaDescription
     }
 }

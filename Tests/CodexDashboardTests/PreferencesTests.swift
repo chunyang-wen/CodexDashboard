@@ -36,6 +36,41 @@ final class PreferencesTests: XCTestCase {
         XCTAssertTrue(interval.contains(sunday))
     }
 
+    @MainActor
+    func testPeriodBucketsKeepDistinctSessionsAndMondayWeekBoundaries() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        calendar.firstWeekday = 2
+        let sunday = calendar.date(from: DateComponents(year: 2026, month: 8, day: 23, hour: 12))!
+        let monday = calendar.date(from: DateComponents(year: 2026, month: 8, day: 24, hour: 12))!
+        let rows = [
+            DailyPeriodRow(
+                day: sunday,
+                usage: TokenUsage(input: 10),
+                estimatedCost: 1,
+                activeRuntime: 10,
+                sessions: 2,
+                sessionIDs: ["sunday-a", "shared"]
+            ),
+            DailyPeriodRow(
+                day: monday,
+                usage: TokenUsage(input: 20),
+                estimatedCost: 2,
+                activeRuntime: 20,
+                sessions: 3,
+                sessionIDs: ["monday-a", "monday-b", "shared"]
+            )
+        ]
+
+        let days = DashboardStore.bucketPeriodsFromRows(rows, granularity: .day, calendar: calendar)
+        XCTAssertEqual(days.map(\.sessions), [2, 3])
+
+        let weeks = DashboardStore.bucketPeriodsFromRows(rows, granularity: .week, calendar: calendar)
+        XCTAssertEqual(weeks.count, 2)
+        XCTAssertEqual(weeks.map(\.sessions), [2, 3])
+        XCTAssertEqual(calendar.component(.weekday, from: weeks[1].start), 2)
+    }
+
     func testPersistedKeysAreCentralized() {
         XCTAssertEqual(
             DashboardPreferences.allPersistedKeys,

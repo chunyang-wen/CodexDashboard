@@ -235,6 +235,43 @@ final class DashboardStoreLifecycleTests: XCTestCase {
         XCTAssertEqual(menuStore.menuBarDaily.count, 1)
     }
 
+    func testMenuBarPrefersCurrentTypedIndexOverStaleCompactProjection() async throws {
+        let userHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let suiteName = "DashboardStoreLifecycleTests.CurrentProjection.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: userHome)
+        }
+
+        let now = Date.now
+        let historicalStore = HistoricalStore(userHome: userHome)
+        try await historicalStore.recordMenuBarMetrics(MenuBarMetricsSnapshot(days: [
+            MenuBarDayMetrics(
+                day: now,
+                usage: .zero,
+                estimatedCost: 0,
+                toolCalls: 0,
+                skillCalls: 0,
+                sessions: 0,
+                activeRuntime: 0
+            )
+        ]))
+        let sessions = [
+            makeSession(id: "current-a", codexHome: userHome.appendingPathComponent(".codex", isDirectory: true)),
+            makeSession(id: "current-b", codexHome: userHome.appendingPathComponent(".codex", isDirectory: true))
+        ]
+        _ = try await historicalStore.record(sessions)
+        _ = try await historicalStore.metricsIndex(for: sessions)
+
+        let menuStore = MenuBarStore(userHome: userHome, defaults: defaults)
+        await menuStore.preparePopover()
+
+        XCTAssertEqual(menuStore.menuBarDaily.last?.sessions, 2)
+        XCTAssertGreaterThan(menuStore.menuBarDaily.last?.usage.total ?? 0, 0)
+    }
+
     func testMenuBarSubscriptionLoadIsIndependent() async throws {
         let userHome = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

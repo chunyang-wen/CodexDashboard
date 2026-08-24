@@ -15,6 +15,8 @@ private final class PopoverAppDelegate: NSObject, NSApplicationDelegate, NSWindo
     private var store: MenuBarStore!
     private var panel: NSPanel?
     private var hostWatchdog: Timer?
+    private var readyTimer: Timer?
+    private var outsideClickMonitor: Any?
     private var notificationObserver: NSObjectProtocol?
     private var launchToken: String?
     private var hostPID: Int32?
@@ -30,10 +32,10 @@ private final class PopoverAppDelegate: NSObject, NSApplicationDelegate, NSWindo
 
         NSApp.setActivationPolicy(.accessory)
         store = MenuBarStore(defaults: DashboardPreferences.sharedDefaults())
-        store.loadMenuBar()
         observeHostCommands()
         startHostWatchdog()
         showPanel()
+        store.loadPopover()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -51,12 +53,13 @@ private final class PopoverAppDelegate: NSObject, NSApplicationDelegate, NSWindo
         }
         hostWatchdog?.invalidate()
         hostWatchdog = nil
+        readyTimer?.invalidate()
+        readyTimer = nil
+        if let outsideClickMonitor {
+            NSEvent.removeMonitor(outsideClickMonitor)
+            self.outsideClickMonitor = nil
+        }
         store?.releasePopover()
-    }
-
-    func windowDidResignKey(_ notification: Notification) {
-        guard !isTerminating else { return }
-        send(.closing)
     }
 
     private func readLaunchArguments() -> Bool {
@@ -119,6 +122,8 @@ private final class PopoverAppDelegate: NSObject, NSApplicationDelegate, NSWindo
 
         switch command {
         case .focus:
+            readyTimer?.invalidate()
+            readyTimer = nil
             panel?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         case .closing:
@@ -150,22 +155,49 @@ private final class PopoverAppDelegate: NSObject, NSApplicationDelegate, NSWindo
         panel.backgroundColor = NSColor.clear
         panel.hasShadow = true
         panel.level = NSWindow.Level.popUpMenu
-        panel.collectionBehavior = [NSWindow.CollectionBehavior.transient, NSWindow.CollectionBehavior.ignoresCycle]
+        panel.collectionBehavior = [.ignoresCycle]
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = true
         panel.delegate = self
 
         let width: CGFloat = 390
-        let height: CGFloat = 650
+        let height: CGFloat = 620
         panel.setContentSize(NSSize(width: width, height: height))
         panel.setFrameOrigin(panelOrigin(size: NSSize(width: width, height: height)))
         self.panel = panel
-
         // Finish all layout and data wiring before ordering the panel in front;
-        // this avoids a visible blank/splash frame on first presentation.
+        // this avoids a visible blank frame on first presentation.
         hostingController.view.layoutSubtreeIfNeeded()
         panel.makeKeyAndOrderFront(nil as Any?)
         NSApp.activate(ignoringOtherApps: true)
+        beginReadyHandshake()
+
+        // The status-item mouse-up launches this helper. Install dismissal on
+        // the next run-loop turn so that opening gesture can never close it.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.isTerminating, self.outsideClickMonitor == nil else { return }
+            self.outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, let panel = self.panel, panel.isVisible,
+                          !panel.frame.contains(NSEvent.mouseLocation) else { return }
+                    self.send(.closing)
+                }
+            }
+        }
+    }
+
+    /// Distributed notifications sent during the first app-launch turn can
+    /// precede the host's NSWorkspace completion. Retry until the host echoes
+    /// `.focus` as an acknowledgement, preventing its launch timeout from
+    /// terminating an already-visible popup.
+    private func beginReadyHandshake() {
+        readyTimer?.invalidate()
+        readyTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, !self.isTerminating else { return }
+                self.send(.ready)
+            }
+        }
         send(.ready)
     }
 

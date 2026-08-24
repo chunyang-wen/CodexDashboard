@@ -594,7 +594,8 @@ final class MetricsDatabase: @unchecked Sendable {
                 SELECT day,
                        SUM(input_tokens), SUM(cached_input), SUM(cache_write),
                        SUM(output_tokens), SUM(reasoning), SUM(total_tokens),
-                       SUM(cost), SUM(active_runtime), COUNT(DISTINCT session_id)
+                       SUM(cost), SUM(active_runtime), COUNT(DISTINCT session_id),
+                       GROUP_CONCAT(DISTINCT session_id)
                 FROM daily_contribution WHERE 1=1
                 """
             if projectPath != nil { sql += " AND project_path = ?" }
@@ -623,7 +624,8 @@ final class MetricsDatabase: @unchecked Sendable {
                     usage: usage,
                     estimatedCost: doubleOrZero(statement, 7),
                     activeRuntime: doubleOrZero(statement, 8),
-                    sessions: Int(int64OrZero(statement, 9))
+                    sessions: Int(int64OrZero(statement, 9)),
+                    sessionIDs: Set((textValue(statement, 10) ?? "").split(separator: ",").map(String.init))
                 ))
             }
             return rows
@@ -638,7 +640,8 @@ final class MetricsDatabase: @unchecked Sendable {
             var sql = """
                 SELECT m.day, m.model,
                        SUM(m.input_tokens), SUM(m.cached_input), SUM(m.output_tokens), SUM(m.total_tokens),
-                       SUM(m.cost), SUM(m.active_runtime), COUNT(DISTINCT m.session_id)
+                       SUM(m.cost), SUM(m.active_runtime), COUNT(DISTINCT m.session_id),
+                       GROUP_CONCAT(DISTINCT m.session_id)
                 FROM daily_model m
                 JOIN daily_contribution c ON c.session_id = m.session_id AND c.day = m.day
                 WHERE 1=1
@@ -676,7 +679,8 @@ final class MetricsDatabase: @unchecked Sendable {
                     usage: usage,
                     estimatedCost: doubleOrZero(statement, 6),
                     activeRuntime: doubleOrZero(statement, 7),
-                    sessions: Int(int64OrZero(statement, 8))
+                    sessions: Int(int64OrZero(statement, 8)),
+                    sessionIDs: Set((textValue(statement, 9) ?? "").split(separator: ",").map(String.init))
                 ))
             }
             return rows
@@ -1357,6 +1361,57 @@ final class MetricsDatabase: @unchecked Sendable {
         }
     }
 
+    /// Builds the menu-bar projection from the durable typed index when the
+    /// dedicated projection has not been written yet.
+    func menuBarMetricsFromIndex(since: Date, calendar: Calendar) throws -> MenuBarMetricsSnapshot? {
+        try lockedThrowing {
+            guard let statement = prepare("""
+                SELECT metric FROM metric_daily_index
+                WHERE day >= ? ORDER BY day
+                """) else { throw databaseError() }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_double(statement, 1, since.timeIntervalSince1970)
+
+            struct DayBucket {
+                var usage = TokenUsage.zero
+                var estimatedCost = Decimal.zero
+                var toolCalls = 0
+                var skillCalls = 0
+                var sessions = Set<String>()
+                var activeRuntime: TimeInterval = 0
+            }
+
+            let decoder = Self.decoder()
+            var buckets: [Date: DayBucket] = [:]
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let bytes = data(statement, 0),
+                      let contribution = try? decoder.decode(IndexedDailyMetrics.self, from: bytes) else { continue }
+                let day = calendar.startOfDay(for: contribution.day)
+                var bucket = buckets[day, default: DayBucket()]
+                bucket.usage = bucket.usage + contribution.usage
+                bucket.estimatedCost += contribution.estimatedCost
+                bucket.toolCalls += contribution.toolCalls
+                bucket.skillCalls += contribution.skillCalls
+                bucket.sessions.insert(contribution.sessionID)
+                bucket.activeRuntime += contribution.activeRuntime
+                buckets[day] = bucket
+            }
+
+            let days = buckets.map { day, bucket in
+                MenuBarDayMetrics(
+                    day: day,
+                    usage: bucket.usage,
+                    estimatedCost: bucket.estimatedCost,
+                    toolCalls: bucket.toolCalls,
+                    skillCalls: bucket.skillCalls,
+                    sessions: bucket.sessions.count,
+                    activeRuntime: bucket.activeRuntime
+                )
+            }.sorted { $0.day < $1.day }
+            return days.isEmpty ? nil : MenuBarMetricsSnapshot(days: days)
+        }
+    }
+
     func sourceEventID(for key: String) throws -> UInt64? {
         try metadata(UInt64.self, key: key)
     }
@@ -1705,6 +1760,23 @@ public struct DailyPeriodRow: Sendable {
     public let estimatedCost: Double
     public let activeRuntime: TimeInterval
     public let sessions: Int
+    public let sessionIDs: Set<String>
+
+    public init(
+        day: Date,
+        usage: TokenUsage,
+        estimatedCost: Double,
+        activeRuntime: TimeInterval,
+        sessions: Int,
+        sessionIDs: Set<String> = []
+    ) {
+        self.day = day
+        self.usage = usage
+        self.estimatedCost = estimatedCost
+        self.activeRuntime = activeRuntime
+        self.sessions = sessions
+        self.sessionIDs = sessionIDs
+    }
 }
 
 /// One model-day bucket from a GROUP BY day, model query.
@@ -1715,6 +1787,7 @@ public struct DailyModelRow: Sendable {
     public let estimatedCost: Double
     public let activeRuntime: TimeInterval
     public let sessions: Int
+    public let sessionIDs: Set<String>
 }
 
 /// Merged tool usage across all days.
@@ -2076,6 +2149,13 @@ public actor HistoricalStore {
         try database?.menuBarMetricsFromDaily(since: since)
     }
 
+    public func menuBarMetricsFromIndex(
+        since: Date,
+        calendar: Calendar = .current
+    ) throws -> MenuBarMetricsSnapshot? {
+        try database?.menuBarMetricsFromIndex(since: since, calendar: calendar)
+    }
+
     public func recordMenuBarMetrics(_ snapshot: MenuBarMetricsSnapshot) throws {
         // generatedAt changes on every refresh; compare the actual compact
         // metrics so an unchanged snapshot does not create another SQLite/WAL
@@ -2148,6 +2228,14 @@ public actor HistoricalStore {
 
     public func subscriptionSnapshot() throws -> SubscriptionSnapshot? {
         if didLoadSubscription { return subscriptionCache }
+        subscriptionCache = try database?.subscription()
+        didLoadSubscription = true
+        return subscriptionCache
+    }
+
+    /// Re-reads the small durable quota record so the resident menu-bar host
+    /// can observe updates written by the temporary dashboard process.
+    public func freshSubscriptionSnapshot() throws -> SubscriptionSnapshot? {
         subscriptionCache = try database?.subscription()
         didLoadSubscription = true
         return subscriptionCache

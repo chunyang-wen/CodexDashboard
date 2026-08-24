@@ -75,6 +75,7 @@ final class MenuBarStore: ObservableObject {
     private var loadID = UUID()
     private var popoverTask: Task<Void, Never>?
     private var bankedResetTask: Task<Void, Never>?
+    private var menuBarMonitorTask: Task<Void, Never>?
     private var menuBarAnalytics = MenuBarAnalytics.empty
 
     init(userHome: URL = FileManager.default.homeDirectoryForCurrentUser, defaults: UserDefaults = .standard) {
@@ -115,7 +116,7 @@ final class MenuBarStore: ObservableObject {
                 }
             }
             do {
-                let snapshot = try await self.historicalStore.subscriptionSnapshot()
+                let snapshot = try await self.historicalStore.freshSubscriptionSnapshot()
                 guard !Task.isCancelled, self.loadID == requestID else { return }
                 self.subscription = snapshot?.isUsable == true ? snapshot : nil
             } catch {
@@ -125,27 +126,49 @@ final class MenuBarStore: ObservableObject {
         }
     }
 
+    func startMenuBarMonitoring() {
+        menuBarMonitorTask?.cancel()
+        loadMenuBar()
+        guard refreshInterval > 0 else { return }
+        menuBarMonitorTask = Task { [weak self] in
+            while let self, !Task.isCancelled {
+                let interval = max(self.refreshInterval, 5)
+                try? await Task.sleep(for: .seconds(interval))
+                guard !Task.isCancelled else { return }
+                self.loadMenuBar()
+            }
+        }
+    }
+
     func loadPopover() {
         menuBarDataIsResident = true
         popoverTask?.cancel()
+        bankedResetTask?.cancel()
+        bankedResets = nil
+        let codexHome = codexHome
         popoverTask = Task { [weak self] in
             guard let self else { return }
-            await self.reloadCompactSnapshot()
-            guard !Task.isCancelled, self.menuBarDataIsResident else { return }
-            let codexHome = self.codexHome
-            self.account = await Task.detached(priority: .utility) {
-                CodexAccountReader.read(from: codexHome)
-            }.value
-            guard !Task.isCancelled, self.menuBarDataIsResident else { return }
-            self.bankedResetTask?.cancel()
-            self.bankedResetTask = Task { [weak self] in
-                let snapshot = await Task.detached(priority: .utility) {
-                    await BankedResetReader.latest(from: codexHome)
-                }.value
-                guard !Task.isCancelled, let self, self.menuBarDataIsResident else { return }
-                self.bankedResets = snapshot
-            }
+            await self.preparePopover()
         }
+        bankedResetTask = Task { [weak self] in
+            let snapshot = await Task.detached(priority: .utility) {
+                await BankedResetReader.latest(from: codexHome)
+            }.value
+            guard !Task.isCancelled, let self, self.menuBarDataIsResident else { return }
+            self.bankedResets = snapshot
+        }
+    }
+
+    /// Loads local popup data after the fixed-size panel is already visible.
+    /// Remote reset-credit data runs independently in `bankedResetTask`.
+    func preparePopover() async {
+        menuBarDataIsResident = true
+        await reloadCompactSnapshot(includeSessionCount: false)
+        guard !Task.isCancelled, menuBarDataIsResident else { return }
+        let codexHome = codexHome
+        account = await Task.detached(priority: .utility) {
+            CodexAccountReader.read(from: codexHome)
+        }.value
     }
 
     func releasePopover() {
@@ -201,6 +224,7 @@ final class MenuBarStore: ObservableObject {
         refreshInterval = interval
         defaults.set(interval, forKey: DashboardPreferences.metricsRefreshIntervalKey)
         settingsDidChange?()
+        if menuBarMonitorTask != nil { startMenuBarMonitoring() }
     }
 
     func updateWeekStartsMonday(_ value: Bool) {
@@ -214,28 +238,33 @@ final class MenuBarStore: ObservableObject {
         subscription = snapshot
     }
 
-    func reloadCompactSnapshot() async {
+    func reloadCompactSnapshot(includeSessionCount: Bool = true) async {
         guard menuBarDataIsResident else { return }
         do {
-            historySessionCount = try await historicalStore.storedSessionCount()
+            let subscriptionSnapshot = try await historicalStore.freshSubscriptionSnapshot()
+            subscription = subscriptionSnapshot?.isUsable == true ? subscriptionSnapshot : nil
             guard menuBarDataIsResident else { return }
-            if let snapshot = try await historicalStore.menuBarMetricsSnapshot(
-                maxDays: HistoricalStore.menuBarMetricsReadWindowDays
-            ) {
-                menuBarAnalytics = MenuBarAnalytics(snapshot: snapshot)
-            } else {
-                let cutoff = analyticsCalendar.date(
-                    byAdding: .day,
-                    value: -45,
-                    to: analyticsCalendar.startOfDay(for: .now)
-                ) ?? .distantPast
-                if let snapshot = try await historicalStore.menuBarMetricsFromDaily(since: cutoff) {
-                    menuBarAnalytics = MenuBarAnalytics(snapshot: snapshot)
-                    try? await historicalStore.recordMenuBarMetrics(snapshot)
-                }
+
+            if includeSessionCount {
+                historySessionCount = try await historicalStore.storedSessionCount()
+                guard menuBarDataIsResident else { return }
             }
-            let snapshot = try await historicalStore.subscriptionSnapshot()
-            subscription = snapshot?.isUsable == true ? snapshot : nil
+            let cutoff = analyticsCalendar.date(
+                byAdding: .day,
+                value: -HistoricalStore.menuBarMetricsReadWindowDays,
+                to: analyticsCalendar.startOfDay(for: .now)
+            ) ?? .distantPast
+            let dailySnapshot = try await historicalStore.menuBarMetricsFromDaily(since: cutoff)
+            let indexSnapshot = dailySnapshot == nil
+                ? try await historicalStore.menuBarMetricsFromIndex(since: cutoff, calendar: analyticsCalendar)
+                : nil
+            let storedSnapshot = dailySnapshot == nil && indexSnapshot == nil
+                ? try await historicalStore.menuBarMetricsSnapshot(maxDays: HistoricalStore.menuBarMetricsReadWindowDays)
+                : nil
+            if let snapshot = dailySnapshot ?? indexSnapshot ?? storedSnapshot {
+                menuBarAnalytics = MenuBarAnalytics(snapshot: snapshot)
+                try? await historicalStore.recordMenuBarMetrics(snapshot)
+            }
         } catch {
             guard menuBarDataIsResident else { return }
             historyMessage = "Menu-bar metrics could not be loaded: \(error.localizedDescription)"

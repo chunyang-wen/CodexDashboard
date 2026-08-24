@@ -103,7 +103,8 @@ private struct DashboardAnalytics: Sendable {
     ) -> [PeriodMetric] {
         struct Bucket {
             var usage = TokenUsage.zero
-            var sessions = Set<Int>()
+            var sessionIDs = Set<String>()
+            var fallbackSessionCount = 0
             var runtime: TimeInterval = 0
             var cost = 0.0
         }
@@ -112,14 +113,16 @@ private struct DashboardAnalytics: Sendable {
             let start = Self.periodStart(row.day, granularity: granularity, calendar: calendar)
             var bucket = buckets[start, default: Bucket()]
             bucket.usage = bucket.usage + row.usage
-            bucket.sessions.insert(row.sessions)
+            bucket.sessionIDs.formUnion(row.sessionIDs)
+            bucket.fallbackSessionCount += row.sessions
             bucket.runtime += row.activeRuntime
             bucket.cost += row.estimatedCost
             buckets[start] = bucket
         }
         return buckets.map { start, bucket in
-            PeriodMetric(start: start, usage: bucket.usage, sessions: bucket.sessions.count,
-                         activeRuntime: bucket.runtime, estimatedCost: Decimal(bucket.cost))
+            let sessions = bucket.sessionIDs.isEmpty ? bucket.fallbackSessionCount : bucket.sessionIDs.count
+            return PeriodMetric(start: start, usage: bucket.usage, sessions: sessions,
+                                activeRuntime: bucket.runtime, estimatedCost: Decimal(bucket.cost))
         }.sorted { $0.start < $1.start }
     }
 
@@ -128,7 +131,8 @@ private struct DashboardAnalytics: Sendable {
     ) -> [ModelPeriodMetric] {
         struct Bucket {
             var usage = TokenUsage.zero
-            var sessions = Set<String>()
+            var sessionIDs = Set<String>()
+            var fallbackSessionCount = 0
             var runtime: TimeInterval = 0
             var cost = 0.0
         }
@@ -138,7 +142,8 @@ private struct DashboardAnalytics: Sendable {
             var modelBuckets = buckets[row.model, default: [:]]
             var bucket = modelBuckets[start, default: Bucket()]
             bucket.usage = bucket.usage + row.usage
-            bucket.sessions.insert("\(row.model)-\(row.sessions)")
+            bucket.sessionIDs.formUnion(row.sessionIDs)
+            bucket.fallbackSessionCount += row.sessions
             bucket.runtime += row.activeRuntime
             bucket.cost += row.estimatedCost
             modelBuckets[start] = bucket
@@ -146,9 +151,10 @@ private struct DashboardAnalytics: Sendable {
         }
         return buckets.flatMap { model, modelBuckets in
             modelBuckets.map { start, bucket in
-                ModelPeriodMetric(start: start, model: model, usage: bucket.usage,
-                                  sessions: bucket.sessions.count, activeRuntime: bucket.runtime,
-                                  estimatedCost: Decimal(bucket.cost))
+                let sessions = bucket.sessionIDs.isEmpty ? bucket.fallbackSessionCount : bucket.sessionIDs.count
+                return ModelPeriodMetric(start: start, model: model, usage: bucket.usage,
+                                         sessions: sessions, activeRuntime: bucket.runtime,
+                                         estimatedCost: Decimal(bucket.cost))
             }
         }.sorted {
             if $0.start != $1.start { return $0.start < $1.start }
@@ -163,7 +169,8 @@ private struct DashboardAnalytics: Sendable {
     private static func mergeModelRows(_ rows: [DailyModelRow], projectPath: String?) -> [ModelMetric] {
         struct Bucket {
             var usage = TokenUsage.zero
-            var sessions = Set<String>()
+            var sessionIDs = Set<String>()
+            var fallbackSessionCount = 0
             var runtime = 0.0
             var cost = 0.0
         }
@@ -171,14 +178,16 @@ private struct DashboardAnalytics: Sendable {
         for row in rows {
             var bucket = buckets[row.model, default: Bucket()]
             bucket.usage = bucket.usage + row.usage
-            bucket.sessions.insert("\(row.model)-\(row.day.timeIntervalSince1970)-\(row.sessions)")
+            bucket.sessionIDs.formUnion(row.sessionIDs)
+            bucket.fallbackSessionCount += row.sessions
             bucket.runtime += row.activeRuntime
             bucket.cost += row.estimatedCost
             buckets[row.model] = bucket
         }
         return buckets.map { model, bucket in
-            ModelMetric(model: model, sessions: bucket.sessions.count, usage: bucket.usage,
-                        activeRuntime: bucket.runtime, estimatedCost: Decimal(bucket.cost))
+            let sessions = bucket.sessionIDs.isEmpty ? bucket.fallbackSessionCount : bucket.sessionIDs.count
+            return ModelMetric(model: model, sessions: sessions, usage: bucket.usage,
+                               activeRuntime: bucket.runtime, estimatedCost: Decimal(bucket.cost))
         }.sorted { $0.usage.total > $1.usage.total }
     }
 
@@ -538,7 +547,8 @@ final class DashboardStore: ObservableObject {
         let calendar = calendar ?? Calendar.current
         struct Bucket {
             var usage = TokenUsage.zero
-            var sessions = Set<String>()
+            var sessionIDs = Set<String>()
+            var fallbackSessionCount = 0
             var runtime: TimeInterval = 0
             var cost = 0.0
         }
@@ -553,14 +563,16 @@ final class DashboardStore: ObservableObject {
             }
             var bucket = buckets[start, default: Bucket()]
             bucket.usage = bucket.usage + row.usage
-            bucket.sessions.insert("\(row.sessions)")
+            bucket.sessionIDs.formUnion(row.sessionIDs)
+            bucket.fallbackSessionCount += row.sessions
             bucket.runtime += row.activeRuntime
             bucket.cost += row.estimatedCost
             buckets[start] = bucket
         }
         return buckets.map { start, bucket in
-            PeriodMetric(start: start, usage: bucket.usage, sessions: bucket.sessions.count,
-                         activeRuntime: bucket.runtime, estimatedCost: Decimal(bucket.cost))
+            let sessions = bucket.sessionIDs.isEmpty ? bucket.fallbackSessionCount : bucket.sessionIDs.count
+            return PeriodMetric(start: start, usage: bucket.usage, sessions: sessions,
+                                activeRuntime: bucket.runtime, estimatedCost: Decimal(bucket.cost))
         }.sorted { $0.start < $1.start }
     }
     func sessionMetric(withID id: String) async throws -> SessionMetric? {

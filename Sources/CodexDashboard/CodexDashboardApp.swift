@@ -167,7 +167,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
             popoverCoordinator: popoverCoordinator,
             defaults: DashboardPreferences.sharedDefaults()
         )
-        menuStore.loadMenuBar()
+        menuStore.startMenuBarMonitoring()
         lifecycleObservation = DistributedDashboardLifecycleBus().observe { [weak self] message in
             guard let self,
                   message.command != .ready,
@@ -472,10 +472,9 @@ enum MenuBarQuotaIconRenderer {
         representation.size = size
         image.addRepresentation(representation)
 
-        let primaryWindow = windows
-            .filter { $0.windowMinutes != 10_080 }
-            .min { $0.windowMinutes < $1.windowMinutes }
-        let weeklyWindow = windows.first(where: { $0.windowMinutes == 10_080 })
+        let orderedWindows = windows.sorted { $0.windowMinutes > $1.windowMinutes }
+        let primaryWindow = orderedWindows.first
+        let secondaryWindow = orderedWindows.dropFirst().first
         let iconInk: NSColor = alertRemainingPercent == nil ? .black : .labelColor
 
         NSGraphicsContext.saveGraphicsState()
@@ -483,11 +482,11 @@ enum MenuBarQuotaIconRenderer {
             NSGraphicsContext.current = context
             context.cgContext.setShouldAntialias(true)
             switch style {
-            case .rings: drawRings(weeklyWindow: weeklyWindow, primaryWindow: primaryWindow, iconInk: iconInk)
-            case .droplet: drawDroplet(weeklyWindow: weeklyWindow, primaryWindow: primaryWindow, iconInk: iconInk)
-            case .capsules: drawCapsules(weeklyWindow: weeklyWindow, primaryWindow: primaryWindow, iconInk: iconInk)
+            case .rings: drawRings(primaryWindow: primaryWindow, secondaryWindow: secondaryWindow, iconInk: iconInk)
+            case .droplet: drawDroplet(primaryWindow: primaryWindow, secondaryWindow: secondaryWindow, iconInk: iconInk)
+            case .capsules: drawCapsules(primaryWindow: primaryWindow, secondaryWindow: secondaryWindow, iconInk: iconInk)
             }
-            drawAlertMarker(style: style, alertRemainingPercent: alertRemainingPercent, weeklyWindow: weeklyWindow, primaryWindow: primaryWindow)
+            drawAlertMarker(style: style, alertRemainingPercent: alertRemainingPercent, primaryWindow: primaryWindow)
         }
         NSGraphicsContext.restoreGraphicsState()
 
@@ -495,9 +494,9 @@ enum MenuBarQuotaIconRenderer {
         return image
     }
 
-    private static func drawRings(weeklyWindow: UsageQuotaWindow?, primaryWindow: UsageQuotaWindow?, iconInk: NSColor) {
-        drawRing(radius: 6.8, lineWidth: 2.4, window: weeklyWindow, iconInk: iconInk)
-        drawRing(radius: 3.2, lineWidth: 1.8, window: primaryWindow, iconInk: iconInk)
+    private static func drawRings(primaryWindow: UsageQuotaWindow?, secondaryWindow: UsageQuotaWindow?, iconInk: NSColor) {
+        drawRing(radius: 6.8, lineWidth: 2.4, window: primaryWindow, iconInk: iconInk)
+        drawRing(radius: 3.2, lineWidth: 1.8, window: secondaryWindow, iconInk: iconInk)
     }
 
     private static func drawRing(radius: CGFloat, lineWidth: CGFloat, window: UsageQuotaWindow?, iconInk: NSColor) {
@@ -528,11 +527,11 @@ enum MenuBarQuotaIconRenderer {
         progress.stroke()
     }
 
-    private static func drawDroplet(weeklyWindow: UsageQuotaWindow?, primaryWindow: UsageQuotaWindow?, iconInk: NSColor) {
+    private static func drawDroplet(primaryWindow: UsageQuotaWindow?, secondaryWindow: UsageQuotaWindow?, iconInk: NSColor) {
         let left = dropletChamber(left: true)
         let right = dropletChamber(left: false)
-        drawLiquid(in: left, bounds: NSRect(x: 1.7, y: 2, width: 6.65, height: 14), window: weeklyWindow, iconInk: iconInk)
-        drawLiquid(in: right, bounds: NSRect(x: 9.65, y: 2, width: 6.65, height: 14), window: primaryWindow, iconInk: iconInk)
+        drawLiquid(in: left, bounds: NSRect(x: 1.7, y: 2, width: 6.65, height: 14), window: primaryWindow, iconInk: iconInk)
+        drawLiquid(in: right, bounds: NSRect(x: 9.65, y: 2, width: 6.65, height: 14), window: secondaryWindow, iconInk: iconInk)
     }
 
     private static func dropletChamber(left: Bool) -> NSBezierPath {
@@ -565,9 +564,9 @@ enum MenuBarQuotaIconRenderer {
         chamber.stroke()
     }
 
-    private static func drawCapsules(weeklyWindow: UsageQuotaWindow?, primaryWindow: UsageQuotaWindow?, iconInk: NSColor) {
-        drawCapsule(in: NSRect(x: 1.5, y: 9, width: 15, height: 6), window: weeklyWindow, iconInk: iconInk)
-        drawCapsule(in: NSRect(x: 1.5, y: 3, width: 15, height: 4), window: primaryWindow, iconInk: iconInk)
+    private static func drawCapsules(primaryWindow: UsageQuotaWindow?, secondaryWindow: UsageQuotaWindow?, iconInk: NSColor) {
+        drawCapsule(in: NSRect(x: 1.5, y: 9, width: 15, height: 6), window: primaryWindow, iconInk: iconInk)
+        drawCapsule(in: NSRect(x: 1.5, y: 3, width: 15, height: 4), window: secondaryWindow, iconInk: iconInk)
     }
 
     private static func drawCapsule(in rect: NSRect, window: UsageQuotaWindow?, iconInk: NSColor) {
@@ -595,7 +594,6 @@ enum MenuBarQuotaIconRenderer {
     private static func drawAlertMarker(
         style: MenuBarQuotaIconStyle,
         alertRemainingPercent: Double?,
-        weeklyWindow: UsageQuotaWindow?,
         primaryWindow: UsageQuotaWindow?
     ) {
         guard let alertRemainingPercent else { return }
@@ -603,27 +601,18 @@ enum MenuBarQuotaIconRenderer {
         switch style {
         case .rings:
             let angle = CGFloat.pi / 2 - 2 * .pi * fraction
-            if weeklyWindow != nil {
-                drawAlertDot(at: NSPoint(x: 9 + 6.8 * cos(angle), y: 9 + 6.8 * sin(angle)), diameter: 4)
-            }
             if primaryWindow != nil {
-                drawAlertDot(at: NSPoint(x: 9 + 3.2 * cos(angle), y: 9 + 3.2 * sin(angle)), diameter: 3.2)
+                drawAlertDot(at: NSPoint(x: 9 + 6.8 * cos(angle), y: 9 + 6.8 * sin(angle)), diameter: 4)
             }
         case .droplet:
             let y = 2 + 14 * fraction
-            if weeklyWindow != nil {
-                drawAlertBar(y: y, from: 1.5, to: 8.5, clippedTo: dropletChamber(left: true))
-            }
             if primaryWindow != nil {
-                drawAlertBar(y: y, from: 9.5, to: 16.5, clippedTo: dropletChamber(left: false))
+                drawAlertBar(y: y, from: 1.5, to: 8.5, clippedTo: dropletChamber(left: true))
             }
         case .capsules:
             let x = 1.5 + 15 * fraction
-            if weeklyWindow != nil {
-                drawAlertDot(at: NSPoint(x: x, y: 12), diameter: 4)
-            }
             if primaryWindow != nil {
-                drawAlertDot(at: NSPoint(x: x, y: 5), diameter: 3.4)
+                drawAlertDot(at: NSPoint(x: x, y: 12), diameter: 4)
             }
         }
     }
@@ -681,25 +670,18 @@ private struct MenuBarQuotaIcon: View, Equatable {
         )
     }
 
-    private var primaryWindow: UsageQuotaWindow? {
-        windows
-            .filter { $0.windowMinutes != 10_080 }
-            .min { $0.windowMinutes < $1.windowMinutes }
-    }
-
-    private var weeklyWindow: UsageQuotaWindow? {
-        windows.first(where: { $0.windowMinutes == 10_080 })
+    private var displayedWindows: [UsageQuotaWindow] {
+        Array(windows.sorted { $0.windowMinutes > $1.windowMinutes }.prefix(2))
     }
 
     private var accessibilityValue: String {
-        let displayedWindows = [primaryWindow, weeklyWindow].compactMap { $0 }
         guard !displayedWindows.isEmpty else { return "Quota unavailable" }
         let quotaDescription = displayedWindows.map { window in
             "\(window.displayName): \(window.remainingPercent.formatted(.number.precision(.fractionLength(0))))% remaining"
         }.joined(separator: ", ")
         guard let alertRemainingPercent else { return quotaDescription }
         let threshold = alertRemainingPercent.formatted(.number.precision(.fractionLength(0)))
-        let isReached = displayedWindows.contains { $0.remainingPercent <= alertRemainingPercent }
+        let isReached = (displayedWindows.first?.remainingPercent ?? 101) <= alertRemainingPercent
         return "\(quotaDescription). Alert marker at \(threshold)% remaining\(isReached ? ", reached" : "")"
     }
 }
