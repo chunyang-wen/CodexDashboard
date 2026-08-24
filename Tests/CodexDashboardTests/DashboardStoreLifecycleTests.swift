@@ -77,6 +77,43 @@ final class DashboardStoreLifecycleTests: XCTestCase {
         XCTAssertTrue(dashboardStore.dashboardDataIsResident)
     }
 
+    func testChangingDashboardRangeRefreshesOverviewPeriods() async throws {
+        let userHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let suiteName = "DashboardStoreLifecycleTests.RangeRefresh.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: userHome)
+        }
+
+        try await HistoricalStore(userHome: userHome).record([
+            makeSession(id: "range-refresh-session", codexHome: userHome.appendingPathComponent(".codex", isDirectory: true))
+        ])
+
+        let store = DashboardStore(userHome: userHome, defaults: defaults)
+        store.activateDashboard()
+        try await waitUntil {
+            !store.isLoading && !store.isUpdatingAnalytics && !store.trendPeriods.isEmpty
+        }
+
+        store.updateRange(.day)
+        try await waitUntil {
+            store.range == .day && !store.isUpdatingAnalytics && !store.trendPeriods.isEmpty
+        }
+
+        XCTAssertEqual(store.trendPeriods.count, 1)
+        XCTAssertGreaterThan(store.trendPeriods[0].usage.total, 0)
+
+        store.updateRange(.week)
+        try await waitUntil {
+            store.range == .week && !store.isUpdatingAnalytics && !store.trendPeriods.isEmpty
+        }
+
+        XCTAssertEqual(store.trendPeriods.count, 1)
+        XCTAssertGreaterThan(store.trendPeriods[0].usage.total, 0)
+    }
+
     func testReleasingMenuBarMemoryClearsPopoverProjection() async throws {
         let userHome = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

@@ -275,7 +275,7 @@ final class DashboardStore: ObservableObject {
     private let userHome: URL
     private let historicalStore: HistoricalStore
     private let dynamicPricingLoader = DynamicPricingLoader()
-    private var analytics = DashboardAnalytics.empty
+    @Published private var analytics = DashboardAnalytics.empty
     private var todayAnalytics = DashboardAnalytics.empty
     private var quotaWeekAnalytics = QuotaWeekAnalytics.empty
     private var metricsIndex = MetricsIndexSnapshot.empty
@@ -657,6 +657,7 @@ final class DashboardStore: ObservableObject {
             guard let self, !Task.isCancelled else { return }
             guard self.range != newRange else { return }
             self.range = newRange
+            self.scheduleAnalyticsRefresh()
         }
     }
 
