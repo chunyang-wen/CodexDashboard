@@ -107,6 +107,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
         menuStore.settingsDidChange = { [weak self] in
             self?.dashboardCoordinator.settingsChanged()
         }
+        menuStore.metricsDidChange = { [weak self] in
+            self?.dashboardCoordinator.refreshMetrics()
+        }
         dashboardCoordinator.stateDidChange = { state in
             if state == .stopped { AppActivationPolicy.hideDockIconIfNoManagedWindowIsVisible() }
             else { AppActivationPolicy.showDockIcon() }

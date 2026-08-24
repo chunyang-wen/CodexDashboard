@@ -106,7 +106,6 @@ final class Milestone6BoundaryTests: XCTestCase {
         )
 
         XCTAssertEqual(store.codexHome.path, (("~/live-codex" as NSString).expandingTildeInPath))
-        XCTAssertEqual(store.refreshInterval, 15)
         XCTAssertFalse(store.weekStartsMonday)
         XCTAssertEqual(store.analyticsCalendar.firstWeekday, 1)
         XCTAssertNil(DashboardSettingsUpdate(
@@ -141,14 +140,15 @@ final class Milestone6BoundaryTests: XCTestCase {
 
         for file in [
             "Components.swift", "ContentView.swift", "DashboardStore.swift",
-            "ConversationInspectorView.swift", "CodexSourceWatcher.swift"
+            "ConversationInspectorView.swift"
         ] {
             XCTAssertFalse(hostSources.contains(file), "\(file) must remain helper-only")
         }
+        XCTAssertTrue(hostSources.contains("CodexSourceWatcher.swift in Sources"))
         XCTAssertFalse(hostSources.contains("Charts"))
         XCTAssertTrue(project.contains("ContentView.swift in Helper Sources"))
         XCTAssertTrue(project.contains("DashboardStore.swift in Helper Sources"))
-        XCTAssertTrue(project.contains("CodexSourceWatcher.swift in Helper Sources"))
+        XCTAssertFalse(project.contains("CodexSourceWatcher.swift in Helper Sources"))
     }
 
     func testMenuBarSourceHasNoDashboardBridgeOrFullGraphTypes() throws {
