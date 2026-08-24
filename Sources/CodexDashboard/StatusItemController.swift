@@ -120,11 +120,16 @@ final class StatusItemController: NSObject {
 
     private func showPopover(anchor: NSRect) {
         store.loadPopover()
-        let root = MenuBarDashboardView { [weak self] command in
-            guard let self else { return }
-            self.dismissPopover()
-            self.commandHandler(command)
-        }
+        let root = MenuBarDashboardView(
+            onCommand: { [weak self] command in
+                guard let self else { return }
+                self.dismissPopover()
+                self.commandHandler(command)
+            },
+            onSettingsOpened: { [weak self] in
+                self?.dismissPopover()
+            }
+        )
         .environmentObject(store)
         let hostingController = NSHostingController(rootView: root)
         let panel = MenuBarPanel(contentViewController: hostingController)

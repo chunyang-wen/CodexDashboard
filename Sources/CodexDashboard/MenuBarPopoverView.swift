@@ -10,9 +10,11 @@ enum MenuBarPopoverCommand: String {
 struct MenuBarDashboardView: View {
     @EnvironmentObject private var store: MenuBarStore
     let onCommand: (MenuBarPopoverCommand) -> Void
+    let onSettingsOpened: () -> Void
     @AppStorage(DashboardPreferences.showQuotaAlertMarkerKey, store: DashboardPreferences.sharedDefaults()) private var showQuotaAlertMarker = false
     @AppStorage(DashboardPreferences.quotaAlertUsedPercentKey, store: DashboardPreferences.sharedDefaults()) private var quotaAlertRemainingPercent = 80.0
     @AppStorage(DashboardPreferences.menuBarUsageTrendMetricKey, store: DashboardPreferences.sharedDefaults()) private var usageTrendMetricRawValue = MenuUsageTrendMetric.cost.rawValue
+    @State private var showingBankedResetDetails = false
 
     private var usageTrendMetric: Binding<MenuUsageTrendMetric> {
         Binding(
@@ -30,11 +32,6 @@ struct MenuBarDashboardView: View {
                 quotaSection(windows)
             }
 
-            if let bankedResets = store.bankedResets, bankedResets.availableCount > 0 {
-                sectionDivider
-                bankedResetSection(bankedResets)
-            }
-
             sectionDivider
             usageTrend
 
@@ -48,7 +45,7 @@ struct MenuBarDashboardView: View {
                     onCommand(.openDashboard)
                 }
                 toolbarDivider
-                MenuBarSettingsLink()
+                MenuBarSettingsLink(action: onSettingsOpened)
                 toolbarDivider
                 MenuBarActionButton(
                     title: "Quit Codex Dashboard",
@@ -91,9 +88,14 @@ struct MenuBarDashboardView: View {
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                     .textSelection(.enabled)
-                Text(planLabel)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(planLabel)
+                    if let bankedResets = store.bankedResets, bankedResets.availableCount > 0 {
+                        bankedResetSummary(bankedResets)
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             }
             Spacer()
             if store.isBusy { ProgressView().controlSize(.small) }
@@ -115,23 +117,76 @@ struct MenuBarDashboardView: View {
         return "Plan not reported"
     }
 
-    private func bankedResetSection(_ snapshot: BankedResetSnapshot) -> some View {
-        HStack(spacing: 10) {
-            Label("Banked resets", systemImage: "arrow.counterclockwise.circle.fill")
-                .font(.subheadline.weight(.semibold))
-            Spacer()
-            Text(snapshot.availableCount.formatted())
-                .font(.headline.monospacedDigit())
+    private func bankedResetSummary(_ snapshot: BankedResetSnapshot) -> some View {
+        HStack(spacing: 4) {
+            Text("(Resets: \(snapshot.availableCount.formatted())")
+            Image(systemName: "info.circle")
+                .font(.system(size: 9, weight: .semibold))
+            Text(")")
+        }
+        .foregroundStyle(.teal)
+        .contentShape(Rectangle())
+        .onHover { isHovering in
+            showingBankedResetDetails = isHovering
+        }
+        .popover(isPresented: $showingBankedResetDetails, arrowEdge: .bottom) {
+            bankedResetDetails(snapshot)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Resets: \(snapshot.availableCount)")
+        .accessibilityHint("Shows reset expiry details when hovered")
+    }
+
+    private func bankedResetDetails(_ snapshot: BankedResetSnapshot) -> some View {
+        let credits = snapshot.credits ?? []
+        let countColumnWidth: CGFloat = 56
+
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("Total: \(snapshot.availableCount.formatted())")
+                .font(.headline.weight(.semibold))
                 .foregroundStyle(.teal)
-            if let expiry = snapshot.credits?.compactMap(\.expiresAt).min() {
-                Text("expires \(expiry, style: .relative)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+
+            if !credits.isEmpty {
+                Divider()
+
+                HStack(spacing: 12) {
+                    Text("COUNT")
+                        .frame(width: countColumnWidth, alignment: .leading)
+                    Text("EXPIRES AT")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+                ForEach(credits) { credit in
+                    HStack(spacing: 12) {
+                        Text("1")
+                            .monospacedDigit()
+                            .frame(width: countColumnWidth, alignment: .leading)
+                        if let expiresAt = credit.expiresAt {
+                            Text(expiresAt, style: .relative)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            Text("—")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .font(.subheadline)
+                }
+            } else {
+                HStack(spacing: 12) {
+                    Text(snapshot.availableCount.formatted())
+                        .monospacedDigit()
+                        .frame(width: countColumnWidth, alignment: .leading)
+                    Text("—")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .font(.subheadline)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .accessibilityElement(children: .combine)
+        .padding(14)
+        .frame(width: 220, alignment: .leading)
     }
 
     private func quotaSection(_ windows: [UsageQuotaWindow]) -> some View {
@@ -784,6 +839,7 @@ private struct MenuBarActionButton: View {
 }
 
 private struct MenuBarSettingsLink: View {
+    let action: () -> Void
     @State private var isHovering = false
 
     var body: some View {
@@ -802,6 +858,7 @@ private struct MenuBarSettingsLink: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .buttonStyle(.plain)
+        .simultaneousGesture(TapGesture().onEnded(action))
         .focusEffectDisabled()
         .onHover { isHovering = $0 }
         .help("Settings")
