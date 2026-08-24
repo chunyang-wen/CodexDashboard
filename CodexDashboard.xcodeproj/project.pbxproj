@@ -24,6 +24,7 @@
 		A20000000000000000000008 /* DashboardProcessCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000008 /* DashboardProcessCoordinator.swift */; };
 		A20000000000000000000009 /* DashboardPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* DashboardPreferences.swift */; };
 		A2000000000000000000000C /* StatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000C /* StatusItemController.swift */; };
+		A2000000000000000000000E /* CodexSourceWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* CodexSourceWatcher.swift */; };
 		A2000000000000000000000D /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000002 /* MenuBarPopoverView.swift */; };
 		A70000000000000000000001 /* HelperMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000001 /* HelperMain.swift */; };
 		A70000000000000000000002 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000004 /* Assets.xcassets */; };
@@ -32,7 +33,6 @@
 		A70000000000000000000005 /* ContentView.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* ContentView.swift */; };
 		A70000000000000000000006 /* DashboardStore.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* DashboardStore.swift */; };
 		A70000000000000000000007 /* ConversationInspectorView.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* ConversationInspectorView.swift */; };
-		A70000000000000000000008 /* CodexSourceWatcher.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* CodexSourceWatcher.swift */; };
 		A7000000000000000000000A /* DashboardHelperView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000004 /* DashboardHelperView.swift */; };
 		A7000000000000000000000B /* DashboardPreferences.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* DashboardPreferences.swift */; };
 		A50000000000000000000005 /* CodexMetricsCore.framework in Helper Frameworks */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* CodexMetricsCore.framework */; };
@@ -491,6 +491,7 @@
 				A20000000000000000000008 /* DashboardProcessCoordinator.swift in Sources */,
 				A20000000000000000000009 /* DashboardPreferences.swift in Sources */,
 				A2000000000000000000000C /* StatusItemController.swift in Sources */,
+				A2000000000000000000000E /* CodexSourceWatcher.swift in Sources */,
 				A2000000000000000000000D /* MenuBarPopoverView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -520,7 +521,6 @@
 				A70000000000000000000005 /* ContentView.swift in Helper Sources */,
 				A70000000000000000000006 /* DashboardStore.swift in Helper Sources */,
 				A70000000000000000000007 /* ConversationInspectorView.swift in Helper Sources */,
-				A70000000000000000000008 /* CodexSourceWatcher.swift in Helper Sources */,
 				A7000000000000000000000A /* DashboardHelperView.swift in Sources */,
 				A7000000000000000000000B /* DashboardPreferences.swift in Helper Sources */,
 			);

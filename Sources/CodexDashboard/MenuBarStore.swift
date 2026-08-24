@@ -68,17 +68,23 @@ final class MenuBarStore: ObservableObject {
     @Published private(set) var refreshInterval: TimeInterval
     @Published private(set) var weekStartsMonday: Bool
     var settingsDidChange: (@MainActor () -> Void)?
+    var metricsDidChange: (@MainActor () -> Void)?
 
     private let defaults: UserDefaults
+    private let userHome: URL
     private let historicalStore: HistoricalStore
     private var loadTask: Task<Void, Never>?
     private var loadID = UUID()
     private var popoverTask: Task<Void, Never>?
     private var bankedResetTask: Task<Void, Never>?
     private var menuBarMonitorTask: Task<Void, Never>?
+    private var sourceWatcher: CodexSourceWatcher?
+    private var sourceRefreshTask: Task<Void, Never>?
+    private var sourceRefreshGeneration = UUID()
     private var menuBarAnalytics = MenuBarAnalytics.empty
 
     init(userHome: URL = FileManager.default.homeDirectoryForCurrentUser, defaults: UserDefaults = .standard) {
+        self.userHome = userHome
         self.defaults = defaults
         self.historicalStore = HistoricalStore(userHome: userHome)
         let savedPath = defaults.string(forKey: DashboardPreferences.codexDataPathKey)
@@ -128,6 +134,11 @@ final class MenuBarStore: ObservableObject {
 
     func startMenuBarMonitoring() {
         menuBarMonitorTask?.cancel()
+        sourceWatcher?.stop()
+        sourceWatcher = nil
+        sourceRefreshTask?.cancel()
+        sourceRefreshTask = nil
+        sourceRefreshGeneration = UUID()
         loadMenuBar()
         guard refreshInterval > 0 else { return }
         menuBarMonitorTask = Task { [weak self] in
@@ -138,6 +149,7 @@ final class MenuBarStore: ObservableObject {
                 self.loadMenuBar()
             }
         }
+        startSourceMonitoring()
     }
 
     func loadPopover() {
@@ -208,6 +220,7 @@ final class MenuBarStore: ObservableObject {
         codexHome = standardized
         defaults.set(standardized.path, forKey: DashboardPreferences.codexDataPathKey)
         settingsDidChange?()
+        startMenuBarMonitoring()
         if menuBarDataIsResident {
             loadPopover()
         } else {
@@ -224,7 +237,7 @@ final class MenuBarStore: ObservableObject {
         refreshInterval = interval
         defaults.set(interval, forKey: DashboardPreferences.metricsRefreshIntervalKey)
         settingsDidChange?()
-        if menuBarMonitorTask != nil { startMenuBarMonitoring() }
+        startMenuBarMonitoring()
     }
 
     func updateWeekStartsMonday(_ value: Bool) {
@@ -268,6 +281,167 @@ final class MenuBarStore: ObservableObject {
         } catch {
             guard menuBarDataIsResident else { return }
             historyMessage = "Menu-bar metrics could not be loaded: \(error.localizedDescription)"
+        }
+    }
+
+    /// Keeps the compact durable projection current while the dashboard helper
+    /// is closed. The host owns this watcher so menubar-only use still observes
+    /// new rollout events and today's cost.
+    private func startSourceMonitoring() {
+        let generation = sourceRefreshGeneration
+        let codexHome = self.codexHome
+        sourceRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            let storedEventID = try? await self.historicalStore.sourceEventID(for: codexHome)
+            guard !Task.isCancelled,
+                  generation == self.sourceRefreshGeneration,
+                  codexHome == self.codexHome else { return }
+
+            let watcher: CodexSourceWatcher
+            do {
+                watcher = try CodexSourceWatcher(
+                    codexHome: codexHome,
+                    sinceEventID: storedEventID,
+                    latency: self.refreshInterval
+                )
+            } catch {
+                return
+            }
+            guard generation == self.sourceRefreshGeneration else {
+                watcher.stop()
+                return
+            }
+            self.sourceWatcher = watcher
+
+            defer {
+                watcher.stop()
+                if self.sourceWatcher === watcher { self.sourceWatcher = nil }
+            }
+
+            var pending: CodexSourceChangeBatch?
+            var deferredEventID: UInt64?
+            if storedEventID == nil {
+                pending = CodexSourceChangeBatch(
+                    rolloutPaths: [],
+                    indexChanged: true,
+                    requiresReconciliation: true,
+                    latestEventID: watcher.startingEventID
+                )
+            }
+            var iterator = watcher.events.makeAsyncIterator()
+            var failures = 0
+            var lastRefreshAt = Date.distantPast
+            while !Task.isCancelled {
+                if pending == nil {
+                    guard await iterator.next() != nil else { return }
+                    pending = watcher.takePendingBatch()
+                }
+                guard let batch = pending else { return }
+
+                if !batch.hasSessionActivity {
+                    deferredEventID = max(deferredEventID ?? 0, batch.latestEventID)
+                    pending = nil
+                    continue
+                }
+
+                let process = ProcessInfo.processInfo
+                if process.thermalState == .serious
+                    || process.thermalState == .critical
+                    || process.isLowPowerModeEnabled
+                {
+                    try? await Task.sleep(for: .seconds(5))
+                    continue
+                }
+
+                let minimumInterval = max(0.25, self.refreshInterval)
+                let elapsed = Date.now.timeIntervalSince(lastRefreshAt)
+                if elapsed < minimumInterval {
+                    try? await Task.sleep(for: .seconds(minimumInterval - elapsed))
+                    guard !Task.isCancelled else { return }
+                }
+
+                let succeeded = await self.refreshSource(
+                    changedPaths: batch.rolloutPaths,
+                    indexChanged: batch.indexChanged,
+                    requiresReconciliation: batch.requiresReconciliation
+                )
+                guard !Task.isCancelled else { return }
+                lastRefreshAt = .now
+                if succeeded {
+                    let committedEventID = max(deferredEventID ?? 0, batch.latestEventID)
+                    try? await self.historicalStore.recordSourceEventID(committedEventID, for: codexHome)
+                    deferredEventID = nil
+                    pending = nil
+                    failures = 0
+                } else {
+                    failures += 1
+                    let baseDelay = min(300, max(1, Int(self.refreshInterval)) * (1 << min(failures, 3)))
+                    let jitter = Int.random(in: 0...min(10, max(1, baseDelay / 8)))
+                    try? await Task.sleep(for: .seconds(baseDelay + jitter))
+                }
+            }
+        }
+    }
+
+    private func refreshSource(
+        changedPaths: Set<String>,
+        indexChanged: Bool,
+        requiresReconciliation: Bool
+    ) async -> Bool {
+        do {
+            let codexHome = self.codexHome
+            let userHome = self.userHome
+            let indexed = try await Task.detached(priority: .background) {
+                let store = CodexStore(codexHome: codexHome, userHome: userHome)
+                if requiresReconciliation {
+                    return try store.loadIndexedSessions(reconcile: true)
+                }
+                if indexChanged {
+                    let changed = try store.loadIndexedSessionChanges()
+                    if !changed.isEmpty || changedPaths.isEmpty {
+                        return changed
+                    }
+                }
+                return try store.loadIndexedSessions(forRolloutPaths: changedPaths)
+            }.value
+            guard !indexed.isEmpty else { return true }
+
+            let pricing = try await historicalStore.pricingHistory()
+            let store = CodexStore(codexHome: codexHome, userHome: userHome)
+            var batch: [SessionMetric] = []
+            batch.reserveCapacity(10)
+            for await progress in store.enrichmentStream(indexed) {
+                guard !Task.isCancelled else { return true }
+                batch.append(progress.session)
+                if batch.count >= 10 {
+                    try await persistSourceBatch(batch, pricing: pricing)
+                    batch.removeAll(keepingCapacity: true)
+                }
+            }
+            if !batch.isEmpty {
+                try await persistSourceBatch(batch, pricing: pricing)
+            }
+
+            await reloadCompactSnapshot(includeSessionCount: false)
+            metricsDidChange?()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func persistSourceBatch(_ sessions: [SessionMetric], pricing: PricingHistory) async throws {
+        _ = try await historicalStore.record(sessions, pricing: pricing)
+        _ = try await historicalStore.updateMetricsIndex(
+            for: sessions,
+            pricing: pricing,
+            calendar: analyticsCalendar
+        )
+        if let latestSubscription = sessions.compactMap(\.subscription)
+            .filter(\.isUsable)
+            .max(by: { $0.observedAt < $1.observedAt }) {
+            try await historicalStore.recordSubscription(latestSubscription)
+            subscription = latestSubscription
         }
     }
 }

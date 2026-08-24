@@ -258,7 +258,6 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var range: Range = .month
     private var activePage: DashboardPage = .overview
     @Published private(set) var codexHome: URL
-    @Published private(set) var refreshInterval: TimeInterval
     @Published private(set) var weekStartsMonday: Bool {
         didSet { defaults.set(weekStartsMonday, forKey: DashboardPreferences.weekStartsMondayKey) }
     }
@@ -268,10 +267,7 @@ final class DashboardStore: ObservableObject {
     private var pricingTask: Task<Void, Never>?
     private var analyticsTask: Task<Void, Never>?
     private var rangeRefreshTask: Task<Void, Never>?
-    private var backgroundRefreshTask: Task<Void, Never>?
-    private var backgroundRefreshGeneration = UUID()
     private var bankedResetTask: Task<Void, Never>?
-    private var sourceWatcher: CodexSourceWatcher?
     private var loadID = UUID()
     private var enrichmentID = UUID()
     private var analyticsID = UUID()
@@ -298,8 +294,6 @@ final class DashboardStore: ObservableObject {
         codexHome = launchCodexHome
             ?? savedPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
             ?? userHome.appendingPathComponent(".codex", isDirectory: true)
-        let savedInterval = defaults.object(forKey: DashboardPreferences.metricsRefreshIntervalKey) as? Double
-        refreshInterval = savedInterval ?? 60
         range = Range(rawValue: defaults.string(forKey: DashboardPreferences.dashboardRangeKey) ?? "") ?? .month
         weekStartsMonday = defaults.object(forKey: DashboardPreferences.weekStartsMondayKey) as? Bool ?? true
     }
@@ -483,11 +477,6 @@ final class DashboardStore: ObservableObject {
         dashboardDataIsResident = true
         loadTask?.cancel()
         enrichmentTask?.cancel()
-        sourceWatcher?.stop()
-        sourceWatcher = nil
-        backgroundRefreshTask?.cancel()
-        backgroundRefreshTask = nil
-        backgroundRefreshGeneration = UUID()
         let requestID = UUID()
         loadID = requestID
         enrichmentID = UUID()
@@ -529,7 +518,6 @@ final class DashboardStore: ObservableObject {
                 historyMessage = "Stored history could not be loaded: \(error.localizedDescription)"
             }
             scheduleAnalyticsRefresh()
-            await startBackgroundRefreshIfNeeded()
             guard !Task.isCancelled, loadID == requestID else { return }
             isLoading = false
             startEnrichmentForAvailableHistory()
@@ -568,211 +556,6 @@ final class DashboardStore: ObservableObject {
     func activateDashboard() {
         guard !dashboardDataIsResident else { return }
         load()
-    }
-
-    /// Consumes the system-wide macOS filesystem journal. Normal refresh work is
-    /// proportional to changed paths; all-session reconciliation occurs only when
-    /// installing the watcher cursor or when macOS reports a journal gap.
-    private func startBackgroundRefreshIfNeeded() async {
-        let startGeneration = backgroundRefreshGeneration
-        guard dashboardDataIsResident,
-              backgroundRefreshTask == nil,
-              refreshInterval > 0 else { return }
-        let codexHome = self.codexHome
-        let storedEventID = try? await historicalStore.sourceEventID(for: codexHome)
-        guard dashboardDataIsResident,
-              startGeneration == backgroundRefreshGeneration,
-              backgroundRefreshTask == nil,
-              refreshInterval > 0,
-              codexHome == self.codexHome else { return }
-        let watcher: CodexSourceWatcher
-        do {
-            watcher = try CodexSourceWatcher(
-                codexHome: codexHome,
-                sinceEventID: storedEventID,
-                latency: refreshInterval
-            )
-        } catch {
-            historyMessage = "Automatic refresh unavailable: \(error.localizedDescription)"
-            return
-        }
-        guard startGeneration == backgroundRefreshGeneration else {
-            watcher.stop()
-            return
-        }
-        sourceWatcher = watcher
-
-        backgroundRefreshTask = Task(priority: .background) { [weak self, watcher] in
-            guard let self else {
-                watcher.stop()
-                return
-            }
-            defer {
-                watcher.stop()
-                if self.sourceWatcher === watcher { self.sourceWatcher = nil }
-            }
-
-            var pending: CodexSourceChangeBatch?
-            var deferredEventID: UInt64?
-            if storedEventID == nil {
-                pending = CodexSourceChangeBatch(
-                    rolloutPaths: [],
-                    indexChanged: true,
-                    requiresReconciliation: true,
-                    latestEventID: watcher.startingEventID
-                )
-            }
-
-            var iterator = watcher.events.makeAsyncIterator()
-            var failures = 0
-            var lastRefreshAt = Date.distantPast
-            while !Task.isCancelled {
-                if pending == nil {
-                    guard await iterator.next() != nil else { return }
-                    pending = watcher.takePendingBatch()
-                }
-                guard let batch = pending else { return }
-
-                // Codex can touch state_5.sqlite (including its WAL/SHM files)
-                // without creating or using a session. Do not turn that idle
-                // housekeeping into a full source-index read and merge. Keep
-                // the event ID in memory and commit it only alongside the next
-                // real refresh, so an idle night also avoids cursor writes.
-                if !batch.hasSessionActivity {
-                    deferredEventID = max(deferredEventID ?? 0, batch.latestEventID)
-                    pending = nil
-                    continue
-                }
-
-                let process = ProcessInfo.processInfo
-                if self.isLoading || self.isEnriching
-                    || process.thermalState == .serious
-                    || process.thermalState == .critical
-                    || process.isLowPowerModeEnabled
-                {
-                    try? await Task.sleep(for: .seconds(5))
-                    continue
-                }
-
-                // The old polling worker naturally limited refreshes to one
-                // pass per configured interval. FSEvents is event-driven and
-                // can deliver several file-level batches much sooner, so keep
-                // the same disk-I/O budget explicitly while retaining precise
-                // change detection.
-                let minimumInterval = max(0.25, self.refreshInterval)
-                let elapsed = Date.now.timeIntervalSince(lastRefreshAt)
-                if elapsed < minimumInterval {
-                    try? await Task.sleep(for: .seconds(minimumInterval - elapsed))
-                    guard !Task.isCancelled else { return }
-                }
-
-                let changedPaths = batch.rolloutPaths
-                let succeeded = await self.refreshInBackground(
-                    changedPaths: changedPaths,
-                    indexChanged: batch.indexChanged || batch.requiresReconciliation,
-                    requiresReconciliation: batch.requiresReconciliation
-                )
-                guard !Task.isCancelled else { return }
-                lastRefreshAt = .now
-                if succeeded {
-                    let committedEventID = max(deferredEventID ?? 0, batch.latestEventID)
-                    try? await self.historicalStore.recordSourceEventID(committedEventID, for: codexHome)
-                    deferredEventID = nil
-                    pending = nil
-                    failures = 0
-                } else {
-                    failures += 1
-                    let baseDelay = min(300, max(1, Int(self.refreshInterval)) * (1 << min(failures, 3)))
-                    let jitter = Int.random(in: 0...min(10, max(1, baseDelay / 8)))
-                    try? await Task.sleep(for: .seconds(baseDelay + jitter))
-                }
-            }
-        }
-    }
-
-    private func refreshInBackground(
-        changedPaths: Set<String>,
-        indexChanged: Bool,
-        requiresReconciliation: Bool
-    ) async -> Bool {
-        guard !isLoading, !isEnriching else { return true }
-        guard dashboardDataIsResident else { return true }
-        do {
-            let previousIDs = Set(sessions.map(\.id))
-            var pathsNeedingEnrichment = changedPaths
-            if indexChanged || requiresReconciliation {
-                let existingByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
-                let codexHome = self.codexHome
-                let indexed: [SessionMetric] = (try? await Task.detached(priority: .background) { () throws -> [SessionMetric] in
-                    let store = CodexStore(codexHome: codexHome)
-                    let indexed: [SessionMetric]
-                    if requiresReconciliation {
-                        indexed = try store.loadIndexedSessions(reconcile: true)
-                    } else {
-                        indexed = try store.loadIndexedSessionChanges()
-                    }
-                    return indexed
-                }.value) ?? []
-                for session in indexed where !session.rolloutPath.isEmpty {
-                    guard let existing = existingByID[session.id] else {
-                        pathsNeedingEnrichment.insert(session.rolloutPath)
-                        continue
-                    }
-                    if !existing.enrichmentAvailable || existing.updatedAt < session.updatedAt {
-                        pathsNeedingEnrichment.insert(session.rolloutPath)
-                    }
-                }
-                if requiresReconciliation {
-                    sessions = try await historicalStore.mergedSessionSummaries(with: indexed)
-                } else if !indexed.isEmpty {
-                    let merged = try await historicalStore.mergedSessionSummaries(for: indexed)
-                    var updatedSessions = sessions
-                    var positions = Dictionary(
-                        uniqueKeysWithValues: updatedSessions.indices.map { (updatedSessions[$0].id, $0) }
-                    )
-                    for summary in merged {
-                        if let position = positions[summary.id] {
-                            updatedSessions[position] = summary
-                        } else {
-                            positions[summary.id] = updatedSessions.count
-                            updatedSessions.append(summary)
-                        }
-                    }
-                    sessions = updatedSessions.sorted { $0.updatedAt > $1.updatedAt }
-                }
-            }
-            let candidates = sessions.filter { session in
-                (pathsNeedingEnrichment.contains(session.rolloutPath) || !previousIDs.contains(session.id)) && !session.enrichmentAvailable
-            }
-            guard !candidates.isEmpty else {
-                if indexChanged || requiresReconciliation { scheduleAnalyticsRefresh() }
-                return true
-            }
-
-            var enriched: [SessionMetric] = []
-            enriched.reserveCapacity(candidates.count)
-            for await progress in CodexStore(codexHome: codexHome).enrichmentStream(candidates) {
-                guard !Task.isCancelled else { return true }
-                enriched.append(progress.session)
-            }
-            guard !enriched.isEmpty else { return true }
-            historySessionCount = try await historicalStore.record(enriched, pricing: pricing)
-            _ = try await historicalStore.updateMetricsIndex(for: enriched, pricing: pricing)
-            let enrichedByID = Dictionary(uniqueKeysWithValues: enriched.map { ($0.id, $0.summary) })
-            sessions = sessions.map { enrichedByID[$0.id] ?? $0 }
-            scheduleAnalyticsRefresh()
-            let latestSubscription = enriched.compactMap(\.subscription).max { $0.observedAt < $1.observedAt }
-            if acceptSubscription(latestSubscription) {
-                scheduleAnalyticsRefresh()
-                if let latestSubscription {
-                    try? await historicalStore.recordSubscription(latestSubscription)
-                }
-            }
-            return true
-        } catch {
-            // Quiet refresh failures are isolated and retried with exponential backoff.
-            return false
-        }
     }
 
     private func startEnrichmentForAvailableHistory() {
@@ -879,7 +662,7 @@ final class DashboardStore: ObservableObject {
 
     func applySettings(
         codexDataPath: String?,
-        refreshInterval newRefreshInterval: TimeInterval?,
+        refreshInterval _: TimeInterval?,
         weekStartsMonday newWeekStartsMonday: Bool?
     ) {
         var pathChanged = false
@@ -896,12 +679,6 @@ final class DashboardStore: ObservableObject {
             }
         }
 
-        var intervalChanged = false
-        if let newRefreshInterval, newRefreshInterval != refreshInterval {
-            refreshInterval = newRefreshInterval
-            defaults.set(newRefreshInterval, forKey: DashboardPreferences.metricsRefreshIntervalKey)
-            intervalChanged = true
-        }
         var weekStartChanged = false
         if let newWeekStartsMonday, newWeekStartsMonday != weekStartsMonday {
             weekStartsMonday = newWeekStartsMonday
@@ -910,23 +687,9 @@ final class DashboardStore: ObservableObject {
 
         if pathChanged {
             load()
-        } else if intervalChanged {
-            restartBackgroundRefresh()
         }
         if weekStartChanged, !pathChanged {
             scheduleAnalyticsRefresh()
-        }
-    }
-
-    private func restartBackgroundRefresh() {
-        sourceWatcher?.stop()
-        sourceWatcher = nil
-        backgroundRefreshTask?.cancel()
-        backgroundRefreshTask = nil
-        backgroundRefreshGeneration = UUID()
-        guard dashboardDataIsResident else { return }
-        Task { [weak self] in
-            await self?.startBackgroundRefreshIfNeeded()
         }
     }
 
@@ -1093,11 +856,6 @@ final class DashboardStore: ObservableObject {
         dashboardDataIsResident = false
         loadTask?.cancel()
         loadTask = nil
-        sourceWatcher?.stop()
-        sourceWatcher = nil
-        backgroundRefreshTask?.cancel()
-        backgroundRefreshTask = nil
-        backgroundRefreshGeneration = UUID()
         enrichmentTask?.cancel()
         enrichmentTask = nil
         analyticsTask?.cancel()
