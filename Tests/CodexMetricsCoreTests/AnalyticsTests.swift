@@ -46,6 +46,95 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(restoredSnapshot, snapshot)
     }
 
+    func testFreshSubscriptionSnapshotObservesAnotherProcessWrite() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let reader = HistoricalStore(userHome: home)
+        let writer = HistoricalStore(userHome: home)
+        let initiallyCached = try await reader.subscriptionSnapshot()
+        XCTAssertNil(initiallyCached)
+
+        let snapshot = SubscriptionSnapshot(
+            planType: "plus",
+            limitID: "codex",
+            limitName: nil,
+            windows: [UsageQuotaWindow(
+                usedPercent: 53,
+                windowMinutes: 10_080,
+                resetsAt: Date(timeIntervalSince1970: 1_800_100_000)
+            )],
+            credits: nil,
+            rateLimitReachedType: nil,
+            observedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        try await writer.recordSubscription(snapshot)
+
+        let refreshed = try await reader.freshSubscriptionSnapshot()
+        XCTAssertEqual(refreshed, snapshot)
+    }
+
+    func testMenuBarIndexFallbackAggregatesRecentDays() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let day = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = SessionMetric(
+            id: "indexed-first", rolloutPath: "/tmp/indexed-first.jsonl", projectPath: "/tmp/project",
+            title: "First", source: "app", provider: "openai", createdAt: day,
+            updatedAt: day, model: "gpt-5.6-luna", reasoningEffort: nil,
+            gitBranch: nil, cliVersion: nil, archived: false,
+            usage: TokenUsage(input: 10, output: 2),
+            usageEvents: [UsageEvent(date: day, usage: TokenUsage(input: 10, output: 2), model: "gpt-5.6-luna")],
+            enrichmentAvailable: true
+        )
+        let second = SessionMetric(
+            id: "indexed-second", rolloutPath: "/tmp/indexed-second.jsonl", projectPath: "/tmp/project",
+            title: "Second", source: "app", provider: "openai", createdAt: day,
+            updatedAt: day, model: "gpt-5.6-luna", reasoningEffort: nil,
+            gitBranch: nil, cliVersion: nil, archived: false,
+            usage: TokenUsage(input: 20, output: 4),
+            usageEvents: [UsageEvent(date: day, usage: TokenUsage(input: 20, output: 4), model: "gpt-5.6-luna")],
+            enrichmentAvailable: true
+        )
+        let store = HistoricalStore(userHome: home)
+        _ = try await store.record([first, second])
+        _ = try await store.metricsIndex(for: [first, second])
+
+        let snapshot = try await store.menuBarMetricsFromIndex(
+            since: day.addingTimeInterval(-86_400),
+            calendar: Calendar(identifier: .gregorian)
+        )
+        XCTAssertEqual(snapshot?.days.count, 1)
+        XCTAssertEqual(snapshot?.days.first?.usage.total, 36)
+        XCTAssertEqual(snapshot?.days.first?.sessions, 2)
+    }
+
+    func testDailyPeriodRowsPreserveDistinctSessionIdentities() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let day = Date(timeIntervalSince1970: 1_800_000_000)
+        func session(_ id: String, input: Int64) -> SessionMetric {
+            let usage = TokenUsage(input: input)
+            return SessionMetric(
+                id: id, rolloutPath: "/tmp/\(id).jsonl", projectPath: "/tmp/project",
+                title: id, source: "app", provider: "openai", createdAt: day,
+                updatedAt: day, model: "gpt-5.6-luna", reasoningEffort: nil,
+                gitBranch: nil, cliVersion: nil, archived: false, usage: usage,
+                usageEvents: [UsageEvent(date: day, usage: usage, model: "gpt-5.6-luna")],
+                enrichmentAvailable: true
+            )
+        }
+        let sessions = [session("first", input: 10), session("second", input: 20)]
+        let store = HistoricalStore(userHome: home)
+        _ = try await store.record(sessions)
+        _ = try await store.metricsIndex(for: sessions)
+
+        let rows = try await store.dailyPeriodRows(includeSessionIDs: true)
+
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].sessions, 2)
+        XCTAssertEqual(rows[0].sessionIDs, ["first", "second"])
+    }
+
     func testTokenUsageDoesNotDoubleCountReasoning() {
         let usage = TokenUsage(input: 100, cachedInput: 60, output: 20, reasoningOutput: 8)
         XCTAssertEqual(usage.total, 120)
@@ -632,7 +721,7 @@ final class AnalyticsTests: XCTestCase {
         _ = try await store.record([session], pricing: .bundled)
         _ = try await store.metricsIndex(for: [session], pricing: .bundled)
 
-        let rows = try await store.dailyModelRows()
+        let rows = try await store.dailyModelRows(includeSessionIDs: true)
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(rows[0].usage.input, 1_000)
         XCTAssertEqual(rows[0].usage.cachedInput, 800)
@@ -640,12 +729,159 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(rows[0].usage.total, 1_200)
         XCTAssertEqual(rows[0].estimatedCost, 0.0074, accuracy: 1e-12)
         XCTAssertEqual(rows[0].activeRuntime, 12)
+        XCTAssertEqual(rows[0].sessionIDs, ["model-breakdown"])
 
         let rebuilt = try await store.rebuildMetricsIndex(pricing: .bundled)
         XCTAssertEqual(rebuilt.sessions.count, 1)
-        let rebuiltRows = try await store.dailyModelRows()
+        let rebuiltRows = try await store.dailyModelRows(includeSessionIDs: true)
         XCTAssertEqual(rebuiltRows[0].usage.cachedInput, 800)
         XCTAssertEqual(rebuiltRows[0].estimatedCost, 0.0074, accuracy: 1e-12)
+    }
+
+    func testSQLPeriodAggregatesKeepDistinctSessionsAcrossDaysModelsAndProjects() async throws {
+        let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: userHome) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        calendar.firstWeekday = 2
+        let monday = calendar.date(from: DateComponents(year: 2026, month: 8, day: 17, hour: 12))!
+        let tuesday = monday.addingTimeInterval(86_400)
+
+        func session(
+            id: String,
+            projectPath: String,
+            events: [(Date, String, Int64)]
+        ) -> SessionMetric {
+            let usageEvents = events.map {
+                UsageEvent(date: $0.0, usage: TokenUsage(input: $0.2), model: $0.1)
+            }
+            return SessionMetric(
+                id: id,
+                rolloutPath: "/tmp/\(id).jsonl",
+                projectPath: projectPath,
+                title: id,
+                source: "test",
+                provider: "openai",
+                createdAt: events[0].0,
+                updatedAt: events.last!.0,
+                model: events.last!.1,
+                reasoningEffort: nil,
+                gitBranch: nil,
+                cliVersion: nil,
+                archived: false,
+                usage: usageEvents.reduce(.zero) { $0 + $1.usage },
+                usageEvents: usageEvents,
+                enrichmentAvailable: true
+            )
+        }
+
+        let shared = session(
+            id: "shared",
+            projectPath: "/tmp/project-a",
+            events: [
+                (monday, "model-a", 10),
+                (tuesday, "model-a", 20),
+                (tuesday, "model-b", 30)
+            ]
+        )
+        let second = session(
+            id: "second",
+            projectPath: "/tmp/project-a",
+            events: [(tuesday, "model-a", 40)]
+        )
+        let otherProject = session(
+            id: "other-project",
+            projectPath: "/tmp/project-b",
+            events: [(tuesday, "model-a", 50)]
+        )
+        let sessions = [shared, second, otherProject]
+        let store = HistoricalStore(userHome: userHome)
+        _ = try await store.record(sessions)
+        _ = try await store.metricsIndex(for: sessions, calendar: calendar)
+
+        let daily = try await store.periodMetrics(granularity: .day, calendar: calendar)
+        XCTAssertEqual(daily.map(\.sessions), [1, 3])
+
+        let weekly = try await store.periodMetrics(granularity: .week, calendar: calendar)
+        XCTAssertEqual(weekly.count, 1)
+        XCTAssertEqual(weekly[0].sessions, 3)
+
+        let monthly = try await store.periodMetrics(granularity: .month, calendar: calendar)
+        XCTAssertEqual(monthly.count, 1)
+        XCTAssertEqual(monthly[0].sessions, 3)
+
+        let yearly = try await store.periodMetrics(granularity: .year, calendar: calendar)
+        XCTAssertEqual(yearly.count, 1)
+        XCTAssertEqual(yearly[0].sessions, 3)
+
+        let projectPeriods = try await store.periodMetrics(
+            projectPath: "/tmp/project-a",
+            granularity: .week,
+            calendar: calendar
+        )
+        XCTAssertEqual(projectPeriods.map(\.sessions), [2])
+
+        let modelPeriods = try await store.modelPeriodMetrics(
+            projectPath: "/tmp/project-a",
+            granularity: .week,
+            calendar: calendar
+        )
+        XCTAssertEqual(
+            Dictionary(uniqueKeysWithValues: modelPeriods.map { ($0.model, $0.sessions) }),
+            ["model-a": 2, "model-b": 1]
+        )
+
+        let modelTotals = try await store.modelMetrics(projectPath: "/tmp/project-a")
+        XCTAssertEqual(
+            Dictionary(uniqueKeysWithValues: modelTotals.map { ($0.model, $0.sessions) }),
+            ["model-a": 2, "model-b": 1]
+        )
+
+        let dailyRows = try await store.dailyPeriodRows()
+        let dailyModelRows = try await store.dailyModelRows()
+        XCTAssertTrue(dailyRows.allSatisfy { $0.sessionIDs.isEmpty })
+        XCTAssertTrue(dailyModelRows.allSatisfy { $0.sessionIDs.isEmpty })
+    }
+
+    func testSQLPeriodAggregatesScaleBeyondSQLiteHostParameterLimit() async throws {
+        let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: userHome) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let firstDay = calendar.date(from: DateComponents(year: 2025, month: 1, day: 1))!
+        let sessions = (0..<400).map { offset -> SessionMetric in
+            let day = calendar.date(byAdding: .day, value: offset, to: firstDay)!
+            let usage = TokenUsage(input: 1)
+            return SessionMetric(
+                id: "long-history-\(offset)",
+                rolloutPath: "/tmp/long-history-\(offset).jsonl",
+                projectPath: "/tmp/long-history",
+                title: "Long history",
+                source: "test",
+                provider: "openai",
+                createdAt: day,
+                updatedAt: day,
+                model: "gpt-5.6-luna",
+                reasoningEffort: nil,
+                gitBranch: nil,
+                cliVersion: nil,
+                archived: false,
+                usage: usage,
+                usageEvents: [UsageEvent(date: day, usage: usage, model: "gpt-5.6-luna")],
+                enrichmentAvailable: true
+            )
+        }
+        let store = HistoricalStore(userHome: userHome)
+        _ = try await store.record(sessions)
+        _ = try await store.metricsIndex(for: sessions, calendar: calendar)
+
+        let daily = try await store.periodMetrics(granularity: .day, calendar: calendar)
+        XCTAssertEqual(daily.count, 400)
+        XCTAssertEqual(daily.reduce(0) { $0 + $1.sessions }, 400)
+
+        let modelDaily = try await store.modelPeriodMetrics(granularity: .day, calendar: calendar)
+        XCTAssertEqual(modelDaily.count, 400)
+        XCTAssertEqual(modelDaily.reduce(0) { $0 + $1.sessions }, 400)
     }
 
     func testGrowingSessionDoesNotRewriteUnchangedDailyContributions() async throws {
@@ -993,8 +1229,8 @@ final class AnalyticsTests: XCTestCase {
         let snapshot = SubscriptionReader.latest(in: file.path)
 
         XCTAssertEqual(snapshot?.displayPlan, "Plus")
-        XCTAssertEqual(snapshot?.windows.map(\.displayName), ["1-day quota", "Weekly quota"])
-        XCTAssertEqual(snapshot?.windows.map(\.usedPercent), [15, 33])
+        XCTAssertEqual(snapshot?.windows.map(\.displayName), ["5-hour quota", "1-day quota", "Weekly quota"])
+        XCTAssertEqual(snapshot?.windows.map(\.usedPercent), [7, 15, 33])
         XCTAssertEqual(snapshot?.credits?.balance, "12.5")
         XCTAssertEqual(try XCTUnwrap(snapshot).observedAt.timeIntervalSince1970, 1_786_854_937.995, accuracy: 0.001)
     }

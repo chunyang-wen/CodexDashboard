@@ -30,7 +30,7 @@ final class MemoryFootprintTests: XCTestCase {
 
         let defaultsSuite = "MemoryFootprintTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: defaultsSuite)!
-        defaults.set(tempCodexHome.path, forKey: "codexDataPath")
+        defaults.set(tempCodexHome.path, forKey: DashboardPreferences.codexDataPathKey)
 
         // 1. Populate SQLite database with 1,000 historical sessions
         let historicalStore = HistoricalStore(userHome: tempUserHome)
@@ -89,30 +89,31 @@ final class MemoryFootprintTests: XCTestCase {
         // -------------------------------------------------------------
         // SCENARIO 1: App Launch in Menu-Bar Only Mode (Dashboard Closed)
         // -------------------------------------------------------------
-        let store = DashboardStore(userHome: tempUserHome, defaults: defaults)
-        store.loadMenuBar()
+        let dashboardStore = DashboardStore(userHome: tempUserHome, defaults: defaults)
+        let menuStore = MenuBarStore(userHome: tempUserHome, defaults: defaults)
+        menuStore.loadMenuBar()
         // Wait for menu-bar load task to finish
         for _ in 0..<500 { // 10 seconds maximum
-            if !store.isLoading { break }
+            if !menuStore.isLoading { break }
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTAssertFalse(store.isLoading, "loadMenuBar timed out")
+        XCTAssertFalse(menuStore.isLoading, "loadMenuBar timed out")
 
         let menuBarFootprint = getPhysicalFootprintMB()
         let menuBarDelta = menuBarFootprint - baselineFootprint
 
-        XCTAssertFalse(store.dashboardDataIsResident)
-        XCTAssertEqual(store.sessions.count, 0, "No full session arrays should be resident in Menu-Bar mode")
-        XCTAssertEqual(store.filteredSessions.count, 0)
-        XCTAssertEqual(store.allProjects.count, 0)
-        XCTAssertEqual(store.historySessionCount, 0, "Closed menu-bar mode should not retain history metadata")
+        XCTAssertFalse(dashboardStore.dashboardDataIsResident)
+        XCTAssertEqual(dashboardStore.sessions.count, 0, "No full session arrays should be resident in Menu-Bar mode")
+        XCTAssertEqual(dashboardStore.filteredSessions.count, 0)
+        XCTAssertEqual(dashboardStore.allProjects.count, 0)
+        XCTAssertEqual(menuStore.historySessionCount, 0, "Closed menu-bar mode should not retain history metadata")
 
         // -------------------------------------------------------------
         // SCENARIO 2: Dashboard Window Opened (Summaries & Analytics Loaded)
         // -------------------------------------------------------------
-        store.activateDashboard()
+        dashboardStore.activateDashboard()
         for _ in 0..<100 {
-            if store.sessions.count == 1000 && !store.isUpdatingAnalytics && !store.isLoading {
+            if dashboardStore.sessions.count == 1000 && !dashboardStore.isUpdatingAnalytics && !dashboardStore.isLoading {
                 break
             }
             try await Task.sleep(for: .milliseconds(50))
@@ -121,16 +122,16 @@ final class MemoryFootprintTests: XCTestCase {
         let openDashboardFootprint = getPhysicalFootprintMB()
         let openDashboardDelta = openDashboardFootprint - baselineFootprint
 
-        XCTAssertTrue(store.dashboardDataIsResident)
-        XCTAssertEqual(store.sessions.count, 1000, "1,000 lightweight summaries loaded")
-        XCTAssertEqual(store.allProjects.count, 15)
-        XCTAssertGreaterThan(store.usage.total, 0)
-        XCTAssertGreaterThan(store.estimatedCost, 0)
+        XCTAssertTrue(dashboardStore.dashboardDataIsResident)
+        XCTAssertEqual(dashboardStore.sessions.count, 1000, "1,000 lightweight summaries loaded")
+        XCTAssertEqual(dashboardStore.allProjects.count, 15)
+        XCTAssertGreaterThan(dashboardStore.usage.total, 0)
+        XCTAssertGreaterThan(dashboardStore.estimatedCost, 0)
 
         // -------------------------------------------------------------
         // SCENARIO 3: Single Session Detail Hydrated On-Demand
         // -------------------------------------------------------------
-        let detailSession = try await store.sessionMetric(withID: "session-42")
+        let detailSession = try await dashboardStore.sessionMetric(withID: "session-42")
         XCTAssertNotNil(detailSession)
         XCTAssertEqual(detailSession?.id, "session-42")
         XCTAssertEqual(detailSession?.turns.count, 2)
@@ -141,27 +142,27 @@ final class MemoryFootprintTests: XCTestCase {
         // -------------------------------------------------------------
         // SCENARIO 4: Dashboard Window Closed (Memory Released)
         // -------------------------------------------------------------
-        store.releaseDashboardMemory()
+        dashboardStore.releaseDashboardMemory()
         try await Task.sleep(for: .milliseconds(150))
         malloc_zone_pressure_relief(nil, 0)
 
         let closedFootprint = getPhysicalFootprintMB()
         let closedDelta = closedFootprint - baselineFootprint
 
-        XCTAssertFalse(store.dashboardDataIsResident)
-        XCTAssertEqual(store.sessions.count, 0, "All session arrays released from memory")
-        XCTAssertEqual(store.filteredSessions.count, 0)
-        XCTAssertEqual(store.allProjects.count, 0)
+        XCTAssertFalse(dashboardStore.dashboardDataIsResident)
+        XCTAssertEqual(dashboardStore.sessions.count, 0, "All session arrays released from memory")
+        XCTAssertEqual(dashboardStore.filteredSessions.count, 0)
+        XCTAssertEqual(dashboardStore.allProjects.count, 0)
 
         // The popover hydrates its compact projection only while visible.
-        store.loadMenuBarPopover()
+        menuStore.loadPopover()
         for _ in 0..<100 {
-            if store.historySessionCount >= 1000 { break }
+            if !menuStore.menuBarDaily.isEmpty { break }
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTAssertTrue(store.menuBarDataIsResident)
-        XCTAssertTrue(store.historySessionCount >= 1000)
-        store.releaseMenuBarMemory()
+        XCTAssertTrue(menuStore.menuBarDataIsResident)
+        XCTAssertEqual(menuStore.historySessionCount, 0)
+        menuStore.releasePopover()
 
         print("""
         =======================================================================

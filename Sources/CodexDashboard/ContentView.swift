@@ -164,7 +164,7 @@ private struct AnalyticsUpdateOverlay: View {
 
 struct OverviewView: View {
     @EnvironmentObject private var store: DashboardStore
-    @AppStorage("overviewActivityMetric") private var activityMetric = "Tokens"
+    @AppStorage(DashboardPreferences.overviewActivityMetricKey, store: DashboardPreferences.sharedDefaults()) private var activityMetric = "Tokens"
     @State private var selectedPeriodStart: Date?
     @State private var periodDetails = SQLProjectAggregate.empty
     private let columns = [GridItem(.adaptive(minimum: 190), spacing: 12)]
@@ -869,7 +869,7 @@ private enum ProjectTreeSelection: Hashable {
 struct ProjectsView: View {
     @EnvironmentObject private var store: DashboardStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AppStorage("projectActivityMetric") private var activityMetric = "Tokens"
+    @AppStorage(DashboardPreferences.projectActivityMetricKey, store: DashboardPreferences.sharedDefaults()) private var activityMetric = "Tokens"
     @State private var expandedProjects = Set<String>()
     @State private var selection: ProjectTreeSelection?
     @State private var searchText = ""
@@ -1242,6 +1242,7 @@ private struct SessionDetailView: View {
     let session: SessionMetric
     let pricing: PricingHistory
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dashboardConversationOpenAction) private var dashboardConversationOpenAction
     private var cost: Decimal { Analytics.totalEstimatedCost([session], pricing: pricing) }
     private var coverage: Double { Analytics.costCoverage([session], pricing: pricing) }
     private var tools: [ToolMetric] { Analytics.tools(from: [session], pricing: pricing) }
@@ -1258,11 +1259,16 @@ private struct SessionDetailView: View {
                     }
                     Spacer()
                     Button {
-                        openWindow(value: ConversationWindowRequest(
+                        let request = ConversationWindowRequest(
                             rolloutPath: session.rolloutPath,
                             sessionTitle: session.displayTitle,
                             projectName: session.projectName
-                        ))
+                        )
+                        if let dashboardConversationOpenAction {
+                            dashboardConversationOpenAction.open(request)
+                        } else {
+                            openWindow(value: request)
+                        }
                     } label: {
                         Label("Debug Conversation", systemImage: "waveform.path.ecg.text")
                     }
