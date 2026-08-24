@@ -4,7 +4,6 @@ import SwiftUI
 
 enum MenuBarPopoverCommand: String {
     case openDashboard
-    case openSettings
     case quitProduct
 }
 
@@ -49,13 +48,7 @@ struct MenuBarDashboardView: View {
                     onCommand(.openDashboard)
                 }
                 toolbarDivider
-                MenuBarActionButton(
-                    title: "Settings",
-                    systemImage: "gearshape.fill"
-                ) {
-                    onCommand(.openSettings)
-                }
-                .keyboardShortcut(",", modifiers: .command)
+                MenuBarSettingsLink()
                 toolbarDivider
                 MenuBarActionButton(
                     title: "Quit Codex Dashboard",
@@ -787,5 +780,31 @@ private struct MenuBarActionButton: View {
         .onHover { isHovering = $0 }
         .help(title)
         .accessibilityLabel(title)
+    }
+}
+
+private struct MenuBarSettingsLink: View {
+    @State private var isHovering = false
+
+    var body: some View {
+        SettingsLink {
+            Image(systemName: "gearshape.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(Color.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(
+                    isHovering ? Color.secondary.opacity(0.11) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
+                .contentShape(Rectangle())
+                .padding(5)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .onHover { isHovering = $0 }
+        .help("Settings")
+        .accessibilityLabel("Settings")
     }
 }

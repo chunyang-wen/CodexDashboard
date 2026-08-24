@@ -207,8 +207,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
     private func handleHelperCommand(_ command: DashboardLifecycleCommand) {
         switch command {
         case .openSettings:
-            AppActivationPolicy.showDockIcon()
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            openSettingsWindow()
         case .checkForUpdates:
             AppUpdater.shared.checkForUpdates()
         case .quitProduct:
@@ -222,12 +221,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
         switch command {
         case .openDashboard:
             requestDashboard()
-        case .openSettings:
-            AppActivationPolicy.showDockIcon()
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         case .quitProduct:
             requestProductQuit()
         }
+    }
+
+    private func openSettingsWindow() {
+        AppActivationPolicy.showDockIcon()
+        guard let settingsItem = NSApp.mainMenu?.items
+            .compactMap(\.submenu)
+            .flatMap(\.items)
+            .first(where: { $0.title.localizedCaseInsensitiveContains("Settings") }),
+              let target = settingsItem.target else { return }
+        _ = target.perform(settingsItem.action, with: settingsItem)
+        AppActivationPolicy.bringWindowToFront(identifier: .settings)
     }
 
     private func requestDashboard() {
@@ -395,6 +402,11 @@ private struct CodexDashboardApplication: App {
                 .background(AppWindowIdentifier(identifier: .settings))
         }
         .defaultSize(width: 520, height: 420)
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                SettingsLink()
+            }
+        }
     }
 }
 
