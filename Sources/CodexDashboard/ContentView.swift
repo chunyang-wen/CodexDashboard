@@ -893,9 +893,9 @@ struct ProjectsView: View {
     var body: some View {
         HSplitView {
             projectTree
-                .frame(minWidth: 310, idealWidth: 390, maxWidth: 500)
+                .frame(minWidth: 300, idealWidth: 390, maxWidth: 500)
             selectedDetail
-                .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
         }
         .navigationTitle("Projects")
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search projects")
@@ -903,7 +903,7 @@ struct ProjectsView: View {
             selection = nil
             expandedProjects.removeAll()
         }
-        .frame(minWidth: 870, maxWidth: .infinity, maxHeight: .infinity)
+        .frame(minWidth: 800, maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var projectTree: some View {
