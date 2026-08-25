@@ -3,6 +3,14 @@
     <channel>
         <title>CodexDashboard</title>
         <item>
+            <title>0.1.9</title>
+            <pubDate>Tue, 25 Aug 2026 14:35:11 +0800</pubDate>
+            <sparkle:version>20260825143303</sparkle:version>
+            <sparkle:shortVersionString>0.1.9</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.9/CodexDashboard-0.1.9.zip" length="11348916" type="application/octet-stream" sparkle:edSignature="QdwApv69CmORbc+xi0f+BjWS6Pt781nkM/RCmBFo9aRc25HYyGfdCLTmoyKnhXUkAAW1S/FyPGQMM7tZHBqLBw=="/>
+        </item>
+        <item>
             <title>0.1.8</title>
             <description sparkle:format="html"><![CDATA[
                 <h3>What's new in 0.1.8</h3>
@@ -38,22 +46,6 @@
             <sparkle:shortVersionString>0.1.7</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.7/CodexDashboard-0.1.7.zip" length="11335001" type="application/octet-stream" sparkle:edSignature="xKXaAjgEKmJ4Xju/8FkpxwD6FYvVMJC928z/pAuubBIxZCHneevinYYAjMnbqBWundmJa3VV52itbaFI5HVBAw=="/>
-        </item>
-        <item>
-            <title>0.1.5</title>
-            <description sparkle:format="html"><![CDATA[
-                <h3>What’s new</h3>
-                <ul>
-                    <li>Added a Maintenance action to rebuild the history index from saved sessions.</li>
-                    <li>Preserved cached-input metrics in rebuilt model breakdowns.</li>
-                    <li>Normalized subscription plan labels, including clearer handling for API and unknown plans.</li>
-                </ul>
-            ]]></description>
-            <pubDate>Sun, 23 Aug 2026 19:07:57 +0800</pubDate>
-            <sparkle:version>20260823190317</sparkle:version>
-            <sparkle:shortVersionString>0.1.5</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.5/CodexDashboard-0.1.5.zip" length="7780121" type="application/octet-stream" sparkle:edSignature="QwS7Tkgv3BEYrMv5e2oVEE2R2CmP37uM8lg2Fbw3cF/Z1PN1VPyL8vTuambYjPJdHeyiki/xJnAfENLm0tJgDA=="/>
         </item>
     </channel>
 </rss>
