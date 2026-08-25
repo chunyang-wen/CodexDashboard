@@ -29,6 +29,7 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
     private var dashboardStore: DashboardStore!
     private var dashboardWindow: NSWindow?
     private var conversationWindows: [ConversationWindowRequest: NSWindow] = [:]
+    private var globalMouseDownMonitor: Any?
     private var hostFallbackWatchdog: Timer?
     private var hostTerminationObserver: NSObjectProtocol?
     private var launchToken: String?
@@ -49,6 +50,7 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
         observeLifecycleCommands()
         startHostWatchdog()
         installMainMenu()
+        installActivationMonitor()
         createDashboardWindow()
         showDashboardWindow()
         dashboardStore.load()
@@ -76,6 +78,10 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
         }
         hostFallbackWatchdog?.invalidate()
         hostFallbackWatchdog = nil
+        if let globalMouseDownMonitor {
+            NSEvent.removeMonitor(globalMouseDownMonitor)
+            self.globalMouseDownMonitor = nil
+        }
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -88,10 +94,29 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
         terminateIfNoOwnedWindows()
     }
 
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              owns(window)
+        else { return }
+
+        activateMenuBarHost()
+    }
+
+    func windowShouldBecomeKey(_ window: NSWindow) -> Bool {
+        if owns(window) {
+            activateMenuBarHost()
+        }
+        return true
+    }
+
+    private func owns(_ window: NSWindow) -> Bool {
+        window === dashboardWindow || conversationWindows.values.contains(where: { $0 === window })
+    }
+
     private func openConversation(_ request: ConversationWindowRequest) {
         if let existing = conversationWindows[request], existing.isVisible {
             existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            activateMenuBarHost()
             return
         }
 
@@ -106,7 +131,7 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
         window.delegate = self
         conversationWindows[request] = window
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        activateMenuBarHost()
     }
 
     private func createDashboardWindow() {
@@ -134,10 +159,10 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
     private func showDashboardWindow() {
         createDashboardWindow()
         guard let dashboardWindow else { return }
-        NSApp.activate(ignoringOtherApps: true)
         if dashboardWindow.isMiniaturized { dashboardWindow.deminiaturize(nil) }
         dashboardWindow.makeKeyAndOrderFront(nil)
         dashboardWindow.orderFrontRegardless()
+        activateMenuBarHost()
     }
 
     private func installMainMenu() {
@@ -159,7 +184,32 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
         quit.target = self
         appMenuItem.submenu = appMenu
         mainMenu.addItem(appMenuItem)
+
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+        let windowMenuItem = NSMenuItem()
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
         NSApp.mainMenu = mainMenu
+        NSApp.windowsMenu = windowMenu
+    }
+
+    private func installActivationMonitor() {
+        globalMouseDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self,
+                      let window = NSApp.windows.first(where: {
+                          self.owns($0) && $0.isVisible && $0.frame.contains(NSEvent.mouseLocation)
+                      })
+                else { return }
+
+                window.makeKey()
+                self.activateMenuBarHost()
+            }
+        }
     }
 
     @objc private func refreshMetrics() {
@@ -276,6 +326,29 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
 
     private func focusDashboardWindow() {
         showDashboardWindow()
+    }
+
+    private func activateHelperApplication() {
+        let current = NSRunningApplication.current
+        if let frontmost = NSWorkspace.shared.frontmostApplication,
+           frontmost.processIdentifier != current.processIdentifier {
+            _ = current.activate(from: frontmost, options: [.activateAllWindows])
+        } else {
+            _ = current.activate(options: [.activateAllWindows])
+        }
+        _ = NSApp.activate()
+    }
+
+    private func activateMenuBarHost() {
+        guard let hostProcessIdentifier,
+              let host = NSRunningApplication(processIdentifier: hostProcessIdentifier)
+        else {
+            activateHelperApplication()
+            return
+        }
+
+        NSApp.yieldActivation(to: host)
+        _ = host.activate(from: NSRunningApplication.current, options: [.activateAllWindows])
     }
 
     private func sendReadyIfWindowIsVisible(_ window: NSWindow?) {
