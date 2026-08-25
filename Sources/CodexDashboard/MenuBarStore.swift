@@ -56,6 +56,8 @@ struct MenuBarAnalytics: Sendable {
 /// projections and display preferences. Dashboard data is owned by the helper.
 @MainActor
 final class MenuBarStore: ObservableObject {
+    private static let liveQuotaRefreshInterval: TimeInterval = 60 * 60
+
     @Published private(set) var subscription: SubscriptionSnapshot?
     @Published private(set) var bankedResets: BankedResetSnapshot?
     @Published private(set) var account: CodexAccountSnapshot?
@@ -79,6 +81,7 @@ final class MenuBarStore: ObservableObject {
     private var popoverTask: Task<Void, Never>?
     private var bankedResetTask: Task<Void, Never>?
     private var menuBarMonitorTask: Task<Void, Never>?
+    private var liveQuotaMonitorTask: Task<Void, Never>?
     private var pricingRefreshTask: Task<Void, Never>?
     private var sourceWatcher: CodexSourceWatcher?
     private var sourceRefreshTask: Task<Void, Never>?
@@ -111,7 +114,7 @@ final class MenuBarStore: ObservableObject {
         menuBarAnalytics.aggregate(in: interval)
     }
 
-    func loadMenuBar() {
+    func loadMenuBar(includeLiveQuota: Bool = false) {
         loadTask?.cancel()
         popoverTask?.cancel()
         let requestID = UUID()
@@ -128,20 +131,8 @@ final class MenuBarStore: ObservableObject {
                 let snapshot = try await self.historicalStore.freshSubscriptionSnapshot()
                 guard !Task.isCancelled, self.loadID == requestID else { return }
                 self.subscription = snapshot?.isUsable == true ? snapshot : nil
-                let codexHome = self.codexHome
-                let live = await Task.detached(priority: .utility) {
-                    await SubscriptionReader.live(from: codexHome)
-                }.value
-                guard !Task.isCancelled, self.loadID == requestID else { return }
-                if let live, live.isUsable {
-                    let quotaChanged = self.subscription?.hasSameQuota(as: live) != true
-                    if quotaChanged {
-                        try? await self.historicalStore.recordSubscription(live)
-                    }
-                    self.subscription = live
-                    if quotaChanged {
-                        self.metricsDidChange?()
-                    }
+                if includeLiveQuota {
+                    await self.refreshLiveQuota(requestID: requestID)
                 }
             } catch {
                 guard !Task.isCancelled, self.loadID == requestID else { return }
@@ -155,10 +146,12 @@ final class MenuBarStore: ObservableObject {
         pricingRefreshTask?.cancel()
         sourceWatcher?.stop()
         sourceWatcher = nil
+        liveQuotaMonitorTask?.cancel()
         sourceRefreshTask?.cancel()
         sourceRefreshTask = nil
         sourceRefreshGeneration = UUID()
-        loadMenuBar()
+        loadMenuBar(includeLiveQuota: true)
+        startLiveQuotaMonitoring()
         startPricingMonitoring()
         guard refreshInterval > 0 else { return }
         menuBarMonitorTask = Task { [weak self] in
@@ -171,6 +164,37 @@ final class MenuBarStore: ObservableObject {
             }
         }
         startSourceMonitoring()
+    }
+
+    private func startLiveQuotaMonitoring() {
+        liveQuotaMonitorTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Self.liveQuotaRefreshInterval))
+                guard !Task.isCancelled else { return }
+                self.loadMenuBar(includeLiveQuota: true)
+            }
+        }
+    }
+
+    private func refreshLiveQuota(requestID: UUID? = nil) async {
+        let codexHome = self.codexHome
+        let live = await Task.detached(priority: .utility) {
+            await SubscriptionReader.live(from: codexHome)
+        }.value
+        guard !Task.isCancelled,
+              requestID.map({ $0 == self.loadID }) ?? true,
+              let live,
+              live.isUsable else { return }
+
+        let quotaChanged = self.subscription?.hasSameQuota(as: live) != true
+        if quotaChanged {
+            try? await self.historicalStore.recordSubscription(live)
+        }
+        self.subscription = live
+        if quotaChanged {
+            self.metricsDidChange?()
+        }
     }
 
     private func startPricingMonitoring() {
@@ -273,7 +297,7 @@ final class MenuBarStore: ObservableObject {
         if menuBarDataIsResident {
             loadPopover()
         } else {
-            loadMenuBar()
+            loadMenuBar(includeLiveQuota: true)
         }
     }
 

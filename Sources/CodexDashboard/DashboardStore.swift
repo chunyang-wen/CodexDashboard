@@ -504,6 +504,14 @@ final class DashboardStore: ObservableObject {
                 storedSubscription = nil
             }
             _ = acceptSubscription(storedSubscription)
+            let liveSubscription = await Task.detached(priority: .utility) {
+                await SubscriptionReader.live(from: codexHome)
+            }.value
+            guard !Task.isCancelled, loadID == requestID else { return }
+            if let liveSubscription, liveSubscription.isUsable {
+                try? await historicalStore.recordSubscription(liveSubscription)
+                _ = acceptSubscription(liveSubscription)
+            }
             let indexed = (try? await Task.detached(priority: .userInitiated) {
                 try CodexStore(codexHome: codexHome).loadIndexedSessions()
             }.value) ?? []

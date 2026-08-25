@@ -106,7 +106,7 @@ final class StatusItemController: NSObject {
             dismissPopover()
             return
         }
-        store.loadMenuBar()
+        store.loadMenuBar(includeLiveQuota: true)
         let anchor = statusItemScreenFrame ?? .zero
         showPopover(anchor: anchor)
     }
