@@ -24,25 +24,25 @@
 		A20000000000000000000008 /* DashboardProcessCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000008 /* DashboardProcessCoordinator.swift */; };
 		A20000000000000000000009 /* DashboardPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* DashboardPreferences.swift */; };
 		A2000000000000000000000C /* StatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000C /* StatusItemController.swift */; };
-		A2000000000000000000000E /* CodexSourceWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* CodexSourceWatcher.swift */; };
 		A2000000000000000000000D /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000002 /* MenuBarPopoverView.swift */; };
-		A70000000000000000000001 /* HelperMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000001 /* HelperMain.swift */; };
-		A70000000000000000000002 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000004 /* Assets.xcassets */; };
-		A70000000000000000000003 /* CodexDashboardUI.app in Embed Helpers */ = {isa = PBXBuildFile; fileRef = B70000000000000000000003 /* CodexDashboardUI.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
-		A70000000000000000000004 /* Components.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* Components.swift */; };
-		A70000000000000000000005 /* ContentView.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* ContentView.swift */; };
-		A70000000000000000000006 /* DashboardStore.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* DashboardStore.swift */; };
-		A70000000000000000000007 /* ConversationInspectorView.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* ConversationInspectorView.swift */; };
-		A7000000000000000000000A /* DashboardHelperView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000004 /* DashboardHelperView.swift */; };
-		A7000000000000000000000B /* DashboardPreferences.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* DashboardPreferences.swift */; };
-		A50000000000000000000005 /* CodexMetricsCore.framework in Helper Frameworks */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* CodexMetricsCore.framework */; };
+		A2000000000000000000000E /* CodexSourceWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* CodexSourceWatcher.swift */; };
 		A30000000000000000000001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000001 /* main.swift */; };
 		A40000000000000000000001 /* AnalyticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40000000000000000000001 /* AnalyticsTests.swift */; };
 		A50000000000000000000001 /* CodexMetricsCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* CodexMetricsCore.framework */; };
 		A50000000000000000000002 /* CodexMetricsCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* CodexMetricsCore.framework */; };
 		A50000000000000000000003 /* CodexMetricsCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* CodexMetricsCore.framework */; };
 		A50000000000000000000004 /* CodexMetricsCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* CodexMetricsCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A50000000000000000000005 /* CodexMetricsCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* CodexMetricsCore.framework */; };
 		A60000000000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000004 /* Assets.xcassets */; };
+		A70000000000000000000001 /* HelperMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000001 /* HelperMain.swift */; };
+		A70000000000000000000002 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000004 /* Assets.xcassets */; };
+		A70000000000000000000003 /* CodexDashboardUI.app in Embed Helpers */ = {isa = PBXBuildFile; fileRef = B70000000000000000000003 /* CodexDashboardUI.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		A70000000000000000000004 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* Components.swift */; };
+		A70000000000000000000005 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* ContentView.swift */; };
+		A70000000000000000000006 /* DashboardStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* DashboardStore.swift */; };
+		A70000000000000000000007 /* ConversationInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* ConversationInspectorView.swift */; };
+		A7000000000000000000000A /* DashboardHelperView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000004 /* DashboardHelperView.swift */; };
+		A7000000000000000000000B /* DashboardPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* DashboardPreferences.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -98,7 +98,7 @@
 		E20000000000000000000005 /* Embed Helpers */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
-			dstPath = "../Helpers";
+			dstPath = ../Helpers;
 			dstSubfolderSpec = 13;
 			files = (
 				A70000000000000000000003 /* CodexDashboardUI.app in Embed Helpers */,
@@ -131,21 +131,21 @@
 		B20000000000000000000008 /* DashboardProcessCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardProcessCoordinator.swift; sourceTree = "<group>"; };
 		B20000000000000000000009 /* DashboardPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardPreferences.swift; sourceTree = "<group>"; };
 		B2000000000000000000000C /* StatusItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusItemController.swift; sourceTree = "<group>"; };
-		B70000000000000000000001 /* HelperMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperMain.swift; sourceTree = "<group>"; };
-		B70000000000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B30000000000000000000001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		B40000000000000000000001 /* AnalyticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalyticsTests.swift; sourceTree = "<group>"; };
 		B50000000000000000000001 /* CodexMetricsCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = CodexMetricsCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		B50000000000000000000002 /* CodexDashboard.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexDashboard.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B50000000000000000000003 /* codex-metrics */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "codex-metrics"; sourceTree = BUILT_PRODUCTS_DIR; };
 		B50000000000000000000004 /* CodexMetricsCoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CodexMetricsCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		B70000000000000000000003 /* CodexDashboardUI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexDashboardUI.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		B70000000000000000000004 /* DashboardHelperView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardHelperView.swift; sourceTree = "<group>"; };
-		B80000000000000000000002 /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPopoverView.swift; sourceTree = "<group>"; };
 		B60000000000000000000001 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		B60000000000000000000002 /* METRICS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = METRICS.md; sourceTree = "<group>"; };
 		B60000000000000000000003 /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Package.swift; sourceTree = "<group>"; };
 		B60000000000000000000004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B70000000000000000000001 /* HelperMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperMain.swift; sourceTree = "<group>"; };
+		B70000000000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B70000000000000000000003 /* CodexDashboardUI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexDashboardUI.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B70000000000000000000004 /* DashboardHelperView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardHelperView.swift; sourceTree = "<group>"; };
+		B80000000000000000000002 /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPopoverView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -185,7 +185,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A50000000000000000000005 /* CodexMetricsCore.framework in Helper Frameworks */,
+				A50000000000000000000005 /* CodexMetricsCore.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -207,10 +207,10 @@
 		F10000000000000000000002 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
-					F10000000000000000000003 /* CodexMetricsCore */,
-					F10000000000000000000004 /* CodexDashboard */,
-					F10000000000000000000009 /* CodexDashboardUI */,
-					F10000000000000000000005 /* CodexMetricsCLI */,
+				F10000000000000000000003 /* CodexMetricsCore */,
+				F10000000000000000000004 /* CodexDashboard */,
+				F10000000000000000000009 /* CodexDashboardUI */,
+				F10000000000000000000005 /* CodexMetricsCLI */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -253,16 +253,6 @@
 			path = CodexDashboard;
 			sourceTree = "<group>";
 		};
-		F10000000000000000000009 /* CodexDashboardUI */ = {
-			isa = PBXGroup;
-			children = (
-				B70000000000000000000004 /* DashboardHelperView.swift */,
-				B70000000000000000000001 /* HelperMain.swift */,
-				B70000000000000000000002 /* Info.plist */,
-			);
-			path = CodexDashboardUI;
-			sourceTree = "<group>";
-		};
 		F10000000000000000000005 /* CodexMetricsCLI */ = {
 			isa = PBXGroup;
 			children = (
@@ -297,6 +287,16 @@
 				B40000000000000000000001 /* AnalyticsTests.swift */,
 			);
 			path = CodexMetricsCoreTests;
+			sourceTree = "<group>";
+		};
+		F10000000000000000000009 /* CodexDashboardUI */ = {
+			isa = PBXGroup;
+			children = (
+				B70000000000000000000004 /* DashboardHelperView.swift */,
+				B70000000000000000000001 /* HelperMain.swift */,
+				B70000000000000000000002 /* Info.plist */,
+			);
+			path = CodexDashboardUI;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -339,24 +339,6 @@
 			productReference = B50000000000000000000002 /* CodexDashboard.app */;
 			productType = "com.apple.product-type.application";
 		};
-		D50000000000000000000001 /* CodexDashboardUI */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = F35000000000000000000001 /* Build configuration list for PBXNativeTarget "CodexDashboardUI" */;
-			buildPhases = (
-				E50000000000000000000001 /* Sources */,
-				E50000000000000000000002 /* Frameworks */,
-				E50000000000000000000004 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				C20000000000000000000005 /* PBXTargetDependency */,
-			);
-			name = CodexDashboardUI;
-			productName = CodexDashboardUI;
-			productReference = B70000000000000000000003 /* CodexDashboardUI.app */;
-			productType = "com.apple.product-type.application";
-		};
 		D30000000000000000000001 /* CodexMetricsCLI */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = F30000000000000000000004 /* Build configuration list for PBXNativeTarget "CodexMetricsCLI" */;
@@ -391,6 +373,24 @@
 			productReference = B50000000000000000000004 /* CodexMetricsCoreTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		D50000000000000000000001 /* CodexDashboardUI */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F35000000000000000000001 /* Build configuration list for PBXNativeTarget "CodexDashboardUI" */;
+			buildPhases = (
+				E50000000000000000000001 /* Sources */,
+				E50000000000000000000002 /* Frameworks */,
+				E50000000000000000000004 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C20000000000000000000005 /* PBXTargetDependency */,
+			);
+			name = CodexDashboardUI;
+			productName = CodexDashboardUI;
+			productReference = B70000000000000000000003 /* CodexDashboardUI.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -407,15 +407,15 @@
 					D20000000000000000000001 = {
 						CreatedOnToolsVersion = 26.0;
 					};
-					D50000000000000000000001 = {
-						CreatedOnToolsVersion = 26.0;
-					};
 					D30000000000000000000001 = {
 						CreatedOnToolsVersion = 26.0;
 					};
 					D40000000000000000000001 = {
 						CreatedOnToolsVersion = 26.0;
 						TestTargetID = D10000000000000000000001;
+					};
+					D50000000000000000000001 = {
+						CreatedOnToolsVersion = 26.0;
 					};
 				};
 			};
@@ -434,30 +434,30 @@
 			productRefGroup = F10000000000000000000007 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
-				targets = (
-					D20000000000000000000001 /* CodexDashboard */,
-					D10000000000000000000001 /* CodexMetricsCore */,
-					D50000000000000000000001 /* CodexDashboardUI */,
-					D30000000000000000000001 /* CodexMetricsCLI */,
+			targets = (
+				D20000000000000000000001 /* CodexDashboard */,
+				D10000000000000000000001 /* CodexMetricsCore */,
+				D50000000000000000000001 /* CodexDashboardUI */,
+				D30000000000000000000001 /* CodexMetricsCLI */,
 				D40000000000000000000001 /* CodexMetricsCoreTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		E50000000000000000000004 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				A70000000000000000000002 /* Assets.xcassets in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		E20000000000000000000004 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				A60000000000000000000001 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E50000000000000000000004 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A70000000000000000000002 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -517,12 +517,12 @@
 			buildActionMask = 2147483647;
 			files = (
 				A70000000000000000000001 /* HelperMain.swift in Sources */,
-				A70000000000000000000004 /* Components.swift in Helper Sources */,
-				A70000000000000000000005 /* ContentView.swift in Helper Sources */,
-				A70000000000000000000006 /* DashboardStore.swift in Helper Sources */,
-				A70000000000000000000007 /* ConversationInspectorView.swift in Helper Sources */,
+				A70000000000000000000004 /* Components.swift in Sources */,
+				A70000000000000000000005 /* ContentView.swift in Sources */,
+				A70000000000000000000006 /* DashboardStore.swift in Sources */,
+				A70000000000000000000007 /* ConversationInspectorView.swift in Sources */,
 				A7000000000000000000000A /* DashboardHelperView.swift in Sources */,
-				A7000000000000000000000B /* DashboardPreferences.swift in Helper Sources */,
+				A7000000000000000000000B /* DashboardPreferences.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -552,7 +552,7 @@
 		C20000000000000000000005 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = D10000000000000000000001 /* CodexMetricsCore */;
-			 targetProxy = C10000000000000000000005 /* PBXContainerItemProxy */;
+			targetProxy = C10000000000000000000005 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -684,52 +684,6 @@
 			};
 			name = Release;
 		};
-		F45000000000000000000001 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_STYLE = Automatic;
-				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20260825150257;
-				DEVELOPMENT_TEAM = 4LK28PK96X;
-				ENABLE_HARDENED_RUNTIME = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = Sources/CodexDashboardUI/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../../../../Frameworks",
-				);
-				MARKETING_VERSION = 0.1.10;
-				PRODUCT_BUNDLE_IDENTIFIER = com.chunyangwen.CodexDashboard.DashboardUI;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SKIP_INSTALL = YES;
-				SWIFT_VERSION = 6.0;
-			};
-			name = Debug;
-		};
-		F45000000000000000000002 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_STYLE = Automatic;
-				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20260825150257;
-				DEVELOPMENT_TEAM = 4LK28PK96X;
-				ENABLE_HARDENED_RUNTIME = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = Sources/CodexDashboardUI/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../../../../Frameworks",
-				);
-				MARKETING_VERSION = 0.1.10;
-				PRODUCT_BUNDLE_IDENTIFIER = com.chunyangwen.CodexDashboard.DashboardUI;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SKIP_INSTALL = YES;
-				SWIFT_VERSION = 6.0;
-			};
-			name = Release;
-		};
 		F43000000000000000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -790,6 +744,54 @@
 			};
 			name = Release;
 		};
+		F45000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 20260825150257;
+				DEVELOPMENT_TEAM = 4LK28PK96X;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Sources/CodexDashboardUI/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.10;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chunyangwen.CodexDashboard.DashboardUI;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		F45000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 20260825150257;
+				DEVELOPMENT_TEAM = 4LK28PK96X;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Sources/CodexDashboardUI/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.10;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chunyangwen.CodexDashboard.DashboardUI;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -820,15 +822,6 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		F35000000000000000000001 /* Build configuration list for PBXNativeTarget "CodexDashboardUI" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				F45000000000000000000001 /* Debug */,
-				F45000000000000000000002 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		F30000000000000000000004 /* Build configuration list for PBXNativeTarget "CodexMetricsCLI" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -843,6 +836,15 @@
 			buildConfigurations = (
 				F44000000000000000000001 /* Debug */,
 				F44000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F35000000000000000000001 /* Build configuration list for PBXNativeTarget "CodexDashboardUI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F45000000000000000000001 /* Debug */,
+				F45000000000000000000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
