@@ -47,6 +47,33 @@ final class SourceWatcherTests: XCTestCase {
         XCTAssertGreaterThan(batch.latestEventID, watcher.startingEventID)
     }
 
+    func testWatcherReportsFollowUpRolloutChangesAfterAConsumerTakesABatch() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let sessions = home.appendingPathComponent("sessions/2026/08/21", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let watcher = try CodexSourceWatcher(codexHome: home, sinceEventID: nil, latency: 0.1)
+        defer { watcher.stop() }
+        let rollout = sessions.appendingPathComponent("rollout-follow-up.jsonl")
+
+        try Data("first\n".utf8).write(to: rollout)
+        _ = try await waitForChanges(from: watcher) {
+            $0.rolloutPaths.contains(rollout.path)
+        }
+
+        let handle = try FileHandle(forWritingTo: rollout)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("second\n".utf8))
+        try handle.synchronize()
+        try handle.close()
+
+        let followUp = try await waitForChanges(from: watcher) {
+            $0.rolloutPaths.contains(rollout.path)
+        }
+        XCTAssertTrue(followUp.rolloutPaths.contains(rollout.path))
+    }
+
     func testWatcherCoalescesEventsWhileConsumerIsPaused() async throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let sessions = home.appendingPathComponent("sessions/2026/08/21", isDirectory: true)

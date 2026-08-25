@@ -81,6 +81,7 @@ final class MenuBarStore: ObservableObject {
     private var sourceWatcher: CodexSourceWatcher?
     private var sourceRefreshTask: Task<Void, Never>?
     private var sourceRefreshGeneration = UUID()
+    private var sourceRefreshInFlight = false
     private var menuBarAnalytics = MenuBarAnalytics.empty
 
     init(userHome: URL = FileManager.default.homeDirectoryForCurrentUser, defaults: UserDefaults = .standard) {
@@ -147,6 +148,7 @@ final class MenuBarStore: ObservableObject {
                 try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled else { return }
                 self.loadMenuBar()
+                await self.refreshSourceFromIndex()
             }
         }
         startSourceMonitoring()
@@ -388,6 +390,9 @@ final class MenuBarStore: ObservableObject {
         indexChanged: Bool,
         requiresReconciliation: Bool
     ) async -> Bool {
+        guard !sourceRefreshInFlight else { return true }
+        sourceRefreshInFlight = true
+        defer { sourceRefreshInFlight = false }
         do {
             let codexHome = self.codexHome
             let userHome = self.userHome
@@ -428,6 +433,16 @@ final class MenuBarStore: ObservableObject {
         } catch {
             return false
         }
+    }
+
+    /// FSEvents is the low-latency path, but the source index is the durable
+    /// fallback when a long-running stream misses an event or is interrupted.
+    private func refreshSourceFromIndex() async {
+        _ = await refreshSource(
+            changedPaths: [],
+            indexChanged: true,
+            requiresReconciliation: false
+        )
     }
 
     private func persistSourceBatch(_ sessions: [SessionMetric], pricing: PricingHistory) async throws {

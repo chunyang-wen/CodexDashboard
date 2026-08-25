@@ -1,10 +1,8 @@
 import Foundation
 
-/// Active rollout files are appended frequently while a turn is streaming. Their
-/// parsed enrichment contains the complete history of the rollout, so writing it
-/// on every filesystem event creates large write amplification. A short quiet
-/// period lets the parser keep serving live data while persisting only a settled
-/// checkpoint.
+/// Active rollout files are appended frequently while a turn is streaming. The
+/// full historical session archive waits for a short quiet period to avoid large
+/// write amplification; compact parser checkpoints may advance incrementally.
 enum MetricsPersistencePolicy {
     static let activeRolloutQuietPeriod: TimeInterval = 120
 }
@@ -128,14 +126,11 @@ final class RolloutCache {
     func store(_ enrichment: RolloutEnrichment, for path: String, parsedBytes: UInt64) {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
               let modified = attributes[.modificationDate] as? Date else { return }
-        let existing = database?.rollout(for: path) ?? entries[path]
-        // Keep the previous checkpoint while Codex is actively appending. The
-        // next pass will resume from it, and the complete enrichment will be
-        // checkpointed once the rollout has been quiet for a short period.
-        if existing != nil,
-           Date.now.timeIntervalSince(modified) < MetricsPersistencePolicy.activeRolloutQuietPeriod {
-            return
-        }
+        // This is only the compact parser checkpoint: it contains parsed metric
+        // values and an offset, never rollout content. Persist it even while the
+        // file is active so the next refresh resumes from this pass instead of
+        // rescanning the entire active tail. The larger historical session blob
+        // still observes MetricsPersistencePolicy.activeRolloutQuietPeriod.
         var versionedEnrichment = enrichment
         versionedEnrichment.parserVersion = CachedRollout.currentParserVersion
         let cached = CachedRollout(

@@ -530,7 +530,7 @@ private struct MenuUsageTrendView: View {
             .foregroundStyle(title == "MONTH" ? .secondary : tint)
             .frame(width: 56, alignment: .leading)
 
-            Text(MetricFormatters.preciseCurrency(summary.cost))
+            Text(MetricFormatters.currency(summary.cost))
                 .frame(width: 60, alignment: .trailing)
             Text(MetricFormatters.compactNumber(summary.tokens))
                 .frame(width: 46, alignment: .trailing)
@@ -553,7 +553,7 @@ private struct MenuUsageTrendView: View {
         }
         .font(.system(size: 11, weight: .medium).monospacedDigit())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title), \(MetricFormatters.preciseCurrency(summary.cost)), \(MetricFormatters.compactNumber(summary.tokens)) tokens, \(summary.tools) tools, \(summary.skills) skills, \(share.formatted(.percent.precision(.fractionLength(0)))) of the month")
+        .accessibilityLabel("\(title), \(MetricFormatters.currency(summary.cost)), \(MetricFormatters.compactNumber(summary.tokens)) tokens, \(summary.tools) tools, \(summary.skills) skills, \(share.formatted(.percent.precision(.fractionLength(0)))) of the month")
     }
 
     private func barValue(_ day: MenuUsageDay) -> Double {

@@ -1145,19 +1145,10 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(offset, 6)
 
         cache.store(RolloutEnrichment(usage: TokenUsage(total: 20)), for: file.path, parsedBytes: 13)
-        guard case .append(_, let deferredOffset) = RolloutCache(home: home).lookup(file.path) else {
-            return XCTFail("An actively changing rollout should retain its previous checkpoint")
+        guard case .complete(let active) = RolloutCache(home: home).lookup(file.path) else {
+            return XCTFail("An active rollout should persist its latest compact checkpoint")
         }
-        XCTAssertEqual(deferredOffset, 6)
-
-        try FileManager.default.setAttributes(
-            [.modificationDate: Date(timeIntervalSinceNow: -MetricsPersistencePolicy.activeRolloutQuietPeriod - 1)],
-            ofItemAtPath: file.path
-        )
-        cache.store(RolloutEnrichment(usage: TokenUsage(total: 20)), for: file.path, parsedBytes: 13)
-        guard case .complete = RolloutCache(home: home).lookup(file.path) else {
-            return XCTFail("A quiet rollout should persist its latest checkpoint")
-        }
+        XCTAssertEqual(active.usage.total, 20)
     }
 
     func testRolloutCacheRejectsSameSizeFileReplacement() throws {
