@@ -212,9 +212,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
     ) {
         guard updateCheckInProgress else { return }
         updateCheckInProgress = false
-        DispatchQueue.main.async { [weak self] in
-            self?.dashboardCoordinator.requestDashboard()
-        }
     }
 
     private func requestProductQuit() {
