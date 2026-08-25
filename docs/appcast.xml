@@ -3,6 +3,21 @@
     <channel>
         <title>CodexDashboard</title>
         <item>
+            <title>0.1.11</title>
+            <description sparkle:format="html"><![CDATA[
+                <h3>What's new in 0.1.11</h3>
+                <ul>
+                    <li>Fixed startup Dock behavior so the persistent companion process no longer briefly appears and disappears; the dashboard process owns the visible Dock icon.</li>
+                    <li>Clarified the companion and dashboard application labels as CodexDashboard Companion and CodexDashboard.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Tue, 25 Aug 2026 17:01:49 +0800</pubDate>
+            <sparkle:version>20260825165919</sparkle:version>
+            <sparkle:shortVersionString>0.1.11</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.11/CodexDashboard-0.1.11.zip" length="11349109" type="application/octet-stream" sparkle:edSignature="D5C3fqFFnIFv3Q8sNiu1ZlCn6ukmRYHuWFLJ+iWzDEXurOiV+HIO+wg3b3m40uFmDbEwBi42ksECFwQF6ZsCDw=="/>
+        </item>
+        <item>
             <title>0.1.10</title>
             <description sparkle:format="html"><![CDATA[
                 <h3>What's new in 0.1.10</h3>
@@ -38,22 +53,6 @@
             <sparkle:shortVersionString>0.1.9</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.9/CodexDashboard-0.1.9.zip" length="11348916" type="application/octet-stream" sparkle:edSignature="QdwApv69CmORbc+xi0f+BjWS6Pt781nkM/RCmBFo9aRc25HYyGfdCLTmoyKnhXUkAAW1S/FyPGQMM7tZHBqLBw=="/>
-        </item>
-        <item>
-            <title>0.1.8</title>
-            <description sparkle:format="html"><![CDATA[
-                <h3>What's new in 0.1.8</h3>
-                <ul>
-                    <li>Kept active rollout checkpoints and source-index refreshes incremental, so ongoing conversations can appear without restarting the app.</li>
-                    <li>Added skill attribution and cost metrics to the dashboard.</li>
-                    <li>Refined dashboard window sizing and sidebar controls for a more compact layout.</li>
-                </ul>
-            ]]></description>
-            <pubDate>Tue, 25 Aug 2026 09:50:15 +0800</pubDate>
-            <sparkle:version>20260825094714</sparkle:version>
-            <sparkle:shortVersionString>0.1.8</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.8/CodexDashboard-0.1.8.zip" length="11346763" type="application/octet-stream" sparkle:edSignature="NWmdvrebpe8ccj1AQDzRTwNfAYW7E6tscES/f95USyuY3U2dyv78TDNNnuS4CM1yyqyJHVzwEgYJz1l5rFl6AQ=="/>
         </item>
     </channel>
 </rss>
