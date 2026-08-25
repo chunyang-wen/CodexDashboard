@@ -17,7 +17,8 @@ final class AppUpdater: ObservableObject {
     }
 
     func checkForUpdates() {
-        AppActivationPolicy.showDockIcon()
+        // The dashboard helper owns the visible Dock icon while it is open.
+        // Sparkle can present from the accessory host without promoting it.
         startHandler?()
     }
 }
@@ -91,6 +92,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
     let menuStore: MenuBarStore
     private var statusItemController: StatusItemController?
     private var updaterController: SPUStandardUpdaterController!
+    private var updateCheckInProgress = false
     private let productTerminationGate = DashboardProductTerminationGate()
 
     override init() {
@@ -190,7 +192,29 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
                 userDriverDelegate: self
             )
         }
+
+        let updater = updaterController.updater
+        guard !updateCheckInProgress,
+              updater.canCheckForUpdates,
+              !updater.sessionInProgress else { return }
+
+        // Sparkle's standard driver presents modal UI in the host process.
+        // Activate it explicitly so that UI is not left behind the helper.
+        updateCheckInProgress = true
+        NSApp.activate(ignoringOtherApps: true)
         updaterController.checkForUpdates(nil)
+    }
+
+    func updater(
+        _ updater: SPUUpdater,
+        didFinishUpdateCycleFor updateCheck: SPUUpdateCheck,
+        error: Error?
+    ) {
+        guard updateCheckInProgress else { return }
+        updateCheckInProgress = false
+        DispatchQueue.main.async { [weak self] in
+            self?.dashboardCoordinator.requestDashboard()
+        }
     }
 
     private func requestProductQuit() {

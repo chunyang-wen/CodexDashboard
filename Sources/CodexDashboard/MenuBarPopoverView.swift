@@ -521,6 +521,7 @@ private struct MenuUsageTrendView: View {
 
     private func comparisonRow(_ title: String, summary: MenuUsageSummary, tint: Color) -> some View {
         let share = monthShare(for: summary)
+        let shareLabel = monthShareLabel(share)
         return HStack(spacing: 5) {
             HStack(spacing: 5) {
                 Circle().fill(tint).frame(width: 6, height: 6)
@@ -540,7 +541,7 @@ private struct MenuUsageTrendView: View {
                 .frame(width: 36, alignment: .trailing)
 
             HStack(spacing: 4) {
-                Text(share.formatted(.percent.precision(.fractionLength(0))))
+                Text(shareLabel)
                     .frame(width: 34, alignment: .trailing)
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.primary.opacity(0.08))
@@ -553,7 +554,7 @@ private struct MenuUsageTrendView: View {
         }
         .font(.system(size: 11, weight: .medium).monospacedDigit())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title), \(MetricFormatters.currency(summary.cost)), \(MetricFormatters.compactNumber(summary.tokens)) tokens, \(summary.tools) tools, \(summary.skills) skills, \(share.formatted(.percent.precision(.fractionLength(0)))) of the month")
+        .accessibilityLabel("\(title), \(MetricFormatters.currency(summary.cost)), \(MetricFormatters.compactNumber(summary.tokens)) tokens, \(summary.tools) tools, \(summary.skills) skills, \(shareLabel) of the month")
     }
 
     private func barValue(_ day: MenuUsageDay) -> Double {
@@ -595,6 +596,11 @@ private struct MenuUsageTrendView: View {
         let denominator = summaryValue(month)
         guard denominator > 0 else { return 0 }
         return min(1, max(0, summaryValue(summary) / denominator))
+    }
+
+    private func monthShareLabel(_ share: Double) -> String {
+        let fractionDigits = share > 0 && share < 0.01 ? 1 : 0
+        return share.formatted(.percent.precision(.fractionLength(fractionDigits)))
     }
 
     private var insightLabel: String {
