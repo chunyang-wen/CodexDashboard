@@ -792,7 +792,7 @@ private struct DashboardSettingsView: View {
                     Button("Use Default") { store.resetCodexHome() }
                         .disabled(store.codexHome.standardizedFileURL == defaultCodexHome.standardizedFileURL)
                 }
-                Text("Codex Dashboard reads local session, account, and quota metadata from this folder. Credentials never leave your Mac.")
+                Text("CodexDashboard reads local session, account, and quota metadata from this folder. Credentials never leave your Mac.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

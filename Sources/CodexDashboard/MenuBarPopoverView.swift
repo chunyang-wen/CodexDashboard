@@ -48,7 +48,7 @@ struct MenuBarDashboardView: View {
                 MenuBarSettingsLink(action: onSettingsOpened)
                 toolbarDivider
                 MenuBarActionButton(
-                    title: "Quit Codex Dashboard",
+                    title: "Quit CodexDashboard",
                     systemImage: "power",
                     tint: .red
                 ) {
@@ -84,7 +84,7 @@ struct MenuBarDashboardView: View {
         HStack(spacing: 10) {
             MenuBarAppIcon(statusColor: headerQuotaColor)
             VStack(alignment: .leading, spacing: 2) {
-                Text(store.account?.email ?? "Codex Dashboard")
+                Text(store.account?.email ?? "CodexDashboard")
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                     .textSelection(.enabled)

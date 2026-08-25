@@ -119,7 +119,7 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
         )
         let hostingController = NSHostingController(rootView: root)
         let window = NSWindow(contentViewController: hostingController)
-        window.title = "Codex Dashboard"
+        window.title = "CodexDashboard"
         window.identifier = NSUserInterfaceItemIdentifier("CodexDashboard.dashboard")
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         window.titleVisibility = .hidden
@@ -142,7 +142,7 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
     private func installMainMenu() {
         let mainMenu = NSMenu()
         let appMenuItem = NSMenuItem()
-        let appMenu = NSMenu(title: "Codex Dashboard")
+        let appMenu = NSMenu(title: "CodexDashboard")
         let refresh = appMenu.addItem(withTitle: "Refresh Metrics", action: #selector(refreshMetrics), keyEquivalent: "r")
         refresh.keyEquivalentModifierMask = [.command]
         refresh.target = self
@@ -153,7 +153,7 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
         let updates = appMenu.addItem(withTitle: "Check for Updates…", action: #selector(requestUpdates), keyEquivalent: "")
         updates.target = self
         appMenu.addItem(.separator())
-        let quit = appMenu.addItem(withTitle: "Quit Codex Dashboard", action: #selector(requestProductQuit), keyEquivalent: "q")
+        let quit = appMenu.addItem(withTitle: "Quit CodexDashboard", action: #selector(requestProductQuit), keyEquivalent: "q")
         quit.keyEquivalentModifierMask = [.command]
         quit.target = self
         appMenuItem.submenu = appMenu

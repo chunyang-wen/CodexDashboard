@@ -644,7 +644,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/CodexDashboard/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Codex Dashboard";
+				INFOPLIST_KEY_CFBundleDisplayName = "CodexDashboard Companion";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -670,7 +670,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/CodexDashboard/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Codex Dashboard";
+				INFOPLIST_KEY_CFBundleDisplayName = "CodexDashboard Companion";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
