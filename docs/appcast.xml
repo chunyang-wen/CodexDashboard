@@ -4,6 +4,14 @@
         <title>CodexDashboard</title>
         <item>
             <title>0.1.8</title>
+            <description sparkle:format="html"><![CDATA[
+                <h3>What's new in 0.1.8</h3>
+                <ul>
+                    <li>Kept active rollout checkpoints and source-index refreshes incremental, so ongoing conversations can appear without restarting the app.</li>
+                    <li>Added skill attribution and cost metrics to the dashboard.</li>
+                    <li>Refined dashboard window sizing and sidebar controls for a more compact layout.</li>
+                </ul>
+            ]]></description>
             <pubDate>Tue, 25 Aug 2026 09:50:15 +0800</pubDate>
             <sparkle:version>20260825094714</sparkle:version>
             <sparkle:shortVersionString>0.1.8</sparkle:shortVersionString>
