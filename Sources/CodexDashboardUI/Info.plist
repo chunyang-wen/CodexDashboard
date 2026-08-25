@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>Codex Dashboard UI</string>
+	<string>Codex Dashboard</string>
 	<key>CFBundleIconName</key>
 	<string>AppIcon</string>
 	<key>LSUIElement</key>
-	<true/>
+	<false/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>

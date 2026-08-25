@@ -110,9 +110,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
         menuStore.metricsDidChange = { [weak self] in
             self?.dashboardCoordinator.refreshMetrics()
         }
-        dashboardCoordinator.stateDidChange = { state in
-            if state == .stopped { AppActivationPolicy.hideDockIconIfNoManagedWindowIsVisible() }
-            else { AppActivationPolicy.showDockIcon() }
+        dashboardCoordinator.stateDidChange = { _ in
+            AppActivationPolicy.hideDockIconIfNoManagedWindowIsVisible()
         }
     }
 
@@ -153,7 +152,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
             self?.checkForUpdates()
         }
 
-        NSApp.setActivationPolicy(.regular)
+        NSApp.setActivationPolicy(.accessory)
         statusItemController = StatusItemController(
             store: menuStore,
             defaults: DashboardPreferences.sharedDefaults(),
@@ -309,10 +308,6 @@ private enum AppActivationPolicy {
     }
 
     static func hideDockIconIfNoManagedWindowIsVisible() {
-        guard AppDelegate.shared?.dashboardCoordinator.state == .stopped else {
-            showDockIcon()
-            return
-        }
         guard isMenuBarIconEnabled else {
             showDockIcon()
             return
