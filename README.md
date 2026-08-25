@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="Sources/CodexDashboard/Assets.xcassets/AppIcon.appiconset/mac512.png" width="144" alt="Codex Dashboard app icon">
+  <img src="docs/images/codex-dashboard-icon.png" width="144" alt="Codex Dashboard app icon">
   <h1>Codex Dashboard</h1>
   <p>A private, local-first macOS dashboard for understanding how you use Codex.</p>
   <p>Explore activity by project, session, model, time, tokens, tools, skills, and API-equivalent cost—without sending your session data anywhere.</p>
