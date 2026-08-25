@@ -4,6 +4,14 @@
         <title>CodexDashboard</title>
         <item>
             <title>0.1.12</title>
+            <description sparkle:format="html"><![CDATA[
+                <h3>What's new in 0.1.12</h3>
+                <ul>
+                    <li>Added separate attention markers for the weekly and 5-hour quota windows.</li>
+                    <li>Refreshes live subscription quota data periodically and when the menu-bar popover opens.</li>
+                    <li>Fixed update checks from Settings so finding no update does not reopen the dashboard.</li>
+                </ul>
+            ]]></description>
             <pubDate>Wed, 26 Aug 2026 05:50:25 +0800</pubDate>
             <sparkle:version>20260826054722</sparkle:version>
             <sparkle:shortVersionString>0.1.12</sparkle:shortVersionString>
