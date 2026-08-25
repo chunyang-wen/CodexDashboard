@@ -3,6 +3,22 @@
     <channel>
         <title>CodexDashboard</title>
         <item>
+            <title>0.1.12</title>
+            <description sparkle:format="html"><![CDATA[
+                <h3>What's new in 0.1.12</h3>
+                <ul>
+                    <li>Added separate attention markers for the weekly and 5-hour quota windows.</li>
+                    <li>Refreshes live subscription quota data periodically and when the menu-bar popover opens.</li>
+                    <li>Fixed update checks from Settings so finding no update does not reopen the dashboard.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Wed, 26 Aug 2026 05:50:25 +0800</pubDate>
+            <sparkle:version>20260826054722</sparkle:version>
+            <sparkle:shortVersionString>0.1.12</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.12/CodexDashboard-0.1.12.zip" length="11374175" type="application/octet-stream" sparkle:edSignature="IS0GYd2H3mKsy+KbmFC0h6eZKjhCjSJKuEyRLGyhJ1jwXOVbPu89Sik3lh+eDWi9puDM7HY0UaHdvWF/BZUyDw=="/>
+        </item>
+        <item>
             <title>0.1.11</title>
             <description sparkle:format="html"><![CDATA[
                 <h3>What's new in 0.1.11</h3>
@@ -37,22 +53,6 @@
             <sparkle:shortVersionString>0.1.10</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.10/CodexDashboard-0.1.10.zip" length="11349107" type="application/octet-stream" sparkle:edSignature="bWyiUbsH55udbgnm1bG61WGcmUK8ngjKshkVQNt0K8Lz4pI9XZwZYxMeqXeytLS5ub4yXWuMuzpVsOmZLKOCCQ=="/>
-        </item>
-        <item>
-            <title>0.1.9</title>
-            <description sparkle:format="html"><![CDATA[
-                <h3>What's new in 0.1.9</h3>
-                <ul>
-                    <li>Improved update and window activation so Sparkle prompts and dashboard windows open in the expected app context.</li>
-                    <li>Made very small monthly usage shares remain visible in the menu-bar summary.</li>
-                    <li>Refined helper-window behavior and the Window menu, and refreshed the README app icon asset.</li>
-                </ul>
-            ]]></description>
-            <pubDate>Tue, 25 Aug 2026 14:35:11 +0800</pubDate>
-            <sparkle:version>20260825143303</sparkle:version>
-            <sparkle:shortVersionString>0.1.9</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.9/CodexDashboard-0.1.9.zip" length="11348916" type="application/octet-stream" sparkle:edSignature="QdwApv69CmORbc+xi0f+BjWS6Pt781nkM/RCmBFo9aRc25HYyGfdCLTmoyKnhXUkAAW1S/FyPGQMM7tZHBqLBw=="/>
         </item>
     </channel>
 </rss>
