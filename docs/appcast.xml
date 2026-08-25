@@ -4,6 +4,19 @@
         <title>CodexDashboard</title>
         <item>
             <title>0.1.10</title>
+            <description sparkle:format="html"><![CDATA[
+                <h3>What's new in 0.1.10</h3>
+                <ul>
+                    <li>Renamed the dashboard application menu to <code>CodexDashboard</code>.</li>
+                    <li>Kept the embedded dashboard helper bundle and lifecycle unchanged.</li>
+                </ul>
+                <h3>Included from v0.1.9</h3>
+                <ul>
+                    <li>Improved update and window activation so Sparkle prompts and dashboard windows open in the expected app context.</li>
+                    <li>Made very small monthly usage shares remain visible in the menu-bar summary.</li>
+                    <li>Refined helper-window behavior and the Window menu.</li>
+                </ul>
+            ]]></description>
             <pubDate>Tue, 25 Aug 2026 15:05:23 +0800</pubDate>
             <sparkle:version>20260825150257</sparkle:version>
             <sparkle:shortVersionString>0.1.10</sparkle:shortVersionString>
