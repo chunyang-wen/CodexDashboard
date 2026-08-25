@@ -83,6 +83,7 @@ final class HelperTargetPackagingTests: XCTestCase {
         XCTAssertTrue(helperSource.contains("startHostWatchdog"))
         XCTAssertTrue(helperSource.contains("createDashboardWindow"))
         XCTAssertTrue(helperSource.contains("showDashboardWindow"))
+        XCTAssertTrue(helperSource.contains("appMenuItem.title = \"CodexDashboard\""))
         XCTAssertFalse(helperSource.contains("globalMouseDownMonitor"))
         XCTAssertFalse(helperSource.contains("activateMenuBarHost"))
         XCTAssertTrue(helperSource.contains("NSApp.windowsMenu = windowMenu"))

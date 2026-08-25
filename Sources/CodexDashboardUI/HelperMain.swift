@@ -168,6 +168,7 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
         windowMenuItem.submenu = windowMenu
         mainMenu.addItem(windowMenuItem)
         NSApp.mainMenu = mainMenu
+        appMenuItem.title = "CodexDashboard"
         NSApp.windowsMenu = windowMenu
     }
 
