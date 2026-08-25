@@ -3,6 +3,14 @@
     <channel>
         <title>CodexDashboard</title>
         <item>
+            <title>0.1.10</title>
+            <pubDate>Tue, 25 Aug 2026 15:05:23 +0800</pubDate>
+            <sparkle:version>20260825150257</sparkle:version>
+            <sparkle:shortVersionString>0.1.10</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.10/CodexDashboard-0.1.10.zip" length="11349107" type="application/octet-stream" sparkle:edSignature="bWyiUbsH55udbgnm1bG61WGcmUK8ngjKshkVQNt0K8Lz4pI9XZwZYxMeqXeytLS5ub4yXWuMuzpVsOmZLKOCCQ=="/>
+        </item>
+        <item>
             <title>0.1.9</title>
             <description sparkle:format="html"><![CDATA[
                 <h3>What's new in 0.1.9</h3>
@@ -33,27 +41,6 @@
             <sparkle:shortVersionString>0.1.8</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.8/CodexDashboard-0.1.8.zip" length="11346763" type="application/octet-stream" sparkle:edSignature="NWmdvrebpe8ccj1AQDzRTwNfAYW7E6tscES/f95USyuY3U2dyv78TDNNnuS4CM1yyqyJHVzwEgYJz1l5rFl6AQ=="/>
-        </item>
-        <item>
-            <title>0.1.7</title>
-            <description sparkle:format="html"><![CDATA[
-                <h3>What’s new in 0.1.7</h3>
-                <ul>
-                    <li>Fixed overview metrics not refreshing after the selected timeframe changes.</li>
-                </ul>
-                <h3>Included from 0.1.6</h3>
-                <ul>
-                    <li>Separated the persistent menu-bar host from the dashboard UI, so dashboard-owned data and windows can be released when the dashboard closes.</li>
-                    <li>Moved Codex source watching into the persistent menu-bar host, keeping cost and quota-derived metrics current while the dashboard window is closed.</li>
-                    <li>Refined activity-chart hover cards, scrolling affordances, and model-visibility controls.</li>
-                    <li>Improved dashboard lifecycle handling and memory-focused behavior across the host and helper processes.</li>
-                </ul>
-            ]]></description>
-            <pubDate>Mon, 24 Aug 2026 21:48:24 +0800</pubDate>
-            <sparkle:version>20260824214508</sparkle:version>
-            <sparkle:shortVersionString>0.1.7</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.7/CodexDashboard-0.1.7.zip" length="11335001" type="application/octet-stream" sparkle:edSignature="xKXaAjgEKmJ4Xju/8FkpxwD6FYvVMJC928z/pAuubBIxZCHneevinYYAjMnbqBWundmJa3VV52itbaFI5HVBAw=="/>
         </item>
     </channel>
 </rss>
