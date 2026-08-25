@@ -3,7 +3,7 @@ import Foundation
 enum DashboardPreferences {
     static let suiteName = "com.chunyangwen.CodexDashboard.shared"
     static let migrationVersionKey = "dashboardPreferencesMigrationVersion"
-    static let currentMigrationVersion = 2
+    static let currentMigrationVersion = 3
 
     static let codexDataPathKey = "codexDataPath"
     static let metricsRefreshIntervalKey = "metricsRefreshInterval"
@@ -15,6 +15,10 @@ enum DashboardPreferences {
     static let menuBarQuotaIconStyleKey = "menuBarQuotaIconStyle"
     static let showQuotaAlertMarkerKey = "showQuotaAlertMarker"
     static let quotaAlertUsedPercentKey = "quotaAlertUsedPercent"
+    static let showQuotaFiveHourAlertMarkerKey = "showQuotaFiveHourAlertMarker"
+    static let quotaFiveHourAlertRemainingPercentKey = "quotaFiveHourAlertRemainingPercent"
+    static let showQuotaWeeklyAlertMarkerKey = "showQuotaWeeklyAlertMarker"
+    static let quotaWeeklyAlertRemainingPercentKey = "quotaWeeklyAlertRemainingPercent"
     static let menuBarUsageTrendMetricKey = "menuBarUsageTrendMetric"
 
     static let migratedKeys = [
@@ -28,6 +32,10 @@ enum DashboardPreferences {
         menuBarQuotaIconStyleKey,
         showQuotaAlertMarkerKey,
         quotaAlertUsedPercentKey,
+        showQuotaFiveHourAlertMarkerKey,
+        quotaFiveHourAlertRemainingPercentKey,
+        showQuotaWeeklyAlertMarkerKey,
+        quotaWeeklyAlertRemainingPercentKey,
         menuBarUsageTrendMetricKey
     ]
 
@@ -49,6 +57,27 @@ enum DashboardPreferences {
         for key in migratedKeys where shared.object(forKey: key) == nil {
             if let value = legacy.object(forKey: key) {
                 shared.set(value, forKey: key)
+            }
+        }
+
+        let legacyEnabled = (shared.object(forKey: showQuotaAlertMarkerKey) as? NSNumber)?.boolValue
+            ?? (legacy.object(forKey: showQuotaAlertMarkerKey) as? NSNumber)?.boolValue
+        let legacyThreshold = (shared.object(forKey: quotaAlertUsedPercentKey) as? NSNumber)?.doubleValue
+            ?? (legacy.object(forKey: quotaAlertUsedPercentKey) as? NSNumber)?.doubleValue
+        if let legacyEnabled {
+            if shared.object(forKey: showQuotaFiveHourAlertMarkerKey) == nil {
+                shared.set(legacyEnabled, forKey: showQuotaFiveHourAlertMarkerKey)
+            }
+            if shared.object(forKey: showQuotaWeeklyAlertMarkerKey) == nil {
+                shared.set(legacyEnabled, forKey: showQuotaWeeklyAlertMarkerKey)
+            }
+        }
+        if let legacyThreshold {
+            if shared.object(forKey: quotaFiveHourAlertRemainingPercentKey) == nil {
+                shared.set(legacyThreshold, forKey: quotaFiveHourAlertRemainingPercentKey)
+            }
+            if shared.object(forKey: quotaWeeklyAlertRemainingPercentKey) == nil {
+                shared.set(legacyThreshold, forKey: quotaWeeklyAlertRemainingPercentKey)
             }
         }
         shared.set(currentMigrationVersion, forKey: migrationVersionKey)

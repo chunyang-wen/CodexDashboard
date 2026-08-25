@@ -87,6 +87,10 @@ final class PreferencesTests: XCTestCase {
                 DashboardPreferences.menuBarQuotaIconStyleKey,
                 DashboardPreferences.showQuotaAlertMarkerKey,
                 DashboardPreferences.quotaAlertUsedPercentKey,
+                DashboardPreferences.showQuotaFiveHourAlertMarkerKey,
+                DashboardPreferences.quotaFiveHourAlertRemainingPercentKey,
+                DashboardPreferences.showQuotaWeeklyAlertMarkerKey,
+                DashboardPreferences.quotaWeeklyAlertRemainingPercentKey,
                 DashboardPreferences.menuBarUsageTrendMetricKey
             ])
         )

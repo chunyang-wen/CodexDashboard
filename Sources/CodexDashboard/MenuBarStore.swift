@@ -73,11 +73,13 @@ final class MenuBarStore: ObservableObject {
     private let defaults: UserDefaults
     private let userHome: URL
     private let historicalStore: HistoricalStore
+    private let dynamicPricingLoader = DynamicPricingLoader()
     private var loadTask: Task<Void, Never>?
     private var loadID = UUID()
     private var popoverTask: Task<Void, Never>?
     private var bankedResetTask: Task<Void, Never>?
     private var menuBarMonitorTask: Task<Void, Never>?
+    private var pricingRefreshTask: Task<Void, Never>?
     private var sourceWatcher: CodexSourceWatcher?
     private var sourceRefreshTask: Task<Void, Never>?
     private var sourceRefreshGeneration = UUID()
@@ -126,6 +128,21 @@ final class MenuBarStore: ObservableObject {
                 let snapshot = try await self.historicalStore.freshSubscriptionSnapshot()
                 guard !Task.isCancelled, self.loadID == requestID else { return }
                 self.subscription = snapshot?.isUsable == true ? snapshot : nil
+                let codexHome = self.codexHome
+                let live = await Task.detached(priority: .utility) {
+                    await SubscriptionReader.live(from: codexHome)
+                }.value
+                guard !Task.isCancelled, self.loadID == requestID else { return }
+                if let live, live.isUsable {
+                    let quotaChanged = self.subscription?.hasSameQuota(as: live) != true
+                    if quotaChanged {
+                        try? await self.historicalStore.recordSubscription(live)
+                    }
+                    self.subscription = live
+                    if quotaChanged {
+                        self.metricsDidChange?()
+                    }
+                }
             } catch {
                 guard !Task.isCancelled, self.loadID == requestID else { return }
                 self.historyMessage = "Menu-bar metrics could not be loaded: \(error.localizedDescription)"
@@ -135,12 +152,14 @@ final class MenuBarStore: ObservableObject {
 
     func startMenuBarMonitoring() {
         menuBarMonitorTask?.cancel()
+        pricingRefreshTask?.cancel()
         sourceWatcher?.stop()
         sourceWatcher = nil
         sourceRefreshTask?.cancel()
         sourceRefreshTask = nil
         sourceRefreshGeneration = UUID()
         loadMenuBar()
+        startPricingMonitoring()
         guard refreshInterval > 0 else { return }
         menuBarMonitorTask = Task { [weak self] in
             while let self, !Task.isCancelled {
@@ -152,6 +171,34 @@ final class MenuBarStore: ObservableObject {
             }
         }
         startSourceMonitoring()
+    }
+
+    private func startPricingMonitoring() {
+        pricingRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                await self.refreshPricing()
+                try? await Task.sleep(for: .seconds(86_400))
+            }
+        }
+    }
+
+    private func refreshPricing() async {
+        do {
+            let snapshot = try await dynamicPricingLoader.refresh()
+            var pricing = try await historicalStore.pricingHistory()
+            var mergedPrices = pricing.schedules.last?.prices ?? PricingRegistry.current.prices
+            for (model, price) in snapshot.prices {
+                mergedPrices[model] = price
+            }
+            guard mergedPrices != pricing.schedules.last?.prices else { return }
+            pricing = pricing.merging(PricingHistory(schedules: [
+                PricingSchedule(effectiveAt: snapshot.fetchedAt, prices: mergedPrices, source: "models.dev")
+            ]))
+            try await historicalStore.recordPricing(pricing)
+        } catch {
+            // Pricing remains available from the bundled catalog or the last cache.
+        }
     }
 
     func loadPopover() {

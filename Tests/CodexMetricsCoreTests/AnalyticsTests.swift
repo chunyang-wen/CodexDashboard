@@ -1226,6 +1226,31 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(snapshot).observedAt.timeIntervalSince1970, 1_786_854_937.995, accuracy: 0.001)
     }
 
+    func testSubscriptionReaderParsesLiveUsageWindows() throws {
+        let snapshot = SubscriptionReader.snapshot(
+            fromUsage: [
+                "plan_type": "plus",
+                "rate_limit": [
+                    "primary_window": [
+                        "used_percent": 0,
+                        "limit_window_seconds": 18_000,
+                        "reset_at": 1_800_100_000
+                    ],
+                    "secondary_window": [
+                        "used_percent": 0,
+                        "limit_window_seconds": 604_800,
+                        "reset_at": 1_800_700_000
+                    ]
+                ]
+            ],
+            observedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        XCTAssertEqual(snapshot?.displayPlan, "Plus")
+        XCTAssertEqual(snapshot?.windows.map(\.windowMinutes), [300, 10_080])
+        XCTAssertEqual(snapshot?.windows.map(\.usedPercent), [0, 0])
+    }
+
     func testSubscriptionReaderLabelsCustomProviderQuotaAsAPI() {
         let snapshot = SubscriptionReader.snapshot(
             from: [

@@ -11,10 +11,17 @@ struct MenuBarDashboardView: View {
     @EnvironmentObject private var store: MenuBarStore
     let onCommand: (MenuBarPopoverCommand) -> Void
     let onSettingsOpened: () -> Void
-    @AppStorage(DashboardPreferences.showQuotaAlertMarkerKey, store: DashboardPreferences.sharedDefaults()) private var showQuotaAlertMarker = false
-    @AppStorage(DashboardPreferences.quotaAlertUsedPercentKey, store: DashboardPreferences.sharedDefaults()) private var quotaAlertRemainingPercent = 80.0
+    @AppStorage(DashboardPreferences.showQuotaFiveHourAlertMarkerKey, store: DashboardPreferences.sharedDefaults()) private var showFiveHourAlertMarker = false
+    @AppStorage(DashboardPreferences.quotaFiveHourAlertRemainingPercentKey, store: DashboardPreferences.sharedDefaults()) private var fiveHourAlertRemainingPercent = 80.0
+    @AppStorage(DashboardPreferences.showQuotaWeeklyAlertMarkerKey, store: DashboardPreferences.sharedDefaults()) private var showWeeklyAlertMarker = false
+    @AppStorage(DashboardPreferences.quotaWeeklyAlertRemainingPercentKey, store: DashboardPreferences.sharedDefaults()) private var weeklyAlertRemainingPercent = 80.0
     @AppStorage(DashboardPreferences.menuBarUsageTrendMetricKey, store: DashboardPreferences.sharedDefaults()) private var usageTrendMetricRawValue = MenuUsageTrendMetric.cost.rawValue
     @State private var showingBankedResetDetails = false
+
+    private struct MarkerState {
+        let enabled: Binding<Bool>
+        let remainingPercent: Binding<Double>
+    }
 
     private var usageTrendMetric: Binding<MenuUsageTrendMetric> {
         Binding(
@@ -191,26 +198,63 @@ struct MenuBarDashboardView: View {
 
     private func quotaSection(_ windows: [UsageQuotaWindow]) -> some View {
         let orderedWindows = windows.sorted { $0.windowMinutes > $1.windowMinutes }
-        let primaryWindow = orderedWindows[0]
-        let secondaryWindows = Array(orderedWindows.dropFirst())
 
         return VStack(spacing: 0) {
-            quotaRow(primaryWindow, showsAlertMarker: true)
-
-            if !secondaryWindows.isEmpty {
-                HStack(spacing: 8) {
-                    ForEach(secondaryWindows) { window in
-                        secondaryQuota(window)
-                    }
+            ForEach(Array(orderedWindows.enumerated()), id: \.element.id) { index, window in
+                if index > 0 {
+                    sectionDivider
                 }
-                .padding(.horizontal, 14)
-                .padding(.bottom, 12)
+                quotaRow(window, marker: markerState(for: window))
             }
         }
     }
 
-    private func quotaRow(_ window: UsageQuotaWindow, showsAlertMarker: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func markerState(for window: UsageQuotaWindow) -> MarkerState? {
+        switch window.windowMinutes {
+        case 300:
+            return MarkerState(
+                enabled: $showFiveHourAlertMarker,
+                remainingPercent: thresholdBinding(
+                    $fiveHourAlertRemainingPercent,
+                    enabled: $showFiveHourAlertMarker
+                )
+            )
+        case 10_080:
+            return MarkerState(
+                enabled: $showWeeklyAlertMarker,
+                remainingPercent: thresholdBinding(
+                    $weeklyAlertRemainingPercent,
+                    enabled: $showWeeklyAlertMarker
+                )
+            )
+        default:
+            return nil
+        }
+    }
+
+    private func thresholdBinding(
+        _ value: Binding<Double>,
+        enabled: Binding<Bool>
+    ) -> Binding<Double> {
+        Binding(
+            get: { value.wrappedValue },
+            set: { newValue in
+                value.wrappedValue = newValue
+                enabled.wrappedValue = newValue > 0 && newValue < 100
+            }
+        )
+    }
+
+    private func quotaRow(_ window: UsageQuotaWindow, marker: MarkerState?) -> some View {
+        let supportsMarker = marker != nil
+        let marker = marker ?? MarkerState(
+            enabled: .constant(false),
+            remainingPercent: .constant(80)
+        )
+        let markerThreshold = marker.remainingPercent.wrappedValue
+        let markerEnabled = marker.enabled.wrappedValue && markerThreshold > 0 && markerThreshold < 100
+
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text(window.displayName)
                     .font(.headline.weight(.semibold))
@@ -226,26 +270,32 @@ struct MenuBarDashboardView: View {
             }
             QuotaRemainingBar(
                 remainingPercent: window.remainingPercent,
-                alertRemainingPercent: $quotaAlertRemainingPercent,
-                showsAlertMarker: showsAlertMarker && showQuotaAlertMarker
+                alertRemainingPercent: marker.remainingPercent,
+                showsAlertMarker: markerEnabled
             )
             HStack {
                 Text("Resets \(window.resetsAt, style: .relative)")
                 Spacer()
-                if showsAlertMarker && showQuotaAlertMarker {
+                if markerEnabled {
                     HStack(spacing: 4) {
                         Circle()
                             .fill(.red)
                             .frame(width: 5, height: 5)
-                        Text("Attention at \(quotaAlertRemainingPercent.formatted(.number.precision(.fractionLength(0))))%")
+                        Text("Attention at \(marker.remainingPercent.wrappedValue.formatted(.number.precision(.fractionLength(0))))%")
                             .monospacedDigit()
                     }
                     .foregroundStyle(.secondary)
-                } else {
-                    Button {
-                        showQuotaAlertMarker = true
-                    } label: {
-                        Text("Set attention marker")
+                    Button("Remove") {
+                        marker.enabled.wrappedValue = false
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                } else if supportsMarker {
+                    Button("Set attention marker") {
+                        if markerThreshold <= 0 || markerThreshold >= 100 {
+                            marker.remainingPercent.wrappedValue = 80
+                        }
+                        marker.enabled.wrappedValue = true
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.red)
@@ -256,34 +306,6 @@ struct MenuBarDashboardView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 14)
-        .accessibilityElement(children: .combine)
-    }
-
-    private func secondaryQuota(_ window: UsageQuotaWindow) -> some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(quotaColor(for: window.remainingPercent))
-                .frame(width: 7, height: 7)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(window.displayName)
-                    .font(.caption2.weight(.semibold))
-                    .lineLimit(1)
-                Text("\(window.remainingPercent.formatted(.number.precision(.fractionLength(0))))% · \(window.resetsAt, style: .relative)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(.separator.opacity(0.35), lineWidth: 0.5)
-        }
         .accessibilityElement(children: .combine)
     }
 
@@ -716,7 +738,7 @@ private struct QuotaRemainingBar: View {
             case .increment:
                 alertRemainingPercent = min(100, alertRemainingPercent + 1)
             case .decrement:
-                alertRemainingPercent = max(10, alertRemainingPercent - 1)
+                alertRemainingPercent = max(0, alertRemainingPercent - 1)
             @unknown default:
                 break
             }
@@ -724,18 +746,9 @@ private struct QuotaRemainingBar: View {
     }
 
     private var alertMarker: some View {
-        ZStack {
-            Capsule()
-                .fill(.red)
-                .frame(width: 2, height: 14)
-            Circle()
-                .fill(.red)
-                .frame(width: 8, height: 8)
-                .overlay {
-                    Circle().stroke(.white.opacity(0.9), lineWidth: 1)
-                }
-                .shadow(color: .black.opacity(0.22), radius: 1, y: 0.5)
-        }
+        Capsule()
+            .fill(.red)
+            .frame(width: 1.4, height: 14)
         .frame(width: 12, height: 14)
     }
 
@@ -749,7 +762,7 @@ private struct QuotaRemainingBar: View {
                 guard showsAlertMarker, width > 0 else { return }
                 isDraggingAlert = true
                 let remainingFraction = min(1, max(0, value.location.x / width))
-                alertRemainingPercent = min(100, max(10, (remainingFraction * 100).rounded()))
+                alertRemainingPercent = min(100, max(0, (remainingFraction * 100).rounded()))
             }
             .onEnded { _ in
                 isDraggingAlert = false

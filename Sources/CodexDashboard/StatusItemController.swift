@@ -90,7 +90,7 @@ final class StatusItemController: NSObject {
             store.$subscription.sink { [weak self] subscription in
                 self?.updateIcon(for: subscription)
             },
-            NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: defaults)
+            NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
                 .sink { [weak self] _ in
                     self?.updateVisibility()
                     self?.updateIcon()
@@ -219,15 +219,39 @@ final class StatusItemController: NSObject {
         guard let button = statusItem.button else { return }
         let windows = subscription?.windows.sorted { $0.windowMinutes < $1.windowMinutes } ?? []
         let style = MenuBarQuotaIconStyle(rawValue: defaults.string(forKey: DashboardPreferences.menuBarQuotaIconStyleKey) ?? "rings") ?? .rings
-        let alert = (defaults.object(forKey: DashboardPreferences.showQuotaAlertMarkerKey) as? Bool == true)
-            ? defaults.double(forKey: DashboardPreferences.quotaAlertUsedPercentKey)
-            : nil
-        button.image = MenuBarQuotaIconRenderer.image(windows: windows, style: style, alertRemainingPercent: alert)
-        button.image?.isTemplate = alert == nil
+        let alertMarkers = alertMarkers(for: windows)
+        button.image = MenuBarQuotaIconRenderer.image(windows: windows, style: style, alertMarkers: alertMarkers)
+        button.image?.isTemplate = alertMarkers.isEmpty
         let quotaDescription = windows.isEmpty
             ? "Quota unavailable"
             : windows.map { "\($0.displayName) \(Int($0.remainingPercent.rounded()))% remaining" }.joined(separator: ", ")
         button.setAccessibilityValue(quotaDescription)
         button.toolTip = quotaDescription
+    }
+
+    private func alertMarkers(for windows: [UsageQuotaWindow]) -> MenuBarQuotaIconRenderer.AlertMarkers {
+        let orderedWindows = windows.sorted { $0.windowMinutes > $1.windowMinutes }
+        let thresholds = orderedWindows.prefix(2).map { window -> Double? in
+            switch window.windowMinutes {
+            case 300:
+                guard defaults.object(forKey: DashboardPreferences.showQuotaFiveHourAlertMarkerKey) as? Bool == true else {
+                    return nil
+                }
+                let threshold = defaults.double(forKey: DashboardPreferences.quotaFiveHourAlertRemainingPercentKey)
+                return threshold > 0 && threshold < 100 ? threshold : nil
+            case 10_080:
+                guard defaults.object(forKey: DashboardPreferences.showQuotaWeeklyAlertMarkerKey) as? Bool == true else {
+                    return nil
+                }
+                let threshold = defaults.double(forKey: DashboardPreferences.quotaWeeklyAlertRemainingPercentKey)
+                return threshold > 0 && threshold < 100 ? threshold : nil
+            default:
+                return nil
+            }
+        }
+        return MenuBarQuotaIconRenderer.AlertMarkers(
+            primary: thresholds.first ?? nil,
+            secondary: thresholds.dropFirst().first ?? nil
+        )
     }
 }

@@ -132,6 +132,15 @@ public struct SubscriptionSnapshot: Codable, Hashable, Sendable {
             || limitName.map { !$0.isEmpty } == true
             || rateLimitReachedType != nil
     }
+
+    public func hasSameQuota(as other: SubscriptionSnapshot) -> Bool {
+        planType == other.planType
+            && limitID == other.limitID
+            && limitName == other.limitName
+            && windows == other.windows
+            && credits == other.credits
+            && rateLimitReachedType == other.rateLimitReachedType
+    }
 }
 
 public enum SubscriptionReader {
@@ -148,6 +157,36 @@ public enum SubscriptionReader {
             .filter { !$0.rolloutPath.isEmpty }
             .compactMap { latest(in: $0.rolloutPath) }
             .max { $0.observedAt < $1.observedAt }
+    }
+
+    /// Fetches the live account quota used by Codex itself. Rollout files only
+    /// receive rate-limit events during activity, so reading this endpoint is
+    /// necessary to observe a reset while the user is idle.
+    public static func live(from codexHome: URL) async -> SubscriptionSnapshot? {
+        guard let credentials = credentials(from: codexHome),
+              let url = URL(string: "https://chatgpt.com/backend-api/wham/usage") else { return nil }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 10
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("codex-1", forHTTPHeaderField: "OpenAI-Beta")
+        request.setValue("Codex Dashboard", forHTTPHeaderField: "originator")
+        if let accountID = credentials.accountID {
+            request.setValue(accountID, forHTTPHeaderField: "ChatGPT-Account-ID")
+        }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode),
+                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return nil
+            }
+            return snapshot(fromUsage: object, observedAt: .now)
+        } catch {
+            return nil
+        }
     }
 
     static func latest(in path: String, maximumTailBytes: UInt64 = 8 * 1_024 * 1_024) -> SubscriptionSnapshot? {
@@ -220,6 +259,46 @@ public enum SubscriptionReader {
         return snapshot.isUsable ? snapshot : nil
     }
 
+    static func snapshot(fromUsage value: [String: Any], observedAt: Date) -> SubscriptionSnapshot? {
+        let root = value["rate_limit"] as? [String: Any]
+            ?? value["rate_limits"] as? [String: Any]
+        guard let root else { return nil }
+
+        var normalized = [String: Any]()
+        for (sourceKey, targetKey) in [("primary_window", "primary"), ("secondary_window", "secondary")] {
+            guard let rawWindow = root[sourceKey] as? [String: Any],
+                  let usedPercent = number(rawWindow["used_percent"] ?? rawWindow["usedPercent"]),
+                  let windowSeconds = number(rawWindow["limit_window_seconds"] ?? rawWindow["window_duration_mins"]) else {
+                continue
+            }
+            let windowMinutes = rawWindow["limit_window_seconds"] != nil
+                ? Int(windowSeconds / 60)
+                : Int(windowSeconds)
+            guard windowMinutes > 0,
+                  let resetsAt = number(rawWindow["reset_at"] ?? rawWindow["resets_at"]) else { continue }
+            normalized[targetKey] = [
+                "used_percent": usedPercent,
+                "window_minutes": windowMinutes,
+                "resets_at": resetsAt
+            ]
+        }
+
+        if let credits = value["credits"] as? [String: Any] {
+            normalized["credits"] = credits
+        }
+        if let limitName = value["limit_name"] as? String {
+            normalized["limit_name"] = limitName
+        }
+        if let reached = value["rate_limit_reached_type"] as? String {
+            normalized["rate_limit_reached_type"] = reached
+        } else if let reached = value["rate_limit_reached_type"] as? [String: Any],
+                  let type = reached["type"] as? String {
+            normalized["rate_limit_reached_type"] = type
+        }
+        normalized["plan_type"] = value["plan_type"] as? String ?? "API"
+        return snapshot(from: normalized, observedAt: observedAt)
+    }
+
     private static func parseDate(_ value: String?) -> Date? {
         guard let value else { return nil }
         let fractional = ISO8601DateFormatter()
@@ -235,6 +314,16 @@ public enum SubscriptionReader {
 
     private static func integer(_ value: Any?) -> Int? {
         number(value).map(Int.init)
+    }
+
+    private static func credentials(from codexHome: URL) -> (accessToken: String, accountID: String?)? {
+        let authURL = codexHome.appendingPathComponent("auth.json")
+        guard let data = try? Data(contentsOf: authURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tokens = root["tokens"] as? [String: Any],
+              let accessToken = tokens["access_token"] as? String,
+              !accessToken.isEmpty else { return nil }
+        return (accessToken, tokens["account_id"] as? String)
     }
 }
 
