@@ -399,6 +399,7 @@ enum MenuBarQuotaIconStyle: String, CaseIterable, Identifiable {
     case rings
     case droplet
     case capsules
+    case twoRows
 
     var id: String { rawValue }
     var label: String {
@@ -406,6 +407,7 @@ enum MenuBarQuotaIconStyle: String, CaseIterable, Identifiable {
         case .rings: "Concentric rings"
         case .droplet: "Split droplet"
         case .capsules: "Two capsules"
+        case .twoRows: "Two rows"
         }
     }
 }
@@ -504,6 +506,13 @@ enum MenuBarQuotaIconRenderer {
             case .rings: drawRings(primaryWindow: primaryWindow, secondaryWindow: secondaryWindow, iconInk: iconInk)
             case .droplet: drawDroplet(primaryWindow: primaryWindow, secondaryWindow: secondaryWindow, iconInk: iconInk)
             case .capsules: drawCapsules(primaryWindow: primaryWindow, secondaryWindow: secondaryWindow, iconInk: iconInk)
+            case .twoRows:
+                drawTwoRows(
+                    primaryWindow: primaryWindow,
+                    secondaryWindow: secondaryWindow,
+                    alertMarkers: alertMarkers,
+                    iconInk: iconInk
+                )
             }
             drawAlertMarkers(
                 style: style,
@@ -615,6 +624,56 @@ enum MenuBarQuotaIconRenderer {
         stroke.stroke()
     }
 
+    private static func drawTwoRows(
+        primaryWindow: UsageQuotaWindow?,
+        secondaryWindow: UsageQuotaWindow?,
+        alertMarkers: AlertMarkers,
+        iconInk: NSColor
+    ) {
+        if let primaryWindow, let secondaryWindow {
+            drawTwoRowsValue(for: primaryWindow, centerY: 13, alertRemainingPercent: alertMarkers.primary, iconInk: iconInk)
+            drawTwoRowsValue(for: secondaryWindow, centerY: 5, alertRemainingPercent: alertMarkers.secondary, iconInk: iconInk)
+        } else if let window = primaryWindow ?? secondaryWindow {
+            drawTwoRowsValue(
+                for: window,
+                centerY: 9,
+                alertRemainingPercent: primaryWindow == nil ? alertMarkers.secondary : alertMarkers.primary,
+                iconInk: iconInk
+            )
+        } else {
+            drawTwoRowsText("N/A", centerY: 9, iconInk: iconInk.withAlphaComponent(0.45))
+        }
+    }
+
+    private static func drawTwoRowsValue(
+        for window: UsageQuotaWindow,
+        centerY: CGFloat,
+        alertRemainingPercent: Double?,
+        iconInk: NSColor
+    ) {
+        drawTwoRowsText(
+            "\(Int(window.remainingPercent.rounded()))%",
+            centerY: centerY,
+            iconInk: alertRemainingPercent.map { window.remainingPercent <= $0 } == true ? .systemRed : iconInk
+        )
+    }
+
+    private static func drawTwoRowsText(_ value: String, centerY: CGFloat, iconInk: NSColor) {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 7, weight: .medium)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: iconInk
+        ]
+        let size = (value as NSString).size(withAttributes: attributes)
+        let rect = NSRect(
+            x: 9 - size.width / 2,
+            y: centerY - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
+        (value as NSString).draw(in: rect, withAttributes: attributes)
+    }
+
     private static func drawAlertMarkers(
         style: MenuBarQuotaIconStyle,
         primaryWindow: UsageQuotaWindow?,
@@ -643,6 +702,8 @@ enum MenuBarQuotaIconRenderer {
             if let alert = alertMarkers.secondary, secondaryWindow != nil {
                 drawCapsuleAlertLine(remainingPercent: alert, y: 5, height: 3)
             }
+        case .twoRows:
+            break
         }
     }
 
