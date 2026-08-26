@@ -1,11 +1,15 @@
 import Foundation
+import CodexMetricsCore
+import Security
 
 enum DashboardPreferences {
     static let suiteName = "com.chunyangwen.CodexDashboard.shared"
     static let migrationVersionKey = "dashboardPreferencesMigrationVersion"
-    static let currentMigrationVersion = 3
+    static let currentMigrationVersion = 4
 
     static let codexDataPathKey = "codexDataPath"
+    static let subscriptionProviderKey = "subscriptionProvider"
+    static let cliProxyAPIEndpointKey = "cliProxyAPIEndpoint"
     static let metricsRefreshIntervalKey = "metricsRefreshInterval"
     static let weekStartsMondayKey = "weekStartsMonday"
     static let dashboardRangeKey = "dashboardRange"
@@ -23,6 +27,8 @@ enum DashboardPreferences {
 
     static let migratedKeys = [
         codexDataPathKey,
+        subscriptionProviderKey,
+        cliProxyAPIEndpointKey,
         metricsRefreshIntervalKey,
         weekStartsMondayKey,
         dashboardRangeKey,
@@ -43,6 +49,18 @@ enum DashboardPreferences {
 
     static func sharedDefaults() -> UserDefaults {
         UserDefaults(suiteName: suiteName) ?? .standard
+    }
+
+    static func subscriptionProvider(defaults: UserDefaults = sharedDefaults()) -> DashboardSubscriptionProvider {
+        DashboardSubscriptionProvider(rawValue: defaults.string(forKey: subscriptionProviderKey) ?? "") ?? .default
+    }
+
+    static func cliProxyAPIConfiguration(defaults: UserDefaults = sharedDefaults()) -> CLIProxyAPIConfiguration? {
+        guard let endpoint = defaults.string(forKey: cliProxyAPIEndpointKey),
+              let url = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let key = DashboardKeychain.readManagementKey(),
+              !key.isEmpty else { return nil }
+        return CLIProxyAPIConfiguration(baseURL: url, managementKey: key)
     }
 
     @discardableResult
@@ -82,6 +100,66 @@ enum DashboardPreferences {
         }
         shared.set(currentMigrationVersion, forKey: migrationVersionKey)
         return shared
+    }
+}
+
+enum DashboardSubscriptionProvider: String, CaseIterable, Identifiable {
+    case `default` = "default"
+    case cliProxyAPI = "cliProxyAPI"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .default: "Default"
+        case .cliProxyAPI: "CLIProxyAPI"
+        }
+    }
+}
+
+enum DashboardKeychain {
+    private static let service = "com.chunyangwen.CodexDashboard"
+    private static let account = "cliProxyAPIManagementKey"
+
+    static func readManagementKey() -> String? {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account,
+            kSecReturnData: true,
+            kSecMatchLimit: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    @discardableResult
+    static func saveManagementKey(_ key: String) -> Bool {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account
+        ]
+        if trimmed.isEmpty {
+            let status = SecItemDelete(query as CFDictionary)
+            return status == errSecSuccess || status == errSecItemNotFound
+        }
+
+        let data = Data(trimmed.utf8)
+        let attributes: [CFString: Any] = [
+            kSecValueData: data,
+            kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlock
+        ]
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess { return true }
+        guard updateStatus == errSecItemNotFound else { return false }
+        var addQuery = query
+        addQuery[kSecValueData] = data
+        addQuery[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlock
+        return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
     }
 }
 

@@ -815,17 +815,83 @@ private struct MenuBarQuotaIcon: View, Equatable {
     }
 }
 
+private enum CLIProxyAPIValidationState: Equatable {
+    case idle
+    case validating
+    case valid(String)
+    case invalid(String)
+}
+
 private struct DashboardSettingsView: View {
     @EnvironmentObject private var store: MenuBarStore
     @AppStorage(DashboardPreferences.showMenuBarIconKey, store: DashboardPreferences.sharedDefaults()) private var showMenuBarIcon = true
     @AppStorage(DashboardPreferences.menuBarQuotaIconStyleKey, store: DashboardPreferences.sharedDefaults()) private var menuBarQuotaIconStyle = MenuBarQuotaIconStyle.rings.rawValue
     @AppStorage(DashboardPreferences.weekStartsMondayKey, store: DashboardPreferences.sharedDefaults()) private var weekStartsMonday = true
+    @AppStorage(DashboardPreferences.subscriptionProviderKey, store: DashboardPreferences.sharedDefaults()) private var subscriptionProviderRaw = DashboardSubscriptionProvider.default.rawValue
+    @State private var selectedSubscriptionProviderRaw = DashboardSubscriptionProvider.default.rawValue
+    @State private var cliProxyAPIEndpoint = "http://127.0.0.1:8317"
+    @State private var cliProxyAPIManagementKey = ""
+    @State private var cliProxyAPIValidationState: CLIProxyAPIValidationState = .idle
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchAtLoginError: String?
     private let settingsControlWidth: CGFloat = 190
 
     var body: some View {
         Form {
+            Section("Subscription source") {
+                Picker("Provider", selection: $selectedSubscriptionProviderRaw) {
+                    ForEach(DashboardSubscriptionProvider.allCases) { provider in
+                        Text(provider.label).tag(provider.rawValue)
+                    }
+                }
+                .onChange(of: selectedSubscriptionProviderRaw) { _, rawValue in
+                    selectSubscriptionProvider(rawValue)
+                }
+
+                if selectedSubscriptionProvider == .cliProxyAPI {
+                    Text("CLIProxyAPI keeps the OAuth credentials. CodexDashboard selects the first active Codex credential returned by its management API.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    TextField("http://127.0.0.1:8317", text: $cliProxyAPIEndpoint)
+                        .textContentType(.URL)
+
+                    SecureField("Management key", text: $cliProxyAPIManagementKey)
+
+                    HStack {
+                        Button {
+                            saveCLIProxyAPIConfiguration()
+                        } label: {
+                            Text(cliProxyAPIValidationState == .validating ? "Validating…" : "Save CLIProxyAPI")
+                        }
+                        .disabled(cliProxyAPIValidationState == .validating)
+
+                        switch cliProxyAPIValidationState {
+                        case .idle:
+                            EmptyView()
+                        case .validating:
+                            ProgressView()
+                                .controlSize(.small)
+                        case .valid(let message):
+                            Label(message, systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                                .font(.caption)
+                        case .invalid(let message):
+                            Label(message, systemImage: "xmark.circle.fill")
+                                .foregroundStyle(.red)
+                                .font(.caption)
+                        }
+                    }
+                    Text("The management key is stored in macOS Keychain, not in preferences or logs. It is not your OAuth token.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Use the local Codex data folder for subscription and quota information.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("General") {
                 Toggle("Launch at login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, isEnabled in
@@ -903,7 +969,7 @@ private struct DashboardSettingsView: View {
                     Button("Use Default") { store.resetCodexHome() }
                         .disabled(store.codexHome.standardizedFileURL == defaultCodexHome.standardizedFileURL)
                 }
-                Text("CodexDashboard reads local session, account, and quota metadata from this folder. Credentials never leave your Mac.")
+                Text(codexDataDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -935,6 +1001,13 @@ private struct DashboardSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(4)
+        .onAppear {
+            selectedSubscriptionProviderRaw = subscriptionProviderRaw
+            cliProxyAPIEndpoint = DashboardPreferences.sharedDefaults().string(
+                forKey: DashboardPreferences.cliProxyAPIEndpointKey
+            ) ?? cliProxyAPIEndpoint
+            cliProxyAPIManagementKey = DashboardKeychain.readManagementKey() ?? ""
+        }
     }
 
     private var appVersionDescription: String {
@@ -945,6 +1018,19 @@ private struct DashboardSettingsView: View {
 
     private var quotaIconPreviewWindows: [UsageQuotaWindow] {
         store.subscription?.windows.sorted { $0.windowMinutes < $1.windowMinutes } ?? []
+    }
+
+    private var selectedSubscriptionProvider: DashboardSubscriptionProvider {
+        DashboardSubscriptionProvider(rawValue: selectedSubscriptionProviderRaw) ?? .default
+    }
+
+    private var codexDataDescription: String {
+        switch selectedSubscriptionProvider {
+        case .default:
+            "CodexDashboard reads local session, account, and quota metadata from this folder. Credentials never leave your Mac."
+        case .cliProxyAPI:
+            "CodexDashboard still reads local session metrics from this folder. Quota and account credentials are managed by CLIProxyAPI."
+        }
     }
 
     private var refreshBinding: Binding<TimeInterval> {
@@ -968,6 +1054,55 @@ private struct DashboardSettingsView: View {
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         store.updateCodexHome(url)
+    }
+
+    private func selectSubscriptionProvider(_ rawValue: String) {
+        let provider = DashboardSubscriptionProvider(rawValue: rawValue) ?? .default
+        cliProxyAPIValidationState = .idle
+        guard provider == .default else { return }
+        subscriptionProviderRaw = provider.rawValue
+        store.updateSubscriptionProvider(provider)
+    }
+
+    private func saveCLIProxyAPIConfiguration() {
+        let endpoint = cliProxyAPIEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: endpoint),
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              url.host != nil else {
+            cliProxyAPIValidationState = .invalid("Enter a valid HTTP or HTTPS service URL.")
+            return
+        }
+        let managementKey = cliProxyAPIManagementKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !managementKey.isEmpty else {
+            cliProxyAPIValidationState = .invalid("Enter the CLIProxyAPI management key.")
+            return
+        }
+        cliProxyAPIValidationState = .validating
+        let configuration = CLIProxyAPIConfiguration(baseURL: url, managementKey: managementKey)
+        Task {
+            let result = await CLIProxyAPIReader.validate(using: configuration)
+            guard result.isValid else {
+                cliProxyAPIValidationState = .invalid(result.message)
+                return
+            }
+            guard DashboardKeychain.saveManagementKey(managementKey) else {
+                cliProxyAPIValidationState = .invalid("Could not save the management key to Keychain.")
+                return
+            }
+            DashboardPreferences.sharedDefaults().set(
+                url.absoluteString,
+                forKey: DashboardPreferences.cliProxyAPIEndpointKey
+            )
+            cliProxyAPIEndpoint = url.absoluteString
+            subscriptionProviderRaw = DashboardSubscriptionProvider.cliProxyAPI.rawValue
+            selectedSubscriptionProviderRaw = subscriptionProviderRaw
+            if store.subscriptionProvider == .cliProxyAPI {
+                store.refreshSubscriptionProvider()
+            } else {
+                store.updateSubscriptionProvider(.cliProxyAPI)
+            }
+            cliProxyAPIValidationState = .valid(result.message)
+        }
     }
 
     private func updateLaunchAtLogin(_ isEnabled: Bool) {

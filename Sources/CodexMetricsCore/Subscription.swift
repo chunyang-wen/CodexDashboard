@@ -327,6 +327,192 @@ public enum SubscriptionReader {
     }
 }
 
+public struct CLIProxyAPIConfiguration: Equatable, Sendable {
+    public let baseURL: URL
+    public let managementKey: String
+
+    public init(baseURL: URL, managementKey: String) {
+        self.baseURL = baseURL
+        self.managementKey = managementKey
+    }
+}
+
+public struct CLIProxyAPILiveSnapshot: Sendable {
+    public let subscription: SubscriptionSnapshot?
+    public let account: CodexAccountSnapshot?
+
+    public init(subscription: SubscriptionSnapshot?, account: CodexAccountSnapshot?) {
+        self.subscription = subscription
+        self.account = account
+    }
+}
+
+public struct CLIProxyAPIValidationResult: Sendable {
+    public let isValid: Bool
+    public let message: String
+
+    public init(isValid: Bool, message: String) {
+        self.isValid = isValid
+        self.message = message
+    }
+}
+
+public enum CLIProxyAPIReader {
+    private static let quotaURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+    private static let bankedResetURL = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!
+
+    /// Asks CLIProxyAPI to use one of its own Codex OAuth credentials. The
+    /// management key authorizes only the local management request; the OAuth
+    /// token never leaves CLIProxyAPI and is never returned here.
+    public static func live(using configuration: CLIProxyAPIConfiguration) async -> SubscriptionSnapshot? {
+        await liveData(using: configuration)?.subscription
+    }
+
+    public static func liveData(using configuration: CLIProxyAPIConfiguration) async -> CLIProxyAPILiveSnapshot? {
+        let managementKey = configuration.managementKey
+        guard !managementKey.isEmpty else { return nil }
+
+        do {
+            let codexAuth = try await activeCodexAuth(using: configuration)
+            let quota = try await proxyGET(quotaURL, auth: codexAuth, using: configuration)
+            return CLIProxyAPILiveSnapshot(
+                subscription: SubscriptionReader.snapshot(fromUsage: quota, observedAt: .now),
+                account: account(from: codexAuth, usage: quota)
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    public static func latestBankedReset(using configuration: CLIProxyAPIConfiguration) async -> BankedResetSnapshot? {
+        guard !configuration.managementKey.isEmpty else { return nil }
+        do {
+            let codexAuth = try await activeCodexAuth(using: configuration)
+            let object = try await proxyGET(bankedResetURL, auth: codexAuth, using: configuration)
+            return BankedResetReader.snapshot(from: object)
+        } catch {
+            return nil
+        }
+    }
+
+    public static func validate(using configuration: CLIProxyAPIConfiguration) async -> CLIProxyAPIValidationResult {
+        guard !configuration.managementKey.isEmpty else {
+            return CLIProxyAPIValidationResult(
+                isValid: false,
+                message: "Enter the CLIProxyAPI management key."
+            )
+        }
+        do {
+            let codexAuth = try await activeCodexAuth(using: configuration)
+            _ = try await proxyGET(quotaURL, auth: codexAuth, using: configuration)
+            let account = (codexAuth["email"] as? String) ?? "active Codex account"
+            return CLIProxyAPIValidationResult(
+                isValid: true,
+                message: "Connected successfully (\(account))."
+            )
+        } catch {
+            return CLIProxyAPIValidationResult(
+                isValid: false,
+                message: "Validation failed. Check the endpoint, management key, and active Codex auth."
+            )
+        }
+    }
+
+    private static func account(from auth: [String: Any], usage: [String: Any]) -> CodexAccountSnapshot? {
+        let email = (auth["email"] as? String) ?? (usage["email"] as? String) ?? ""
+        guard !email.isEmpty else { return nil }
+        return CodexAccountSnapshot(
+            email: email,
+            name: auth["name"] as? String,
+            planType: usage["plan_type"] as? String
+        )
+    }
+
+    private static func activeCodexAuth(using configuration: CLIProxyAPIConfiguration) async throws -> [String: Any] {
+        let authFiles = try await request(
+            URLRequest(url: configuration.baseURL.appendingPathComponent("v0/management/auth-files")),
+            managementKey: configuration.managementKey
+        )
+        guard let files = authFiles["files"] as? [[String: Any]],
+              let codexAuth = files.first(where: {
+                  let provider = (($0["provider"] as? String) ?? ($0["type"] as? String) ?? "")
+                      .trimmingCharacters(in: .whitespacesAndNewlines)
+                      .lowercased()
+                  let disabled = ($0["disabled"] as? Bool) ?? false
+                  let unavailable = ($0["unavailable"] as? Bool) ?? false
+                  return provider == "codex" && !disabled && !unavailable
+              }),
+              let authIndex = codexAuth["auth_index"] as? String,
+              !authIndex.isEmpty else {
+            throw URLError(.cannotParseResponse)
+        }
+        return codexAuth
+    }
+
+    private static func proxyGET(
+        _ url: URL,
+        auth: [String: Any],
+        using configuration: CLIProxyAPIConfiguration
+    ) async throws -> [String: Any] {
+        guard let authIndex = auth["auth_index"] as? String, !authIndex.isEmpty else {
+            throw URLError(.cannotParseResponse)
+        }
+        var headers = [
+            "Authorization": "Bearer $TOKEN$",
+            "Content-Type": "application/json",
+            "User-Agent": "codex_cli_rs/0.76.0 (CodexDashboard)",
+            "OpenAI-Beta": "codex-1",
+            "Originator": "Codex Dashboard"
+        ]
+        if let idToken = auth["id_token"] as? [String: Any],
+           let accountID = idToken["chatgpt_account_id"] as? String,
+           !accountID.isEmpty {
+            headers["Chatgpt-Account-Id"] = accountID
+        }
+
+        let body: [String: Any] = [
+            "auth_index": authIndex,
+            "method": "GET",
+            "url": url.absoluteString,
+            "header": headers
+        ]
+        var request = URLRequest(url: configuration.baseURL.appendingPathComponent("v0/management/api-call"))
+        request.httpMethod = "POST"
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let response = try await data(for: request, managementKey: configuration.managementKey)
+        guard let envelope = try JSONSerialization.jsonObject(with: response) as? [String: Any],
+              let statusCode = (envelope["status_code"] as? NSNumber)?.intValue,
+              (200..<300).contains(statusCode),
+              let responseBody = envelope["body"] as? String,
+              let object = try JSONSerialization.jsonObject(with: Data(responseBody.utf8)) as? [String: Any] else {
+            throw URLError(.badServerResponse)
+        }
+        return object
+    }
+
+    private static func request(_ request: URLRequest, managementKey: String) async throws -> [String: Any] {
+        let data = try await data(for: request, managementKey: managementKey)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw URLError(.cannotParseResponse)
+        }
+        return object
+    }
+
+    private static func data(for request: URLRequest, managementKey: String) async throws -> Data {
+        var request = request
+        request.timeoutInterval = 15
+        request.setValue(managementKey, forHTTPHeaderField: "X-Management-Key")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let response = response as? HTTPURLResponse,
+              (200..<300).contains(response.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+        return data
+    }
+}
+
 public struct BankedResetCredit: Codable, Hashable, Sendable, Identifiable {
     public let id: String
     public let status: String

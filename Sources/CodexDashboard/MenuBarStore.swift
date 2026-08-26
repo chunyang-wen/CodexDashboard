@@ -67,6 +67,7 @@ final class MenuBarStore: ObservableObject {
     @Published private(set) var menuBarDataIsResident = false
 
     @Published private(set) var codexHome: URL
+    @Published private(set) var subscriptionProvider: DashboardSubscriptionProvider
     @Published private(set) var refreshInterval: TimeInterval
     @Published private(set) var weekStartsMonday: Bool
     var settingsDidChange: (@MainActor () -> Void)?
@@ -96,6 +97,7 @@ final class MenuBarStore: ObservableObject {
         let savedPath = defaults.string(forKey: DashboardPreferences.codexDataPathKey)
         codexHome = savedPath.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
             ?? userHome.appendingPathComponent(".codex", isDirectory: true)
+        subscriptionProvider = DashboardPreferences.subscriptionProvider(defaults: defaults)
         refreshInterval = defaults.object(forKey: DashboardPreferences.metricsRefreshIntervalKey) as? Double ?? 60
         weekStartsMonday = defaults.object(forKey: DashboardPreferences.weekStartsMondayKey) as? Bool ?? true
     }
@@ -128,9 +130,11 @@ final class MenuBarStore: ObservableObject {
                 }
             }
             do {
-                let snapshot = try await self.historicalStore.freshSubscriptionSnapshot()
-                guard !Task.isCancelled, self.loadID == requestID else { return }
-                self.subscription = snapshot?.isUsable == true ? snapshot : nil
+                if self.subscriptionProvider == .default {
+                    let snapshot = try await self.historicalStore.freshSubscriptionSnapshot()
+                    guard !Task.isCancelled, self.loadID == requestID else { return }
+                    self.subscription = snapshot?.isUsable == true ? snapshot : nil
+                }
                 if includeLiveQuota {
                     await self.refreshLiveQuota(requestID: requestID)
                 }
@@ -179,16 +183,30 @@ final class MenuBarStore: ObservableObject {
 
     private func refreshLiveQuota(requestID: UUID? = nil) async {
         let codexHome = self.codexHome
-        let live = await Task.detached(priority: .utility) {
-            await SubscriptionReader.live(from: codexHome)
+        let provider = subscriptionProvider
+        let cliProxyAPIConfiguration = DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults)
+        let liveData: CLIProxyAPILiveSnapshot? = await Task.detached(priority: .utility) {
+            switch provider {
+            case .default:
+                return CLIProxyAPILiveSnapshot(
+                    subscription: await SubscriptionReader.live(from: codexHome),
+                    account: nil
+                )
+            case .cliProxyAPI:
+                guard let cliProxyAPIConfiguration else { return nil }
+                return await CLIProxyAPIReader.liveData(using: cliProxyAPIConfiguration)
+            }
         }.value
+        if provider == .cliProxyAPI {
+            account = liveData?.account
+        }
         guard !Task.isCancelled,
               requestID.map({ $0 == self.loadID }) ?? true,
-              let live,
+              let live = liveData?.subscription,
               live.isUsable else { return }
 
         let quotaChanged = self.subscription?.hasSameQuota(as: live) != true
-        if quotaChanged {
+        if quotaChanged, provider == .default {
             try? await self.historicalStore.recordSubscription(live)
         }
         self.subscription = live
@@ -231,13 +249,21 @@ final class MenuBarStore: ObservableObject {
         bankedResetTask?.cancel()
         bankedResets = nil
         let codexHome = codexHome
+        let provider = subscriptionProvider
+        let cliProxyAPIConfiguration = DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults)
         popoverTask = Task { [weak self] in
             guard let self else { return }
             await self.preparePopover()
         }
         bankedResetTask = Task { [weak self] in
-            let snapshot = await Task.detached(priority: .utility) {
-                await BankedResetReader.latest(from: codexHome)
+            let snapshot: BankedResetSnapshot? = await Task.detached(priority: .utility) {
+                switch provider {
+                case .default:
+                    return await BankedResetReader.latest(from: codexHome)
+                case .cliProxyAPI:
+                    guard let cliProxyAPIConfiguration else { return nil }
+                    return await CLIProxyAPIReader.latestBankedReset(using: cliProxyAPIConfiguration)
+                }
             }.value
             guard !Task.isCancelled, let self, self.menuBarDataIsResident else { return }
             self.bankedResets = snapshot
@@ -251,9 +277,11 @@ final class MenuBarStore: ObservableObject {
         await reloadCompactSnapshot(includeSessionCount: false)
         guard !Task.isCancelled, menuBarDataIsResident else { return }
         let codexHome = codexHome
-        account = await Task.detached(priority: .utility) {
-            CodexAccountReader.read(from: codexHome)
-        }.value
+        if subscriptionProvider == .default {
+            account = await Task.detached(priority: .utility) {
+                CodexAccountReader.read(from: codexHome)
+            }.value
+        }
     }
 
     func releasePopover() {
@@ -305,6 +333,28 @@ final class MenuBarStore: ObservableObject {
         updateCodexHome(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true))
     }
 
+    func updateSubscriptionProvider(_ provider: DashboardSubscriptionProvider) {
+        guard provider != subscriptionProvider else { return }
+        subscriptionProvider = provider
+        defaults.set(provider.rawValue, forKey: DashboardPreferences.subscriptionProviderKey)
+        refreshSubscriptionProvider()
+    }
+
+    func refreshSubscriptionProvider() {
+        loadTask?.cancel()
+        loadTask = nil
+        bankedResetTask?.cancel()
+        bankedResetTask = nil
+        subscription = nil
+        account = nil
+        bankedResets = nil
+        settingsDidChange?()
+        loadMenuBar(includeLiveQuota: true)
+        if menuBarDataIsResident {
+            loadPopover()
+        }
+    }
+
     func updateRefreshInterval(_ interval: TimeInterval) {
         guard interval != refreshInterval else { return }
         refreshInterval = interval
@@ -327,8 +377,10 @@ final class MenuBarStore: ObservableObject {
     func reloadCompactSnapshot(includeSessionCount: Bool = true) async {
         guard menuBarDataIsResident else { return }
         do {
-            let subscriptionSnapshot = try await historicalStore.freshSubscriptionSnapshot()
-            subscription = subscriptionSnapshot?.isUsable == true ? subscriptionSnapshot : nil
+            if subscriptionProvider == .default {
+                let subscriptionSnapshot = try await historicalStore.freshSubscriptionSnapshot()
+                subscription = subscriptionSnapshot?.isUsable == true ? subscriptionSnapshot : nil
+            }
             guard menuBarDataIsResident else { return }
 
             if includeSessionCount {

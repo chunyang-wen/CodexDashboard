@@ -5,6 +5,21 @@ import XCTest
 
 final class PreferencesTests: XCTestCase {
     @MainActor
+    func testSubscriptionProviderDefaultsToDefaultAndPersistsSelection() {
+        let suiteName = "PreferencesTests.SubscriptionProvider.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = MenuBarStore(defaults: defaults)
+        XCTAssertEqual(store.subscriptionProvider, .default)
+
+        store.updateSubscriptionProvider(.cliProxyAPI)
+
+        XCTAssertEqual(defaults.string(forKey: DashboardPreferences.subscriptionProviderKey), "cliProxyAPI")
+        XCTAssertEqual(DashboardPreferences.subscriptionProvider(defaults: defaults), .cliProxyAPI)
+    }
+
+    @MainActor
     func testDashboardRangePersistsAndDefaultsToMonth() {
         let suiteName = "PreferencesTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -78,6 +93,8 @@ final class PreferencesTests: XCTestCase {
             Set([
                 DashboardPreferences.migrationVersionKey,
                 DashboardPreferences.codexDataPathKey,
+                DashboardPreferences.subscriptionProviderKey,
+                DashboardPreferences.cliProxyAPIEndpointKey,
                 DashboardPreferences.metricsRefreshIntervalKey,
                 DashboardPreferences.weekStartsMondayKey,
                 DashboardPreferences.dashboardRangeKey,
