@@ -5,6 +5,32 @@ import XCTest
 
 @MainActor
 final class DashboardStoreLifecycleTests: XCTestCase {
+    func testNewestValidQuotaWinsRegardlessOfProvider() {
+        let initialDate = Date(timeIntervalSince1970: 100)
+        let parsedDate = Date(timeIntervalSince1970: 200)
+        let refreshedProxyDate = Date(timeIntervalSince1970: 300)
+        let defaultStore = MenuBarStore()
+        let initial = makeSubscription(usedPercent: 10, observedAt: initialDate)
+        let parsed = makeSubscription(usedPercent: 20, observedAt: parsedDate)
+        defaultStore.receiveMenuBarSubscription(initial)
+        defaultStore.receiveParsedSubscription(parsed)
+        XCTAssertEqual(defaultStore.subscription?.windows.first?.usedPercent, 20)
+
+        let suiteName = "DashboardStoreLifecycleTests.ParsedProvider.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(DashboardSubscriptionProvider.sub2API.rawValue, forKey: DashboardPreferences.subscriptionProviderKey)
+        let proxyStore = MenuBarStore(defaults: defaults)
+        proxyStore.receiveMenuBarSubscription(initial)
+        proxyStore.receiveParsedSubscription(parsed)
+        XCTAssertEqual(proxyStore.subscription?.windows.first?.usedPercent, 20)
+
+        let refreshedProxy = makeSubscription(usedPercent: 30, observedAt: refreshedProxyDate)
+        proxyStore.receiveMenuBarSubscription(refreshedProxy)
+        proxyStore.receiveParsedSubscription(parsed)
+        XCTAssertEqual(proxyStore.subscription?.windows.first?.usedPercent, 30)
+    }
+
     func testMenuBarLoadDoesNotHydrateDashboardAndReopenRestoresIt() async throws {
         let userHome = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -455,5 +481,23 @@ final class DashboardStoreLifecycleTests: XCTestCase {
             }
             try await Task.sleep(for: .milliseconds(20))
         }
+    }
+
+    private func makeSubscription(usedPercent: Double, observedAt: Date) -> SubscriptionSnapshot {
+        SubscriptionSnapshot(
+            planType: "pro",
+            limitID: "primary",
+            limitName: nil,
+            windows: [
+                UsageQuotaWindow(
+                    usedPercent: usedPercent,
+                    windowMinutes: 300,
+                    resetsAt: .now.addingTimeInterval(3_600)
+                )
+            ],
+            credits: nil,
+            rateLimitReachedType: nil,
+            observedAt: observedAt
+        )
     }
 }

@@ -56,8 +56,6 @@ struct MenuBarAnalytics: Sendable {
 /// projections and display preferences. Dashboard data is owned by the helper.
 @MainActor
 final class MenuBarStore: ObservableObject {
-    private static let liveQuotaRefreshInterval: TimeInterval = 60 * 60
-
     @Published private(set) var subscription: SubscriptionSnapshot?
     @Published private(set) var bankedResets: BankedResetSnapshot?
     @Published private(set) var account: CodexAccountSnapshot?
@@ -82,14 +80,12 @@ final class MenuBarStore: ObservableObject {
     private var popoverTask: Task<Void, Never>?
     private var bankedResetTask: Task<Void, Never>?
     private var menuBarMonitorTask: Task<Void, Never>?
-    private var liveQuotaMonitorTask: Task<Void, Never>?
     private var pricingRefreshTask: Task<Void, Never>?
     private var sourceWatcher: CodexSourceWatcher?
     private var sourceRefreshTask: Task<Void, Never>?
     private var sourceRefreshGeneration = UUID()
     private var sourceRefreshInFlight = false
     private var menuBarAnalytics = MenuBarAnalytics.empty
-    private var hasLiveProviderQuota = false
 
     init(userHome: URL = FileManager.default.homeDirectoryForCurrentUser, defaults: UserDefaults = .standard) {
         self.userHome = userHome
@@ -131,13 +127,9 @@ final class MenuBarStore: ObservableObject {
                 }
             }
             do {
-                if !self.hasLiveProviderQuota {
-                    let snapshot = try await self.historicalStore.freshSubscriptionSnapshot()
-                    guard !Task.isCancelled, self.loadID == requestID else { return }
-                    if let snapshot, snapshot.isUsable {
-                        self.subscription = snapshot
-                    }
-                }
+                let snapshot = try await self.historicalStore.freshSubscriptionSnapshot()
+                guard !Task.isCancelled, self.loadID == requestID else { return }
+                _ = self.acceptSubscription(snapshot)
                 if includeLiveQuota {
                     await self.refreshLiveQuota(requestID: requestID)
                 }
@@ -153,12 +145,10 @@ final class MenuBarStore: ObservableObject {
         pricingRefreshTask?.cancel()
         sourceWatcher?.stop()
         sourceWatcher = nil
-        liveQuotaMonitorTask?.cancel()
         sourceRefreshTask?.cancel()
         sourceRefreshTask = nil
         sourceRefreshGeneration = UUID()
         loadMenuBar(includeLiveQuota: true)
-        startLiveQuotaMonitoring()
         startPricingMonitoring()
         guard refreshInterval > 0 else { return }
         menuBarMonitorTask = Task { [weak self] in
@@ -166,22 +156,11 @@ final class MenuBarStore: ObservableObject {
                 let interval = max(self.refreshInterval, 5)
                 try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled else { return }
-                self.loadMenuBar()
+                self.loadMenuBar(includeLiveQuota: true)
                 await self.refreshSourceFromIndex()
             }
         }
         startSourceMonitoring()
-    }
-
-    private func startLiveQuotaMonitoring() {
-        liveQuotaMonitorTask = Task { [weak self] in
-            guard let self else { return }
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(Self.liveQuotaRefreshInterval))
-                guard !Task.isCancelled else { return }
-                self.loadMenuBar(includeLiveQuota: true)
-            }
-        }
     }
 
     private func refreshLiveQuota(requestID: UUID? = nil) async {
@@ -212,13 +191,11 @@ final class MenuBarStore: ObservableObject {
               let live = liveData?.subscription,
               live.isUsable else { return }
 
-        let quotaChanged = self.subscription?.hasSameQuota(as: live) != true
-        if quotaChanged, provider == .default {
+        if provider == .default {
             try? await self.historicalStore.recordSubscription(live)
         }
-        self.hasLiveProviderQuota = true
-        self.subscription = live
-        if quotaChanged {
+        let quotaChanged = subscription?.hasSameQuota(as: live) != true
+        if acceptSubscription(live), quotaChanged {
             self.metricsDidChange?()
         }
     }
@@ -325,7 +302,6 @@ final class MenuBarStore: ObservableObject {
         bankedResetTask = nil
         isLoading = false
         subscription = nil
-        hasLiveProviderQuota = false
         account = nil
         bankedResets = nil
         menuBarAnalytics = .empty
@@ -359,7 +335,6 @@ final class MenuBarStore: ObservableObject {
         bankedResetTask?.cancel()
         bankedResetTask = nil
         subscription = nil
-        hasLiveProviderQuota = false
         account = nil
         bankedResets = nil
         settingsDidChange?()
@@ -385,20 +360,29 @@ final class MenuBarStore: ObservableObject {
     }
 
     func receiveMenuBarSubscription(_ snapshot: SubscriptionSnapshot?) {
-        guard let snapshot, snapshot.isUsable else { return }
-        hasLiveProviderQuota = true
-        subscription = snapshot
+        _ = acceptSubscription(snapshot)
+    }
+
+    func receiveParsedSubscription(_ snapshot: SubscriptionSnapshot?) {
+        _ = acceptSubscription(snapshot)
+    }
+
+    @discardableResult
+    private func acceptSubscription(_ candidate: SubscriptionSnapshot?) -> Bool {
+        guard let candidate, candidate.isUsable else { return false }
+        if let current = subscription, candidate.observedAt < current.observedAt {
+            return false
+        }
+        guard subscription != candidate else { return false }
+        subscription = candidate
+        return true
     }
 
     func reloadCompactSnapshot(includeSessionCount: Bool = true) async {
         guard menuBarDataIsResident else { return }
         do {
-            if !hasLiveProviderQuota {
-                let subscriptionSnapshot = try await historicalStore.freshSubscriptionSnapshot()
-                if let subscriptionSnapshot, subscriptionSnapshot.isUsable {
-                    subscription = subscriptionSnapshot
-                }
-            }
+            let subscriptionSnapshot = try await historicalStore.freshSubscriptionSnapshot()
+            _ = acceptSubscription(subscriptionSnapshot)
             guard menuBarDataIsResident else { return }
 
             if includeSessionCount {
@@ -593,12 +577,11 @@ final class MenuBarStore: ObservableObject {
             pricing: pricing,
             calendar: analyticsCalendar
         )
-        if !hasLiveProviderQuota,
-           let latestSubscription = sessions.compactMap(\.subscription)
+        if let latestSubscription = sessions.compactMap(\.subscription)
             .filter(\.isUsable)
             .max(by: { $0.observedAt < $1.observedAt }) {
             try await historicalStore.recordSubscription(latestSubscription)
-            subscription = latestSubscription
+            receiveParsedSubscription(latestSubscription)
         }
     }
 }

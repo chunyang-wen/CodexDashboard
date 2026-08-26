@@ -282,7 +282,6 @@ final class DashboardStore: ObservableObject {
     private var indexedSessionsByID: [String: IndexedSessionMetrics] = [:]
     @Published private(set) var dashboardDataIsResident = false
     private(set) var subscriptionProvider: DashboardSubscriptionProvider
-    private var hasLiveProviderQuota = false
 
     init(
         userHome: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -504,9 +503,7 @@ final class DashboardStore: ObservableObject {
             // it wait for the much heavier session merge and index load.
             let storedSubscription = try? await historicalStore.subscriptionSnapshot()
                 .flatMap { $0.isUsable ? $0 : nil }
-            if !hasLiveProviderQuota {
-                _ = acceptSubscription(storedSubscription)
-            }
+            _ = acceptSubscription(storedSubscription)
             let liveData: ProviderLiveSnapshot? = await Task.detached(priority: .utility) {
                 switch provider {
                 case .default:
@@ -528,7 +525,6 @@ final class DashboardStore: ObservableObject {
             }
             let liveSubscription = liveData?.subscription
             if let liveSubscription, liveSubscription.isUsable {
-                hasLiveProviderQuota = true
                 if provider == .default {
                     try? await historicalStore.recordSubscription(liveSubscription)
                 }
@@ -556,7 +552,7 @@ final class DashboardStore: ObservableObject {
                 storedSubscription,
                 sessions.compactMap(\.subscription).filter(\.isUsable).max { $0.observedAt < $1.observedAt }
             ].compactMap { $0 }).max { $0.observedAt < $1.observedAt }
-            if !hasLiveProviderQuota, acceptSubscription(cachedSubscription) {
+            if acceptSubscription(cachedSubscription) {
                 scheduleAnalyticsRefresh()
             }
             // Older history does not contain parser-extracted quota snapshots.
@@ -570,7 +566,7 @@ final class DashboardStore: ObservableObject {
                 cachedSubscription
             }
             guard !Task.isCancelled, loadID == requestID else { return }
-            if !hasLiveProviderQuota, acceptSubscription(latestSubscription) {
+            if acceptSubscription(latestSubscription) {
                 scheduleAnalyticsRefresh()
             }
             if let latestSubscription {
@@ -634,8 +630,7 @@ final class DashboardStore: ObservableObject {
                     }
                     sessions = updated
                     let latestSubscription = pending.compactMap(\.session.subscription).max { $0.observedAt < $1.observedAt }
-                    if !hasLiveProviderQuota,
-                       acceptSubscription(latestSubscription),
+                    if acceptSubscription(latestSubscription),
                        let latestSubscription {
                         try? await historicalStore.recordSubscription(latestSubscription)
                     }
@@ -662,8 +657,7 @@ final class DashboardStore: ObservableObject {
                 }
                 sessions = updated
                 let latestSubscription = pending.compactMap(\.session.subscription).max { $0.observedAt < $1.observedAt }
-                if !hasLiveProviderQuota,
-                   acceptSubscription(latestSubscription),
+                if acceptSubscription(latestSubscription),
                    let latestSubscription {
                     try? await historicalStore.recordSubscription(latestSubscription)
                 }
@@ -707,7 +701,6 @@ final class DashboardStore: ObservableObject {
         if providerChanged {
             subscriptionProvider = newSubscriptionProvider
             subscription = nil
-            hasLiveProviderQuota = false
             account = nil
             bankedResetTask?.cancel()
             bankedResetTask = nil
@@ -936,7 +929,6 @@ final class DashboardStore: ObservableObject {
         metricsIndex = .empty
         indexedSessionsByID = [:]
         subscription = nil
-        hasLiveProviderQuota = false
         account = nil
         bankedResetTask?.cancel()
         bankedResetTask = nil

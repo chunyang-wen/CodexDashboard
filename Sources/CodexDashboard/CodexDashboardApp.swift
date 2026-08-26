@@ -867,9 +867,9 @@ private struct DashboardSettingsView: View {
 
                     HStack {
                         Button {
-                            saveCLIProxyAPIConfiguration()
+                            activateCLIProxyAPIConfiguration()
                         } label: {
-                            Text(cliProxyAPIValidationState == .validating ? "Validating…" : "Save CLIProxyAPI")
+                            Text(cliProxyAPIValidationState == .validating ? "Activating…" : "Activate CLIProxyAPI")
                         }
                         .disabled(cliProxyAPIValidationState == .validating)
 
@@ -907,7 +907,9 @@ private struct DashboardSettingsView: View {
                         .textContentType(.password)
 
                     if sub2APIAccounts.isEmpty {
-                        Text("Sign in to load OpenAI/Codex upstream accounts.")
+                        Text(hasSub2APIActivationCredentials
+                            ? "Upstream accounts are unavailable. The saved account remains selected; activate to retry."
+                            : "Sign in to load OpenAI/Codex upstream accounts.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
@@ -928,11 +930,11 @@ private struct DashboardSettingsView: View {
                         .disabled(sub2APIValidationState == .validating)
 
                         Button {
-                            saveSub2APIConfiguration()
+                            activateSub2APIConfiguration()
                         } label: {
-                            Text("Save sub2api")
+                            Text(sub2APIValidationState == .validating ? "Activating…" : "Activate sub2api")
                         }
-                        .disabled(sub2APIValidationState == .validating || sub2APIAccounts.isEmpty)
+                        .disabled(sub2APIValidationState == .validating || !hasSub2APIActivationCredentials)
 
                         switch sub2APIValidationState {
                         case .idle:
@@ -1100,6 +1102,11 @@ private struct DashboardSettingsView: View {
         DashboardSubscriptionProvider(rawValue: selectedSubscriptionProviderRaw) ?? .default
     }
 
+    private var hasSub2APIActivationCredentials: Bool {
+        !sub2APIAdminToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (Int64(sub2APIAccountID.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0) > 0
+    }
+
     private var codexDataDescription: String {
         switch selectedSubscriptionProvider {
         case .default:
@@ -1138,6 +1145,15 @@ private struct DashboardSettingsView: View {
         let provider = DashboardSubscriptionProvider(rawValue: rawValue) ?? .default
         cliProxyAPIValidationState = .idle
         sub2APIValidationState = .idle
+        if provider == .cliProxyAPI,
+           let configuration = DashboardPreferences.cliProxyAPIConfiguration() {
+            cliProxyAPIEndpoint = configuration.baseURL.absoluteString
+            cliProxyAPIManagementKey = configuration.managementKey
+            subscriptionProviderRaw = provider.rawValue
+            store.updateSubscriptionProvider(provider)
+            activateCLIProxyAPIConfiguration()
+            return
+        }
         if provider == .sub2API,
            let configuration = DashboardPreferences.sub2APIConfiguration() {
             sub2APIEndpoint = configuration.baseURL.absoluteString
@@ -1146,6 +1162,7 @@ private struct DashboardSettingsView: View {
             subscriptionProviderRaw = provider.rawValue
             store.updateSubscriptionProvider(provider)
             reloadSub2APIAccounts()
+            activateSub2APIConfiguration()
             return
         }
         guard provider == .default else { return }
@@ -1160,7 +1177,7 @@ private struct DashboardSettingsView: View {
         }
     }
 
-    private func saveCLIProxyAPIConfiguration() {
+    private func activateCLIProxyAPIConfiguration() {
         let endpoint = cliProxyAPIEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: endpoint),
               let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
@@ -1177,6 +1194,7 @@ private struct DashboardSettingsView: View {
         let configuration = CLIProxyAPIConfiguration(baseURL: url, managementKey: managementKey)
         Task {
             let result = await CLIProxyAPIReader.validate(using: configuration)
+            guard selectedSubscriptionProvider == .cliProxyAPI else { return }
             guard result.isValid else {
                 cliProxyAPIValidationState = .invalid(result.message)
                 return
@@ -1201,7 +1219,7 @@ private struct DashboardSettingsView: View {
         }
     }
 
-    private func saveSub2APIConfiguration() {
+    private func activateSub2APIConfiguration() {
         let endpoint = sub2APIEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: endpoint),
               let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
@@ -1223,6 +1241,7 @@ private struct DashboardSettingsView: View {
         let configuration = Sub2APIConfiguration(baseURL: url, adminToken: adminToken, accountID: accountID)
         Task {
             let result = await Sub2APIReader.validate(using: configuration)
+            guard selectedSubscriptionProvider == .sub2API else { return }
             guard result.isValid else {
                 sub2APIValidationState = .invalid(result.message)
                 return
