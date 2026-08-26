@@ -1082,11 +1082,7 @@ private struct DashboardSettingsView: View {
             sub2APIAccountID = DashboardPreferences.sharedDefaults().string(
                 forKey: DashboardPreferences.sub2APIAccountIDKey
             ) ?? ""
-            if let url = URL(string: sub2APIEndpoint), !sub2APIAdminToken.isEmpty {
-                Task {
-                    sub2APIAccounts = await Sub2APIReader.accounts(baseURL: url, adminToken: sub2APIAdminToken)
-                }
-            }
+            reloadSub2APIAccounts()
         }
     }
 
@@ -1142,9 +1138,26 @@ private struct DashboardSettingsView: View {
         let provider = DashboardSubscriptionProvider(rawValue: rawValue) ?? .default
         cliProxyAPIValidationState = .idle
         sub2APIValidationState = .idle
+        if provider == .sub2API,
+           let configuration = DashboardPreferences.sub2APIConfiguration() {
+            sub2APIEndpoint = configuration.baseURL.absoluteString
+            sub2APIAdminToken = configuration.adminToken
+            sub2APIAccountID = String(configuration.accountID)
+            subscriptionProviderRaw = provider.rawValue
+            store.updateSubscriptionProvider(provider)
+            reloadSub2APIAccounts()
+            return
+        }
         guard provider == .default else { return }
         subscriptionProviderRaw = provider.rawValue
         store.updateSubscriptionProvider(provider)
+    }
+
+    private func reloadSub2APIAccounts() {
+        guard let url = URL(string: sub2APIEndpoint), !sub2APIAdminToken.isEmpty else { return }
+        Task {
+            sub2APIAccounts = await Sub2APIReader.accounts(baseURL: url, adminToken: sub2APIAdminToken)
+        }
     }
 
     private func saveCLIProxyAPIConfiguration() {

@@ -22,6 +22,9 @@ final class PreferencesTests: XCTestCase {
 
         XCTAssertEqual(defaults.string(forKey: DashboardPreferences.subscriptionProviderKey), "sub2API")
         XCTAssertEqual(DashboardPreferences.subscriptionProvider(defaults: defaults), .sub2API)
+
+        let restoredStore = MenuBarStore(defaults: defaults)
+        XCTAssertEqual(restoredStore.subscriptionProvider, .sub2API)
     }
 
     @MainActor
