@@ -3,6 +3,14 @@
     <channel>
         <title>CodexDashboard</title>
         <item>
+            <title>0.1.13</title>
+            <pubDate>Wed, 26 Aug 2026 21:37:48 +0800</pubDate>
+            <sparkle:version>20260826213306</sparkle:version>
+            <sparkle:shortVersionString>0.1.13</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.13/CodexDashboard-0.1.13.zip" length="11621185" type="application/octet-stream" sparkle:edSignature="A0T8bSptdjJAA26sQx14QGKkJQS7e1RfqJnN+5hhjhgxHKT8ic6PBqWeiYGXWGrI1BbkL7+E2NjlZaLOUQXNBg=="/>
+        </item>
+        <item>
             <title>0.1.12</title>
             <description sparkle:format="html"><![CDATA[
                 <h3>What's new in 0.1.12</h3>
@@ -32,27 +40,6 @@
             <sparkle:shortVersionString>0.1.11</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.11/CodexDashboard-0.1.11.zip" length="11349109" type="application/octet-stream" sparkle:edSignature="D5C3fqFFnIFv3Q8sNiu1ZlCn6ukmRYHuWFLJ+iWzDEXurOiV+HIO+wg3b3m40uFmDbEwBi42ksECFwQF6ZsCDw=="/>
-        </item>
-        <item>
-            <title>0.1.10</title>
-            <description sparkle:format="html"><![CDATA[
-                <h3>What's new in 0.1.10</h3>
-                <ul>
-                    <li>Renamed the dashboard application menu to <code>CodexDashboard</code>.</li>
-                    <li>Kept the embedded dashboard helper bundle and lifecycle unchanged.</li>
-                </ul>
-                <h3>Included from v0.1.9</h3>
-                <ul>
-                    <li>Improved update and window activation so Sparkle prompts and dashboard windows open in the expected app context.</li>
-                    <li>Made very small monthly usage shares remain visible in the menu-bar summary.</li>
-                    <li>Refined helper-window behavior and the Window menu.</li>
-                </ul>
-            ]]></description>
-            <pubDate>Tue, 25 Aug 2026 15:05:23 +0800</pubDate>
-            <sparkle:version>20260825150257</sparkle:version>
-            <sparkle:shortVersionString>0.1.10</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.10/CodexDashboard-0.1.10.zip" length="11349107" type="application/octet-stream" sparkle:edSignature="bWyiUbsH55udbgnm1bG61WGcmUK8ngjKshkVQNt0K8Lz4pI9XZwZYxMeqXeytLS5ub4yXWuMuzpVsOmZLKOCCQ=="/>
         </item>
     </channel>
 </rss>
