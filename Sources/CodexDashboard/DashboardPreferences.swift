@@ -5,11 +5,13 @@ import Security
 enum DashboardPreferences {
     static let suiteName = "com.chunyangwen.CodexDashboard.shared"
     static let migrationVersionKey = "dashboardPreferencesMigrationVersion"
-    static let currentMigrationVersion = 4
+    static let currentMigrationVersion = 5
 
     static let codexDataPathKey = "codexDataPath"
     static let subscriptionProviderKey = "subscriptionProvider"
     static let cliProxyAPIEndpointKey = "cliProxyAPIEndpoint"
+    static let sub2APIEndpointKey = "sub2APIEndpoint"
+    static let sub2APIAccountIDKey = "sub2APIAccountID"
     static let metricsRefreshIntervalKey = "metricsRefreshInterval"
     static let weekStartsMondayKey = "weekStartsMonday"
     static let dashboardRangeKey = "dashboardRange"
@@ -29,6 +31,8 @@ enum DashboardPreferences {
         codexDataPathKey,
         subscriptionProviderKey,
         cliProxyAPIEndpointKey,
+        sub2APIEndpointKey,
+        sub2APIAccountIDKey,
         metricsRefreshIntervalKey,
         weekStartsMondayKey,
         dashboardRangeKey,
@@ -61,6 +65,16 @@ enum DashboardPreferences {
               let key = DashboardKeychain.readManagementKey(),
               !key.isEmpty else { return nil }
         return CLIProxyAPIConfiguration(baseURL: url, managementKey: key)
+    }
+
+    static func sub2APIConfiguration(defaults: UserDefaults = sharedDefaults()) -> Sub2APIConfiguration? {
+        guard let endpoint = defaults.string(forKey: sub2APIEndpointKey),
+              let url = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let token = DashboardKeychain.readSub2APIAdminToken(),
+              !token.isEmpty,
+              let accountID = Int64(defaults.string(forKey: sub2APIAccountIDKey) ?? ""),
+              accountID > 0 else { return nil }
+        return Sub2APIConfiguration(baseURL: url, adminToken: token, accountID: accountID)
     }
 
     @discardableResult
@@ -106,6 +120,7 @@ enum DashboardPreferences {
 enum DashboardSubscriptionProvider: String, CaseIterable, Identifiable {
     case `default` = "default"
     case cliProxyAPI = "cliProxyAPI"
+    case sub2API = "sub2API"
 
     var id: String { rawValue }
 
@@ -113,6 +128,7 @@ enum DashboardSubscriptionProvider: String, CaseIterable, Identifiable {
         switch self {
         case .default: "Default"
         case .cliProxyAPI: "CLIProxyAPI"
+        case .sub2API: "Wei-Shaw/sub2api"
         }
     }
 }
@@ -120,8 +136,17 @@ enum DashboardSubscriptionProvider: String, CaseIterable, Identifiable {
 enum DashboardKeychain {
     private static let service = "com.chunyangwen.CodexDashboard"
     private static let account = "cliProxyAPIManagementKey"
+    private static let sub2APIAdminTokenAccount = "sub2APIAdminAccessToken"
 
     static func readManagementKey() -> String? {
+        read(account: account)
+    }
+
+    static func readSub2APIAdminToken() -> String? {
+        read(account: sub2APIAdminTokenAccount)
+    }
+
+    private static func read(account: String) -> String? {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
@@ -137,6 +162,16 @@ enum DashboardKeychain {
 
     @discardableResult
     static func saveManagementKey(_ key: String) -> Bool {
+        save(key, account: account)
+    }
+
+    @discardableResult
+    static func saveSub2APIAdminToken(_ token: String) -> Bool {
+        save(token, account: sub2APIAdminTokenAccount)
+    }
+
+    @discardableResult
+    private static func save(_ key: String, account: String) -> Bool {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,

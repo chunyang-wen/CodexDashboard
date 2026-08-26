@@ -119,8 +119,9 @@ struct MenuBarDashboardView: View {
     }
 
     private var planLabel: String {
-        if let plan = store.subscription?.displayPlan { return "ChatGPT \(plan)" }
-        if let plan = store.account?.planType { return "ChatGPT \(CodexPlanDisplay.name(for: plan))" }
+        let providerName = store.subscriptionProvider == .sub2API ? "sub2api" : "ChatGPT"
+        if let plan = store.subscription?.displayPlan { return "\(providerName) \(plan)" }
+        if let plan = store.account?.planType { return "\(providerName) \(CodexPlanDisplay.name(for: plan))" }
         return "Plan not reported"
     }
 

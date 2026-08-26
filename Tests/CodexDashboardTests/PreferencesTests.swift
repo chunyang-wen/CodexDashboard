@@ -17,6 +17,11 @@ final class PreferencesTests: XCTestCase {
 
         XCTAssertEqual(defaults.string(forKey: DashboardPreferences.subscriptionProviderKey), "cliProxyAPI")
         XCTAssertEqual(DashboardPreferences.subscriptionProvider(defaults: defaults), .cliProxyAPI)
+
+        store.updateSubscriptionProvider(.sub2API)
+
+        XCTAssertEqual(defaults.string(forKey: DashboardPreferences.subscriptionProviderKey), "sub2API")
+        XCTAssertEqual(DashboardPreferences.subscriptionProvider(defaults: defaults), .sub2API)
     }
 
     @MainActor
@@ -95,6 +100,8 @@ final class PreferencesTests: XCTestCase {
                 DashboardPreferences.codexDataPathKey,
                 DashboardPreferences.subscriptionProviderKey,
                 DashboardPreferences.cliProxyAPIEndpointKey,
+                DashboardPreferences.sub2APIEndpointKey,
+                DashboardPreferences.sub2APIAccountIDKey,
                 DashboardPreferences.metricsRefreshIntervalKey,
                 DashboardPreferences.weekStartsMondayKey,
                 DashboardPreferences.dashboardRangeKey,

@@ -36,7 +36,7 @@ enum MetricDefinition {
         case .estimatedCost:
             "Uncached input × input rate + cached input × cached rate + output × output rate. API-equivalent estimate only; excludes tool-call fees and subscription terms."
         case .subscriptionQuota:
-            "Latest plan, usage windows, credits, and reset timestamps reported by Codex. Quota percentage is account-provided, not inferred from local token totals."
+            "Latest plan, usage windows, credits, and reset timestamps reported by the selected provider. Quota percentage is provider-provided, not inferred from local token totals."
         case .periodUsage:
             "Token deltas are grouped by token-event timestamp; runtime by turn completion. Sessions without detailed events are assigned to their last-update date."
         case .activeDays:

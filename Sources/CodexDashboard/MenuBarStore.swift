@@ -89,6 +89,7 @@ final class MenuBarStore: ObservableObject {
     private var sourceRefreshGeneration = UUID()
     private var sourceRefreshInFlight = false
     private var menuBarAnalytics = MenuBarAnalytics.empty
+    private var hasLiveProviderQuota = false
 
     init(userHome: URL = FileManager.default.homeDirectoryForCurrentUser, defaults: UserDefaults = .standard) {
         self.userHome = userHome
@@ -130,10 +131,12 @@ final class MenuBarStore: ObservableObject {
                 }
             }
             do {
-                if self.subscriptionProvider == .default {
+                if !self.hasLiveProviderQuota {
                     let snapshot = try await self.historicalStore.freshSubscriptionSnapshot()
                     guard !Task.isCancelled, self.loadID == requestID else { return }
-                    self.subscription = snapshot?.isUsable == true ? snapshot : nil
+                    if let snapshot, snapshot.isUsable {
+                        self.subscription = snapshot
+                    }
                 }
                 if includeLiveQuota {
                     await self.refreshLiveQuota(requestID: requestID)
@@ -185,7 +188,8 @@ final class MenuBarStore: ObservableObject {
         let codexHome = self.codexHome
         let provider = subscriptionProvider
         let cliProxyAPIConfiguration = DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults)
-        let liveData: CLIProxyAPILiveSnapshot? = await Task.detached(priority: .utility) {
+        let sub2APIConfiguration = DashboardPreferences.sub2APIConfiguration(defaults: defaults)
+        let liveData: ProviderLiveSnapshot? = await Task.detached(priority: .utility) {
             switch provider {
             case .default:
                 return CLIProxyAPILiveSnapshot(
@@ -195,9 +199,12 @@ final class MenuBarStore: ObservableObject {
             case .cliProxyAPI:
                 guard let cliProxyAPIConfiguration else { return nil }
                 return await CLIProxyAPIReader.liveData(using: cliProxyAPIConfiguration)
+            case .sub2API:
+                guard let sub2APIConfiguration else { return nil }
+                return await Sub2APIReader.liveData(using: sub2APIConfiguration)
             }
         }.value
-        if provider == .cliProxyAPI {
+        if provider != .default {
             account = liveData?.account
         }
         guard !Task.isCancelled,
@@ -209,6 +216,7 @@ final class MenuBarStore: ObservableObject {
         if quotaChanged, provider == .default {
             try? await self.historicalStore.recordSubscription(live)
         }
+        self.hasLiveProviderQuota = true
         self.subscription = live
         if quotaChanged {
             self.metricsDidChange?()
@@ -251,6 +259,7 @@ final class MenuBarStore: ObservableObject {
         let codexHome = codexHome
         let provider = subscriptionProvider
         let cliProxyAPIConfiguration = DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults)
+        let sub2APIConfiguration = DashboardPreferences.sub2APIConfiguration(defaults: defaults)
         popoverTask = Task { [weak self] in
             guard let self else { return }
             await self.preparePopover()
@@ -263,6 +272,9 @@ final class MenuBarStore: ObservableObject {
                 case .cliProxyAPI:
                     guard let cliProxyAPIConfiguration else { return nil }
                     return await CLIProxyAPIReader.latestBankedReset(using: cliProxyAPIConfiguration)
+                case .sub2API:
+                    guard let sub2APIConfiguration else { return nil }
+                    return await Sub2APIReader.latestBankedReset(using: sub2APIConfiguration)
                 }
             }.value
             guard !Task.isCancelled, let self, self.menuBarDataIsResident else { return }
@@ -313,6 +325,7 @@ final class MenuBarStore: ObservableObject {
         bankedResetTask = nil
         isLoading = false
         subscription = nil
+        hasLiveProviderQuota = false
         account = nil
         bankedResets = nil
         menuBarAnalytics = .empty
@@ -346,6 +359,7 @@ final class MenuBarStore: ObservableObject {
         bankedResetTask?.cancel()
         bankedResetTask = nil
         subscription = nil
+        hasLiveProviderQuota = false
         account = nil
         bankedResets = nil
         settingsDidChange?()
@@ -371,15 +385,19 @@ final class MenuBarStore: ObservableObject {
     }
 
     func receiveMenuBarSubscription(_ snapshot: SubscriptionSnapshot?) {
+        guard let snapshot, snapshot.isUsable else { return }
+        hasLiveProviderQuota = true
         subscription = snapshot
     }
 
     func reloadCompactSnapshot(includeSessionCount: Bool = true) async {
         guard menuBarDataIsResident else { return }
         do {
-            if subscriptionProvider == .default {
+            if !hasLiveProviderQuota {
                 let subscriptionSnapshot = try await historicalStore.freshSubscriptionSnapshot()
-                subscription = subscriptionSnapshot?.isUsable == true ? subscriptionSnapshot : nil
+                if let subscriptionSnapshot, subscriptionSnapshot.isUsable {
+                    subscription = subscriptionSnapshot
+                }
             }
             guard menuBarDataIsResident else { return }
 
@@ -575,7 +593,8 @@ final class MenuBarStore: ObservableObject {
             pricing: pricing,
             calendar: analyticsCalendar
         )
-        if let latestSubscription = sessions.compactMap(\.subscription)
+        if !hasLiveProviderQuota,
+           let latestSubscription = sessions.compactMap(\.subscription)
             .filter(\.isUsable)
             .max(by: { $0.observedAt < $1.observedAt }) {
             try await historicalStore.recordSubscription(latestSubscription)

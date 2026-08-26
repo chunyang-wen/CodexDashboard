@@ -29,7 +29,7 @@ The debugger is deliberately on-demand: conversation payloads are read from the 
 - **Projects and sessions:** move from a portfolio view into a project and then an individual session, with token composition and activity trends at each level.
 - **Conversation debugger:** inspect sent and received messages, reasoning summaries, tool calls, tool results, and original JSON events—with on-demand loading and redacted copying by default.
 - **Model portfolio:** compare usage volume, runtime, cache behavior, session count, and API-equivalent cost across models.
-- **Subscription usage:** see the latest plan, quota windows, reset times, credits, and limit status reported by Codex.
+- **Subscription usage:** see the latest plan, quota windows, reset times, credits, and limit status reported by Codex, CLIProxyAPI, or Wei-Shaw/sub2api.
 - **Historical analysis:** switch between 7 days, 30 days, 90 days, one year, or all history, with daily, weekly, and monthly charts.
 - **Menu-bar quota markers:** check remaining quota and place separate draggable attention markers for the weekly and 5-hour windows. The thresholds also appear in the menu-bar icon, alongside quick access to today's tokens, tool calls, skill activations, and estimated cost.
 - **Command-line access:** query the same local data from scripts and export session metrics as JSON.
@@ -84,7 +84,7 @@ Parsed metrics, session metadata, effective-dated price schedules, and byte chec
 ~/Library/Application Support/CodexDashboard/metrics-v1.sqlite
 ```
 
-The only routine network request is an anonymous pricing-catalog download from `https://models.dev/api.json`. It contains no local metrics or identifiers. A validated response is cached locally; bundled prices remain available offline.
+The only routine network request in the default configuration is an anonymous pricing-catalog download from `https://models.dev/api.json`. It contains no local metrics or identifiers. A validated response is cached locally; bundled prices remain available offline. If you select CLIProxyAPI or Wei-Shaw/sub2api in Settings, the dashboard additionally makes read-only quota requests to that configured service; the corresponding management key or admin access token stays in the macOS Keychain.
 
 While the app is open, its persistent menubar host owns one recursive macOS FSEvents subscription for changes under the Codex data directory; the app does not periodically poll every known rollout. Events are coalesced using the configured refresh interval, and the durable filesystem-journal cursor lets normal reopening resume without an inventory sweep. This keeps today's cost and quota-derived metrics current even when the dashboard window is closed. An all-session reconciliation is reserved for first-time watcher migration or when macOS reports dropped or expired journal events. Refresh pauses in Low Power Mode or under serious thermal pressure, retries unacknowledged changes with backoff, and stops when the app quits. Append-only logs resume from the last complete newline instead of being scanned again from the beginning. Quota snapshots are extracted during that same incremental pass and cached, avoiding a second scan of recent rollout tails.
 

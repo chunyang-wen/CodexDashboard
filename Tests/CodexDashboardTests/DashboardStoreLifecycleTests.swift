@@ -337,6 +337,68 @@ final class DashboardStoreLifecycleTests: XCTestCase {
         XCTAssertEqual(menuStore.subscription?.windows.first?.usedPercent, 25)
     }
 
+    func testConfiguredProviderFallsBackToStoredQuota() async throws {
+        let userHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let suiteName = "DashboardStoreLifecycleTests.ProviderFallback.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: userHome)
+        }
+
+        defaults.set(DashboardSubscriptionProvider.sub2API.rawValue, forKey: DashboardPreferences.subscriptionProviderKey)
+        let subscription = SubscriptionSnapshot(
+            planType: "fallback",
+            limitID: "fallback",
+            limitName: nil,
+            windows: [UsageQuotaWindow(usedPercent: 35, windowMinutes: 300, resetsAt: .now.addingTimeInterval(3600))],
+            credits: nil,
+            rateLimitReachedType: nil,
+            observedAt: .now
+        )
+        try await HistoricalStore(userHome: userHome).recordSubscription(subscription)
+
+        let dashboardStore = DashboardStore(userHome: userHome, defaults: defaults)
+        dashboardStore.activateDashboard()
+        try await waitUntil { !dashboardStore.isLoading && dashboardStore.subscription != nil }
+        XCTAssertEqual(dashboardStore.subscription?.planType, "fallback")
+
+        let menuStore = MenuBarStore(userHome: userHome, defaults: defaults)
+        menuStore.loadMenuBar()
+        try await waitUntil { !menuStore.isLoading && menuStore.subscription != nil }
+        XCTAssertEqual(menuStore.subscription?.planType, "fallback")
+    }
+
+    func testFailedProviderRefreshKeepsLastValidQuota() async throws {
+        let userHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let suiteName = "DashboardStoreLifecycleTests.ProviderRefreshFallback.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: userHome)
+        }
+
+        defaults.set(DashboardSubscriptionProvider.sub2API.rawValue, forKey: DashboardPreferences.subscriptionProviderKey)
+        let subscription = SubscriptionSnapshot(
+            planType: "live",
+            limitID: "live",
+            limitName: nil,
+            windows: [UsageQuotaWindow(usedPercent: 15, windowMinutes: 300, resetsAt: .now.addingTimeInterval(3600))],
+            credits: nil,
+            rateLimitReachedType: nil,
+            observedAt: .now
+        )
+        let menuStore = MenuBarStore(userHome: userHome, defaults: defaults)
+        menuStore.receiveMenuBarSubscription(subscription)
+        menuStore.loadMenuBar(includeLiveQuota: true)
+        try await waitUntil { !menuStore.isLoading }
+
+        XCTAssertEqual(menuStore.subscription?.planType, "live")
+        XCTAssertEqual(menuStore.subscription?.windows.first?.usedPercent, 15)
+    }
+
     func testMenuBarPopoverCanReleaseItsBoundedProjection() async throws {
         let userHome = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

@@ -1251,6 +1251,138 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(snapshot?.windows.map(\.usedPercent), [0, 0])
     }
 
+    func testSub2APIReaderParsesQuotaAndRateLimits() throws {
+        let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = Sub2APIReader.snapshot(
+            fromUsage: [
+                "mode": "quota_limited",
+                "isValid": true,
+                "quota": ["limit": 10, "used": 2, "remaining": 8, "unit": "USD"],
+                "remaining": 8,
+                "rate_limits": [
+                    [
+                        "window": "5h",
+                        "limit": 100,
+                        "used": 25,
+                        "reset_at": "2026-08-26T12:00:00Z"
+                    ]
+                ]
+            ],
+            observedAt: observedAt
+        )
+
+        XCTAssertEqual(snapshot?.planType, "API key quota")
+        XCTAssertEqual(snapshot?.credits?.balance, "8")
+        XCTAssertEqual(snapshot?.windows.map(\.windowMinutes), [300])
+        XCTAssertEqual(snapshot?.windows.first?.usedPercent, 25)
+        XCTAssertEqual(snapshot?.windows.first?.resetsAt, ISO8601DateFormatter().date(from: "2026-08-26T12:00:00Z"))
+    }
+
+    func testSub2APIReaderParsesUpstreamQuotaResponse() {
+        let snapshot = Sub2APIReader.snapshot(
+            fromQuota: [
+                "email": "hello@example.com",
+                "plan_type": "plus",
+                "rate_limit": [
+                    "primary_window": [
+                        "used_percent": 25,
+                        "limit_window_seconds": 18_000,
+                        "reset_at": 1_800_100_000
+                    ],
+                    "secondary_window": [
+                        "used_percent": 50,
+                        "limit_window_seconds": 604_800,
+                        "reset_at": 1_800_700_000
+                    ]
+                ]
+            ],
+            observedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        XCTAssertEqual(snapshot?.displayPlan, "Plus")
+        XCTAssertEqual(snapshot?.windows.map(\.windowMinutes), [300, 10_080])
+        XCTAssertEqual(snapshot?.windows.map(\.usedPercent), [25, 50])
+    }
+
+    func testSub2APIReaderParsesActiveUsageAsUsedPercent() throws {
+        let snapshot = Sub2APIReader.snapshot(
+            fromAdminUsage: [
+                "five_hour": [
+                    "utilization": 4,
+                    "resets_at": "2026-08-27T01:27:07+08:00"
+                ],
+                "seven_day": [
+                    "utilization": 7,
+                    "resets_at": "2026-09-02T04:46:53+08:00"
+                ]
+            ],
+            planType: "plus",
+            observedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        XCTAssertEqual(snapshot?.displayPlan, "Plus")
+        XCTAssertEqual(snapshot?.windows.map(\.windowMinutes), [300, 10_080])
+        XCTAssertEqual(snapshot?.windows.map(\.usedPercent), [4, 7])
+        XCTAssertEqual(snapshot?.windows.map(\.remainingPercent), [96, 93])
+    }
+
+    func testSub2APIReaderParsesBankedResetCreditsFromQuota() throws {
+        let snapshot = Sub2APIReader.bankedResetSnapshot(
+            fromQuota: [
+                "rate_limit_reset_credits": [
+                    "available_count": 1,
+                    "credits": [
+                        [
+                            "expires_at": "2026-09-21T00:08:01.511766Z"
+                        ]
+                    ]
+                ]
+            ],
+            observedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        XCTAssertEqual(snapshot?.availableCount, 1)
+        XCTAssertEqual(snapshot?.credits?.count, 1)
+        XCTAssertEqual(snapshot?.credits?.first?.status, "available")
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        XCTAssertEqual(
+            snapshot?.credits?.first?.expiresAt,
+            formatter.date(from: "2026-09-21T00:08:01.511766Z")
+        )
+    }
+
+    func testSub2APIReaderParsesSubscriptionWindowsAndRejectsInvalidUsage() {
+        let snapshot = Sub2APIReader.snapshot(
+            fromUsage: [
+                "mode": "unrestricted",
+                "isValid": true,
+                "planName": "Pro",
+                "remaining": 20,
+                "subscription": [
+                    "daily_usage_usd": 2,
+                    "daily_limit_usd": 10,
+                    "weekly_usage_usd": 4,
+                    "weekly_limit_usd": 20,
+                    "weekly_window_start": "2026-08-24T00:00:00Z"
+                ]
+            ],
+            observedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        XCTAssertEqual(snapshot?.displayPlan, "Pro")
+        XCTAssertEqual(snapshot?.windows.map(\.windowMinutes), [1_440, 10_080])
+        XCTAssertEqual(snapshot?.windows.map(\.usedPercent), [20, 20])
+        XCTAssertNil(Sub2APIReader.snapshot(fromUsage: ["isValid": false], observedAt: .now))
+
+        let unlimited = Sub2APIReader.snapshot(
+            fromUsage: ["mode": "unrestricted", "isValid": true, "planName": "Unlimited", "remaining": -1],
+            observedAt: .now
+        )
+        XCTAssertTrue(unlimited?.credits?.unlimited == true)
+        XCTAssertNil(unlimited?.credits?.balance)
+    }
+
     func testSubscriptionReaderLabelsCustomProviderQuotaAsAPI() {
         let snapshot = SubscriptionReader.snapshot(
             from: [

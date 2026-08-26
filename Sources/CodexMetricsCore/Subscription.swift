@@ -71,6 +71,7 @@ public struct UsageQuotaWindow: Identifiable, Codable, Hashable, Sendable {
         switch windowMinutes {
         case 300: return "5-hour quota"
         case 10_080: return "Weekly quota"
+        case 43_200: return "Monthly quota"
         default:
             if windowMinutes.isMultiple(of: 1_440) { return "\(windowMinutes / 1_440)-day quota" }
             if windowMinutes.isMultiple(of: 60) { return "\(windowMinutes / 60)-hour quota" }
@@ -337,7 +338,7 @@ public struct CLIProxyAPIConfiguration: Equatable, Sendable {
     }
 }
 
-public struct CLIProxyAPILiveSnapshot: Sendable {
+public struct ProviderLiveSnapshot: Sendable {
     public let subscription: SubscriptionSnapshot?
     public let account: CodexAccountSnapshot?
 
@@ -346,6 +347,8 @@ public struct CLIProxyAPILiveSnapshot: Sendable {
         self.account = account
     }
 }
+
+public typealias CLIProxyAPILiveSnapshot = ProviderLiveSnapshot
 
 public struct CLIProxyAPIValidationResult: Sendable {
     public let isValid: Bool
@@ -368,14 +371,14 @@ public enum CLIProxyAPIReader {
         await liveData(using: configuration)?.subscription
     }
 
-    public static func liveData(using configuration: CLIProxyAPIConfiguration) async -> CLIProxyAPILiveSnapshot? {
+    public static func liveData(using configuration: CLIProxyAPIConfiguration) async -> ProviderLiveSnapshot? {
         let managementKey = configuration.managementKey
         guard !managementKey.isEmpty else { return nil }
 
         do {
             let codexAuth = try await activeCodexAuth(using: configuration)
             let quota = try await proxyGET(quotaURL, auth: codexAuth, using: configuration)
-            return CLIProxyAPILiveSnapshot(
+            return ProviderLiveSnapshot(
                 subscription: SubscriptionReader.snapshot(fromUsage: quota, observedAt: .now),
                 account: account(from: codexAuth, usage: quota)
             )
@@ -510,6 +513,443 @@ public enum CLIProxyAPIReader {
             throw URLError(.badServerResponse)
         }
         return data
+    }
+}
+
+public struct Sub2APIConfiguration: Equatable, Sendable {
+    public let baseURL: URL
+    public let adminToken: String
+    public let accountID: Int64
+
+    public init(baseURL: URL, adminToken: String, accountID: Int64) {
+        self.baseURL = baseURL
+        self.adminToken = adminToken
+        self.accountID = accountID
+    }
+}
+
+public struct Sub2APIValidationResult: Sendable {
+    public let isValid: Bool
+    public let message: String
+
+    public init(isValid: Bool, message: String) {
+        self.isValid = isValid
+        self.message = message
+    }
+}
+
+public struct Sub2APIAdminAccount: Identifiable, Hashable, Sendable {
+    public let id: Int64
+    public let name: String
+    public let platform: String
+
+    public init(id: Int64, name: String, platform: String) {
+        self.id = id
+        self.name = name
+        self.platform = platform
+    }
+}
+
+public struct Sub2APISignInResult: Sendable {
+    public let isValid: Bool
+    public let message: String
+    public let accessToken: String?
+    public let accounts: [Sub2APIAdminAccount]
+
+    public init(
+        isValid: Bool,
+        message: String,
+        accessToken: String? = nil,
+        accounts: [Sub2APIAdminAccount] = []
+    ) {
+        self.isValid = isValid
+        self.message = message
+        self.accessToken = accessToken
+        self.accounts = accounts
+    }
+}
+
+public enum Sub2APIReader {
+    public static func live(using configuration: Sub2APIConfiguration) async -> SubscriptionSnapshot? {
+        await liveData(using: configuration)?.subscription
+    }
+
+    public static func liveData(using configuration: Sub2APIConfiguration) async -> ProviderLiveSnapshot? {
+        guard !configuration.adminToken.isEmpty, configuration.accountID > 0 else { return nil }
+        let quota = try? await quota(using: configuration)
+        let usage = try? await usage(using: configuration)
+        let observedAt = Date.now
+        let subscription = usage.flatMap {
+            snapshot(fromAdminUsage: $0, planType: quota?["plan_type"] as? String, observedAt: observedAt)
+        } ?? quota.flatMap { snapshot(fromQuota: $0, observedAt: observedAt) }
+        guard subscription != nil || quota != nil else { return nil }
+        return ProviderLiveSnapshot(
+            subscription: subscription,
+            account: quota.flatMap { account(from: $0) }
+        )
+    }
+
+    public static func latestBankedReset(using configuration: Sub2APIConfiguration) async -> BankedResetSnapshot? {
+        guard !configuration.adminToken.isEmpty, configuration.accountID > 0 else { return nil }
+        guard let quota = try? await quota(using: configuration) else { return nil }
+        return bankedResetSnapshot(fromQuota: quota, observedAt: .now)
+    }
+
+    public static func validate(using configuration: Sub2APIConfiguration) async -> Sub2APIValidationResult {
+        guard !configuration.adminToken.isEmpty else {
+            return Sub2APIValidationResult(isValid: false, message: "Enter the sub2api admin access token.")
+        }
+        guard configuration.accountID > 0 else {
+            return Sub2APIValidationResult(isValid: false, message: "Enter a valid upstream account ID.")
+        }
+        do {
+            let quota = try await quota(using: configuration)
+            let plan = (quota["plan_type"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                ?? (quota["planName"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            let suffix = plan.map { " (\($0))" } ?? ""
+            let email = (quota["email"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            let identity = email.map { " (\($0))" } ?? suffix
+            return Sub2APIValidationResult(isValid: true, message: "Connected successfully\(identity).")
+        } catch {
+            return Sub2APIValidationResult(
+                isValid: false,
+                message: "Validation failed. Check the endpoint, admin access token, and upstream account ID."
+            )
+        }
+    }
+
+    public static func signIn(
+        email: String,
+        password: String,
+        baseURL: URL
+    ) async -> Sub2APISignInResult {
+        guard !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !password.isEmpty else {
+            return Sub2APISignInResult(isValid: false, message: "Enter the admin email and password.")
+        }
+        do {
+            let login = try await login(email: email, password: password, baseURL: baseURL)
+            if (login["requires_2fa"] as? Bool) == true {
+                return Sub2APISignInResult(isValid: false, message: "This admin account requires two-factor authentication.")
+            }
+            guard let accessToken = login["access_token"] as? String, !accessToken.isEmpty else {
+                throw URLError(.cannotParseResponse)
+            }
+            let accounts = try await fetchAccounts(baseURL: baseURL, adminToken: accessToken)
+            return Sub2APISignInResult(
+                isValid: true,
+                message: accounts.isEmpty ? "Signed in, but no upstream accounts were found." : "Signed in successfully. Select an upstream account.",
+                accessToken: accessToken,
+                accounts: accounts
+            )
+        } catch {
+            return Sub2APISignInResult(
+                isValid: false,
+                message: "Sign-in failed. Check the endpoint, admin email, and password."
+            )
+        }
+    }
+
+    public static func accounts(baseURL: URL, adminToken: String) async -> [Sub2APIAdminAccount] {
+        (try? await fetchAccounts(baseURL: baseURL, adminToken: adminToken)) ?? []
+    }
+
+    public static func snapshot(fromQuota value: [String: Any], observedAt: Date) -> SubscriptionSnapshot? {
+        let quota = value["quota"] as? [String: Any] ?? value
+        return SubscriptionReader.snapshot(fromUsage: quota, observedAt: observedAt)
+    }
+
+    public static func snapshot(
+        fromAdminUsage value: [String: Any],
+        planType: String? = nil,
+        observedAt: Date
+    ) -> SubscriptionSnapshot? {
+        let windows: [(key: String, minutes: Int)] = [
+            ("five_hour", 300),
+            ("seven_day", 10_080)
+        ]
+        let parsedWindows = windows.compactMap { definition -> UsageQuotaWindow? in
+            guard let rawWindow = value[definition.key] as? [String: Any],
+                  let utilization = number(rawWindow["utilization"]),
+                  let reset = date(rawWindow["resets_at"]) else { return nil }
+            return UsageQuotaWindow(
+                usedPercent: min(100, max(0, utilization)),
+                windowMinutes: definition.minutes,
+                resetsAt: reset
+            )
+        }
+        guard !parsedWindows.isEmpty else { return nil }
+        return SubscriptionSnapshot(
+            planType: planType ?? "Sub2API",
+            limitID: "sub2api",
+            limitName: nil,
+            windows: parsedWindows.sorted { $0.windowMinutes < $1.windowMinutes },
+            credits: nil,
+            rateLimitReachedType: nil,
+            observedAt: observedAt
+        )
+    }
+
+    public static func bankedResetSnapshot(
+        fromQuota value: [String: Any],
+        observedAt: Date
+    ) -> BankedResetSnapshot? {
+        let quota = value["quota"] as? [String: Any] ?? value
+        guard let resetCredits = quota["rate_limit_reset_credits"] as? [String: Any],
+              let availableCount = integer(resetCredits["available_count"] ?? resetCredits["availableCount"]),
+              availableCount >= 0 else { return nil }
+
+        let credits = (resetCredits["credits"] as? [[String: Any]])?.enumerated().compactMap { index, value in
+            BankedResetCredit(
+                id: value["id"] as? String ?? "sub2api-reset-credit-\(index)",
+                status: value["status"] as? String ?? "available",
+                grantedAt: date(value["granted_at"] ?? value["grantedAt"]) ?? observedAt,
+                expiresAt: date(value["expires_at"] ?? value["expiresAt"]),
+                title: value["title"] as? String,
+                description: value["description"] as? String
+            )
+        }
+        return BankedResetSnapshot(
+            availableCount: availableCount,
+            credits: resetCredits["credits"] == nil ? nil : credits,
+            observedAt: observedAt
+        )
+    }
+
+    private static func account(from quota: [String: Any]) -> CodexAccountSnapshot? {
+        guard let email = quota["email"] as? String, !email.isEmpty else { return nil }
+        return CodexAccountSnapshot(
+            email: email,
+            name: nil,
+            planType: quota["plan_type"] as? String
+        )
+    }
+
+    public static func snapshot(fromUsage value: [String: Any], observedAt: Date) -> SubscriptionSnapshot? {
+        guard (value["isValid"] as? Bool) != false else { return nil }
+
+        var windows = rateLimitWindows(from: value["rate_limits"] as? [[String: Any]])
+        let planName = (value["planName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let mode = (value["mode"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if mode == "unrestricted", let subscription = value["subscription"] as? [String: Any] {
+            windows.append(contentsOf: subscriptionWindows(from: subscription, observedAt: observedAt))
+        }
+
+        let quota = value["quota"] as? [String: Any]
+        let balance = number(value["remaining"] ?? value["balance"] ?? quota?["remaining"])
+        let credits: SubscriptionCredits? = balance.map {
+            SubscriptionCredits(
+                hasCredits: $0 > 0,
+                unlimited: $0 < 0,
+                balance: $0 < 0 ? nil : decimalString($0)
+            )
+        }
+        guard !windows.isEmpty || credits != nil || planName?.isEmpty == false else { return nil }
+
+        let planType: String
+        switch mode {
+        case "quota_limited": planType = planName ?? "API key quota"
+        case "unrestricted": planType = planName ?? "Sub2API"
+        default: planType = planName ?? "Sub2API"
+        }
+
+        let limitName = planName?.isEmpty == false ? planName : nil
+        return SubscriptionSnapshot(
+            planType: planType,
+            limitID: "sub2api",
+            limitName: limitName,
+            windows: windows.sorted { $0.windowMinutes < $1.windowMinutes },
+            credits: credits,
+            rateLimitReachedType: nil,
+            observedAt: observedAt
+        )
+    }
+
+    private static func quota(using configuration: Sub2APIConfiguration) async throws -> [String: Any] {
+        var request = URLRequest(url: quotaURL(for: configuration.baseURL, accountID: configuration.accountID))
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(configuration.adminToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Codex Dashboard", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let response = response as? HTTPURLResponse,
+              (200..<300).contains(response.statusCode),
+              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw URLError(.badServerResponse)
+        }
+        if let code = root["code"] as? NSNumber, code.intValue != 0 {
+            throw URLError(.badServerResponse)
+        }
+        return root["data"] as? [String: Any] ?? root
+    }
+
+    private static func usage(using configuration: Sub2APIConfiguration) async throws -> [String: Any] {
+        var components = URLComponents(url: usageURL(for: configuration.baseURL, accountID: configuration.accountID), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "source", value: "active"),
+            URLQueryItem(name: "force", value: "true")
+        ]
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(configuration.adminToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Codex Dashboard", forHTTPHeaderField: "User-Agent")
+        return try await responseObject(for: request)
+    }
+
+    private static func login(email: String, password: String, baseURL: URL) async throws -> [String: Any] {
+        var request = URLRequest(url: apiURL(for: baseURL, path: ["auth", "login"]))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Codex Dashboard", forHTTPHeaderField: "User-Agent")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "email": email.trimmingCharacters(in: .whitespacesAndNewlines),
+            "password": password
+        ])
+        return try await responseObject(for: request)
+    }
+
+    private static func fetchAccounts(baseURL: URL, adminToken: String) async throws -> [Sub2APIAdminAccount] {
+        var request = URLRequest(url: apiURL(for: baseURL, path: ["admin", "accounts"]))
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(adminToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Codex Dashboard", forHTTPHeaderField: "User-Agent")
+        let object = try await responseObject(for: request)
+        let page = object["items"] as? [[String: Any]] ?? (object["data"] as? [String: Any])?["items"] as? [[String: Any]] ?? []
+        return page.compactMap { value in
+            guard let rawID = number(value["id"]), rawID > 0 else { return nil }
+            let id = Int64(rawID)
+            let platform = (value["platform"] as? String) ?? ""
+            let normalizedPlatform = platform.lowercased()
+            guard normalizedPlatform.contains("openai") || normalizedPlatform.contains("codex") else { return nil }
+            let name = (value["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "OpenAI account"
+            return Sub2APIAdminAccount(id: id, name: name, platform: platform)
+        }
+    }
+
+    private static func responseObject(for request: URLRequest) async throws -> [String: Any] {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let response = response as? HTTPURLResponse,
+              (200..<300).contains(response.statusCode),
+              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw URLError(.badServerResponse)
+        }
+        if let code = root["code"] as? NSNumber, code.intValue != 0 {
+            throw URLError(.badServerResponse)
+        }
+        return root["data"] as? [String: Any] ?? root
+    }
+
+    private static func apiURL(for baseURL: URL, path: [String]) -> URL {
+        let normalizedPath = baseURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var url: URL
+        if normalizedPath == "api/v1" || normalizedPath.hasSuffix("/api/v1") {
+            url = baseURL
+        } else if normalizedPath == "api" || normalizedPath.hasSuffix("/api") {
+            url = baseURL.appendingPathComponent("v1")
+        } else {
+            url = baseURL.appendingPathComponent("api").appendingPathComponent("v1")
+        }
+        for component in path {
+            url = url.appendingPathComponent(component)
+        }
+        return url
+    }
+
+    private static func quotaURL(for baseURL: URL, accountID: Int64) -> URL {
+        apiURL(for: baseURL, path: ["admin", "openai", "accounts", String(accountID), "quota"])
+    }
+
+    private static func usageURL(for baseURL: URL, accountID: Int64) -> URL {
+        apiURL(for: baseURL, path: ["admin", "accounts", String(accountID), "usage"])
+    }
+
+    private static func rateLimitWindows(from values: [[String: Any]]?) -> [UsageQuotaWindow] {
+        (values ?? []).compactMap { value in
+            guard let limit = number(value["limit"]), limit > 0,
+                  let used = number(value["used"]),
+                  let reset = date(value["reset_at"]) else { return nil }
+            guard let minutes = windowMinutes(value["window"] as? String) else { return nil }
+            return UsageQuotaWindow(
+                usedPercent: min(100, max(0, used / limit * 100)),
+                windowMinutes: minutes,
+                resetsAt: reset
+            )
+        }
+    }
+
+    private static func subscriptionWindows(from value: [String: Any], observedAt: Date) -> [UsageQuotaWindow] {
+        let definitions: [(usage: String, limit: String, minutes: Int)] = [
+            ("daily_usage_usd", "daily_limit_usd", 1_440),
+            ("weekly_usage_usd", "weekly_limit_usd", 10_080),
+            ("monthly_usage_usd", "monthly_limit_usd", 43_200)
+        ]
+        return definitions.compactMap { definition in
+            guard let used = number(value[definition.usage]),
+                  let limit = number(value[definition.limit]), limit > 0,
+                  let reset = subscriptionReset(for: definition.minutes, value: value, observedAt: observedAt) else {
+                return nil
+            }
+            return UsageQuotaWindow(
+                usedPercent: min(100, max(0, used / limit * 100)),
+                windowMinutes: definition.minutes,
+                resetsAt: reset
+            )
+        }
+    }
+
+    private static func subscriptionReset(for minutes: Int, value: [String: Any], observedAt: Date) -> Date? {
+        if minutes == 10_080, let start = date(value["weekly_window_start"]) {
+            return start.addingTimeInterval(7 * 86_400)
+        }
+        var calendar = Calendar.current
+        calendar.timeZone = .current
+        switch minutes {
+        case 1_440:
+            return calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: observedAt))
+        case 43_200:
+            let start = calendar.date(from: calendar.dateComponents([.year, .month], from: observedAt))!
+            return calendar.date(byAdding: .month, value: 1, to: start)
+        default:
+            return nil
+        }
+    }
+
+    private static func windowMinutes(_ value: String?) -> Int? {
+        switch value?.lowercased() {
+        case "5h": return 300
+        case "1d": return 1_440
+        case "7d": return 10_080
+        default: return nil
+        }
+    }
+
+    private static func date(_ value: Any?) -> Date? {
+        if let number = number(value) { return Date(timeIntervalSince1970: number) }
+        guard let string = value as? String else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: string) ?? ISO8601DateFormatter().date(from: string)
+    }
+
+    private static func number(_ value: Any?) -> Double? {
+        if let number = value as? NSNumber { return number.doubleValue }
+        if let string = value as? String { return Double(string) }
+        return nil
+    }
+
+    private static func integer(_ value: Any?) -> Int? {
+        number(value).map(Int.init)
+    }
+
+    private static func decimalString(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(0...8)))
     }
 }
 

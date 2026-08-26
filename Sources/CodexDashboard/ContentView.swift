@@ -2497,7 +2497,7 @@ private struct SubscriptionUsageView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            SectionHeader(title: "Subscription usage", subtitle: "Latest quota snapshot reported by Codex; no token-to-quota conversion is inferred locally.", definition: .subscriptionQuota)
+            SectionHeader(title: "Subscription usage", subtitle: "Latest quota snapshot reported by the selected provider; no token-to-quota conversion is inferred locally.", definition: .subscriptionQuota)
             if let snapshot {
                 HStack(spacing: 12) {
                     MetricCard(

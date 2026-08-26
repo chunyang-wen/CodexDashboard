@@ -282,6 +282,7 @@ final class DashboardStore: ObservableObject {
     private var indexedSessionsByID: [String: IndexedSessionMetrics] = [:]
     @Published private(set) var dashboardDataIsResident = false
     private(set) var subscriptionProvider: DashboardSubscriptionProvider
+    private var hasLiveProviderQuota = false
 
     init(
         userHome: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -498,21 +499,15 @@ final class DashboardStore: ObservableObject {
             let codexHome = self.codexHome
             let provider = self.subscriptionProvider
             let cliProxyAPIConfiguration = DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults)
+            let sub2APIConfiguration = DashboardPreferences.sub2APIConfiguration(defaults: defaults)
             // The status item should reflect quota immediately; do not make
             // it wait for the much heavier session merge and index load.
-            let storedSubscription: SubscriptionSnapshot?
-            if provider == .default {
-                do {
-                    let candidate = try await historicalStore.subscriptionSnapshot()
-                    storedSubscription = candidate?.isUsable == true ? candidate : nil
-                } catch {
-                    storedSubscription = nil
-                }
-            } else {
-                storedSubscription = nil
+            let storedSubscription = try? await historicalStore.subscriptionSnapshot()
+                .flatMap { $0.isUsable ? $0 : nil }
+            if !hasLiveProviderQuota {
+                _ = acceptSubscription(storedSubscription)
             }
-            _ = acceptSubscription(storedSubscription)
-            let liveData: CLIProxyAPILiveSnapshot? = await Task.detached(priority: .utility) {
+            let liveData: ProviderLiveSnapshot? = await Task.detached(priority: .utility) {
                 switch provider {
                 case .default:
                     return CLIProxyAPILiveSnapshot(
@@ -522,14 +517,18 @@ final class DashboardStore: ObservableObject {
                 case .cliProxyAPI:
                     guard let cliProxyAPIConfiguration else { return nil }
                     return await CLIProxyAPIReader.liveData(using: cliProxyAPIConfiguration)
+                case .sub2API:
+                    guard let sub2APIConfiguration else { return nil }
+                    return await Sub2APIReader.liveData(using: sub2APIConfiguration)
                 }
             }.value
             guard !Task.isCancelled, loadID == requestID else { return }
-            if provider == .cliProxyAPI {
+            if provider != .default {
                 account = liveData?.account
             }
             let liveSubscription = liveData?.subscription
             if let liveSubscription, liveSubscription.isUsable {
+                hasLiveProviderQuota = true
                 if provider == .default {
                     try? await historicalStore.recordSubscription(liveSubscription)
                 }
@@ -553,19 +552,17 @@ final class DashboardStore: ObservableObject {
             isLoading = false
             startEnrichmentForAvailableHistory()
             refreshPricing()
-            let cachedSubscription = provider == .default
-                ? ([
-                    storedSubscription,
-                    sessions.compactMap(\.subscription).filter(\.isUsable).max { $0.observedAt < $1.observedAt }
-                ].compactMap { $0 }).max { $0.observedAt < $1.observedAt }
-                : nil
-            if acceptSubscription(cachedSubscription) {
+            let cachedSubscription = ([
+                storedSubscription,
+                sessions.compactMap(\.subscription).filter(\.isUsable).max { $0.observedAt < $1.observedAt }
+            ].compactMap { $0 }).max { $0.observedAt < $1.observedAt }
+            if !hasLiveProviderQuota, acceptSubscription(cachedSubscription) {
                 scheduleAnalyticsRefresh()
             }
             // Older history does not contain parser-extracted quota snapshots.
             // Keep the bounded tail scan as a one-time compatibility fallback;
             // once a snapshot is persisted, future loads remain entirely in-memory.
-            let latestSubscription = if provider == .default, cachedSubscription == nil {
+            let latestSubscription = if cachedSubscription == nil {
                 await Task.detached(priority: .utility) {
                     SubscriptionReader.latest(from: indexed)
                 }.value
@@ -573,10 +570,10 @@ final class DashboardStore: ObservableObject {
                 cachedSubscription
             }
             guard !Task.isCancelled, loadID == requestID else { return }
-            if acceptSubscription(latestSubscription) {
+            if !hasLiveProviderQuota, acceptSubscription(latestSubscription) {
                 scheduleAnalyticsRefresh()
             }
-            if provider == .default, let latestSubscription {
+            if let latestSubscription {
                 try? await historicalStore.recordSubscription(latestSubscription)
             }
             if provider == .default {
@@ -637,7 +634,9 @@ final class DashboardStore: ObservableObject {
                     }
                     sessions = updated
                     let latestSubscription = pending.compactMap(\.session.subscription).max { $0.observedAt < $1.observedAt }
-                    if acceptSubscription(latestSubscription), let latestSubscription {
+                    if !hasLiveProviderQuota,
+                       acceptSubscription(latestSubscription),
+                       let latestSubscription {
                         try? await historicalStore.recordSubscription(latestSubscription)
                     }
                     scheduleAnalyticsRefresh()
@@ -663,7 +662,9 @@ final class DashboardStore: ObservableObject {
                 }
                 sessions = updated
                 let latestSubscription = pending.compactMap(\.session.subscription).max { $0.observedAt < $1.observedAt }
-                if acceptSubscription(latestSubscription), let latestSubscription {
+                if !hasLiveProviderQuota,
+                   acceptSubscription(latestSubscription),
+                   let latestSubscription {
                     try? await historicalStore.recordSubscription(latestSubscription)
                 }
                 scheduleAnalyticsRefresh()
@@ -706,6 +707,7 @@ final class DashboardStore: ObservableObject {
         if providerChanged {
             subscriptionProvider = newSubscriptionProvider
             subscription = nil
+            hasLiveProviderQuota = false
             account = nil
             bankedResetTask?.cancel()
             bankedResetTask = nil
@@ -732,7 +734,7 @@ final class DashboardStore: ObservableObject {
             weekStartChanged = true
         }
 
-        if pathChanged || providerChanged || subscriptionProvider == .cliProxyAPI {
+        if pathChanged || providerChanged || subscriptionProvider != .default {
             load()
         }
         if weekStartChanged, !pathChanged {
@@ -888,6 +890,7 @@ final class DashboardStore: ObservableObject {
     private func refreshBankedResets(from codexHome: URL) {
         let provider = subscriptionProvider
         let cliProxyAPIConfiguration = DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults)
+        let sub2APIConfiguration = DashboardPreferences.sub2APIConfiguration(defaults: defaults)
         bankedResetTask?.cancel()
         bankedResetTask = Task { [weak self] in
             let snapshot = await Task.detached(priority: .utility) {
@@ -897,6 +900,9 @@ final class DashboardStore: ObservableObject {
                 case .cliProxyAPI:
                     guard let cliProxyAPIConfiguration else { return nil }
                     return await CLIProxyAPIReader.latestBankedReset(using: cliProxyAPIConfiguration)
+                case .sub2API:
+                    guard let sub2APIConfiguration else { return nil }
+                    return await Sub2APIReader.latestBankedReset(using: sub2APIConfiguration)
                 }
             }.value
             guard !Task.isCancelled, let self else { return }
@@ -930,6 +936,7 @@ final class DashboardStore: ObservableObject {
         metricsIndex = .empty
         indexedSessionsByID = [:]
         subscription = nil
+        hasLiveProviderQuota = false
         account = nil
         bankedResetTask?.cancel()
         bankedResetTask = nil

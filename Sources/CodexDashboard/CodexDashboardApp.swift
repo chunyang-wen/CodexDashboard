@@ -815,7 +815,7 @@ private struct MenuBarQuotaIcon: View, Equatable {
     }
 }
 
-private enum CLIProxyAPIValidationState: Equatable {
+private enum SubscriptionProviderValidationState: Equatable {
     case idle
     case validating
     case valid(String)
@@ -831,7 +831,14 @@ private struct DashboardSettingsView: View {
     @State private var selectedSubscriptionProviderRaw = DashboardSubscriptionProvider.default.rawValue
     @State private var cliProxyAPIEndpoint = "http://127.0.0.1:8317"
     @State private var cliProxyAPIManagementKey = ""
-    @State private var cliProxyAPIValidationState: CLIProxyAPIValidationState = .idle
+    @State private var cliProxyAPIValidationState: SubscriptionProviderValidationState = .idle
+    @State private var sub2APIEndpoint = "http://127.0.0.1:8080"
+    @State private var sub2APIAdminEmail = ""
+    @State private var sub2APIAdminPassword = ""
+    @State private var sub2APIAdminToken = ""
+    @State private var sub2APIAccounts: [Sub2APIAdminAccount] = []
+    @State private var sub2APIAccountID = ""
+    @State private var sub2APIValidationState: SubscriptionProviderValidationState = .idle
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchAtLoginError: String?
     private let settingsControlWidth: CGFloat = 190
@@ -853,7 +860,7 @@ private struct DashboardSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    TextField("http://127.0.0.1:8317", text: $cliProxyAPIEndpoint)
+                    TextField("Endpoint", text: $cliProxyAPIEndpoint)
                         .textContentType(.URL)
 
                     SecureField("Management key", text: $cliProxyAPIManagementKey)
@@ -883,6 +890,67 @@ private struct DashboardSettingsView: View {
                         }
                     }
                     Text("The management key is stored in macOS Keychain, not in preferences or logs. It is not your OAuth token.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else if selectedSubscriptionProvider == .sub2API {
+                    Text("Sub2API routes user API keys through backend-managed subscription accounts. CodexDashboard reads the selected upstream account's quota through the admin API.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    TextField("Endpoint", text: $sub2APIEndpoint)
+                        .textContentType(.URL)
+
+                    TextField("Admin email", text: $sub2APIAdminEmail)
+                        .textContentType(.username)
+
+                    SecureField("Admin password", text: $sub2APIAdminPassword)
+                        .textContentType(.password)
+
+                    if sub2APIAccounts.isEmpty {
+                        Text("Sign in to load OpenAI/Codex upstream accounts.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Picker("Upstream account", selection: $sub2APIAccountID) {
+                            ForEach(sub2APIAccounts) { account in
+                                Text("\(account.name) (\(account.id))")
+                                    .tag(String(account.id))
+                            }
+                        }
+                    }
+
+                    HStack {
+                        Button {
+                            signInToSub2API()
+                        } label: {
+                            Text(sub2APIValidationState == .validating ? "Signing in…" : "Sign in")
+                        }
+                        .disabled(sub2APIValidationState == .validating)
+
+                        Button {
+                            saveSub2APIConfiguration()
+                        } label: {
+                            Text("Save sub2api")
+                        }
+                        .disabled(sub2APIValidationState == .validating || sub2APIAccounts.isEmpty)
+
+                        switch sub2APIValidationState {
+                        case .idle:
+                            EmptyView()
+                        case .validating:
+                            ProgressView()
+                                .controlSize(.small)
+                        case .valid(let message):
+                            Label(message, systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                                .font(.caption)
+                        case .invalid(let message):
+                            Label(message, systemImage: "xmark.circle.fill")
+                                .foregroundStyle(.red)
+                                .font(.caption)
+                        }
+                    }
+                    Text("Sign-in uses the password only for authentication. The returned admin access token is stored in macOS Keychain; the endpoint and selected account are stored in preferences.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
@@ -1007,6 +1075,18 @@ private struct DashboardSettingsView: View {
                 forKey: DashboardPreferences.cliProxyAPIEndpointKey
             ) ?? cliProxyAPIEndpoint
             cliProxyAPIManagementKey = DashboardKeychain.readManagementKey() ?? ""
+            sub2APIEndpoint = DashboardPreferences.sharedDefaults().string(
+                forKey: DashboardPreferences.sub2APIEndpointKey
+            ) ?? sub2APIEndpoint
+            sub2APIAdminToken = DashboardKeychain.readSub2APIAdminToken() ?? ""
+            sub2APIAccountID = DashboardPreferences.sharedDefaults().string(
+                forKey: DashboardPreferences.sub2APIAccountIDKey
+            ) ?? ""
+            if let url = URL(string: sub2APIEndpoint), !sub2APIAdminToken.isEmpty {
+                Task {
+                    sub2APIAccounts = await Sub2APIReader.accounts(baseURL: url, adminToken: sub2APIAdminToken)
+                }
+            }
         }
     }
 
@@ -1030,6 +1110,8 @@ private struct DashboardSettingsView: View {
             "CodexDashboard reads local session, account, and quota metadata from this folder. Credentials never leave your Mac."
         case .cliProxyAPI:
             "CodexDashboard still reads local session metrics from this folder. Quota and account credentials are managed by CLIProxyAPI."
+        case .sub2API:
+            "CodexDashboard still reads local session metrics from this folder. Quota is read from Wei-Shaw/sub2api."
         }
     }
 
@@ -1059,6 +1141,7 @@ private struct DashboardSettingsView: View {
     private func selectSubscriptionProvider(_ rawValue: String) {
         let provider = DashboardSubscriptionProvider(rawValue: rawValue) ?? .default
         cliProxyAPIValidationState = .idle
+        sub2APIValidationState = .idle
         guard provider == .default else { return }
         subscriptionProviderRaw = provider.rawValue
         store.updateSubscriptionProvider(provider)
@@ -1102,6 +1185,87 @@ private struct DashboardSettingsView: View {
                 store.updateSubscriptionProvider(.cliProxyAPI)
             }
             cliProxyAPIValidationState = .valid(result.message)
+        }
+    }
+
+    private func saveSub2APIConfiguration() {
+        let endpoint = sub2APIEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: endpoint),
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              url.host != nil else {
+            sub2APIValidationState = .invalid("Enter a valid HTTP or HTTPS service URL.")
+            return
+        }
+        let adminToken = sub2APIAdminToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !adminToken.isEmpty else {
+            sub2APIValidationState = .invalid("Enter the sub2api admin access token.")
+            return
+        }
+        let accountID = sub2APIAccountID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let accountID = Int64(accountID), accountID > 0 else {
+            sub2APIValidationState = .invalid("Enter a valid upstream account ID.")
+            return
+        }
+        sub2APIValidationState = .validating
+        let configuration = Sub2APIConfiguration(baseURL: url, adminToken: adminToken, accountID: accountID)
+        Task {
+            let result = await Sub2APIReader.validate(using: configuration)
+            guard result.isValid else {
+                sub2APIValidationState = .invalid(result.message)
+                return
+            }
+            guard DashboardKeychain.saveSub2APIAdminToken(adminToken) else {
+                sub2APIValidationState = .invalid("Could not save the admin access token to Keychain.")
+                return
+            }
+            DashboardPreferences.sharedDefaults().set(
+                url.absoluteString,
+                forKey: DashboardPreferences.sub2APIEndpointKey
+            )
+            DashboardPreferences.sharedDefaults().set(
+                String(accountID),
+                forKey: DashboardPreferences.sub2APIAccountIDKey
+            )
+            sub2APIEndpoint = url.absoluteString
+            subscriptionProviderRaw = DashboardSubscriptionProvider.sub2API.rawValue
+            selectedSubscriptionProviderRaw = subscriptionProviderRaw
+            if store.subscriptionProvider == .sub2API {
+                store.refreshSubscriptionProvider()
+            } else {
+                store.updateSubscriptionProvider(.sub2API)
+            }
+            sub2APIValidationState = .valid(result.message)
+        }
+    }
+
+    private func signInToSub2API() {
+        let endpoint = sub2APIEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: endpoint),
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              url.host != nil else {
+            sub2APIValidationState = .invalid("Enter a valid HTTP or HTTPS service URL.")
+            return
+        }
+        let email = sub2APIAdminEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !email.isEmpty, !sub2APIAdminPassword.isEmpty else {
+            sub2APIValidationState = .invalid("Enter the admin email and password.")
+            return
+        }
+        sub2APIValidationState = .validating
+        let password = sub2APIAdminPassword
+        Task {
+            let result = await Sub2APIReader.signIn(email: email, password: password, baseURL: url)
+            guard result.isValid, let accessToken = result.accessToken else {
+                sub2APIValidationState = .invalid(result.message)
+                return
+            }
+            sub2APIAdminToken = accessToken
+            sub2APIAccounts = result.accounts
+            if !result.accounts.contains(where: { String($0.id) == sub2APIAccountID }) {
+                sub2APIAccountID = result.accounts.first.map { String($0.id) } ?? ""
+            }
+            sub2APIAdminPassword = ""
+            sub2APIValidationState = .valid(result.message)
         }
     }
 
