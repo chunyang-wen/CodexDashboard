@@ -631,8 +631,8 @@ enum MenuBarQuotaIconRenderer {
         iconInk: NSColor
     ) {
         if let primaryWindow, let secondaryWindow {
-            drawTwoRowsValue(for: primaryWindow, centerY: 13, alertRemainingPercent: alertMarkers.primary, iconInk: iconInk)
-            drawTwoRowsValue(for: secondaryWindow, centerY: 5, alertRemainingPercent: alertMarkers.secondary, iconInk: iconInk)
+            drawTwoRowsValue(for: primaryWindow, centerY: 13.5, alertRemainingPercent: alertMarkers.primary, iconInk: iconInk)
+            drawTwoRowsValue(for: secondaryWindow, centerY: 4.5, alertRemainingPercent: alertMarkers.secondary, iconInk: iconInk)
         } else if let window = primaryWindow ?? secondaryWindow {
             drawTwoRowsValue(
                 for: window,
@@ -659,7 +659,7 @@ enum MenuBarQuotaIconRenderer {
     }
 
     private static func drawTwoRowsText(_ value: String, centerY: CGFloat, iconInk: NSColor) {
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 7, weight: .medium)
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .medium)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: iconInk
@@ -822,6 +822,7 @@ private struct DashboardSettingsView: View {
     @AppStorage(DashboardPreferences.weekStartsMondayKey, store: DashboardPreferences.sharedDefaults()) private var weekStartsMonday = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchAtLoginError: String?
+    private let settingsControlWidth: CGFloat = 190
 
     var body: some View {
         Form {
@@ -836,7 +837,9 @@ private struct DashboardSettingsView: View {
                         .foregroundStyle(.red)
                 }
                 Toggle("Show menu bar icon", isOn: $showMenuBarIcon)
-                LabeledContent("Quota icon") {
+                HStack {
+                    Text("Quota icon")
+                    Spacer()
                     Picker("Quota icon", selection: $menuBarQuotaIconStyle) {
                         ForEach(MenuBarQuotaIconStyle.allCases) { style in
                             HStack(spacing: 8) {
@@ -851,10 +854,13 @@ private struct DashboardSettingsView: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 190)
+                    .frame(width: settingsControlWidth, alignment: .trailing)
                 }
                 .disabled(!showMenuBarIcon)
-                LabeledContent("Refresh metrics") {
+                .frame(maxWidth: .infinity)
+                HStack {
+                    Text("Refresh metrics")
+                    Spacer()
                     Picker("Refresh metrics", selection: refreshBinding) {
                         Text("Manually").tag(TimeInterval(0))
                         Text("Every 15 seconds").tag(TimeInterval(15))
@@ -862,9 +868,12 @@ private struct DashboardSettingsView: View {
                         Text("Every 5 minutes").tag(TimeInterval(300))
                     }
                     .labelsHidden()
-                    .frame(width: 170)
+                    .frame(width: settingsControlWidth, alignment: .trailing)
                 }
-                LabeledContent("First day of week") {
+                .frame(maxWidth: .infinity)
+                HStack {
+                    Text("First day of week")
+                    Spacer()
                     Picker("First day of week", selection: $weekStartsMonday) {
                         Text("Monday").tag(true)
                         Text("Sunday").tag(false)
@@ -873,8 +882,9 @@ private struct DashboardSettingsView: View {
                         store.updateWeekStartsMonday(weekStartsMonday)
                     }
                     .labelsHidden()
-                    .frame(width: 170)
+                    .frame(width: settingsControlWidth, alignment: .trailing)
                 }
+                .frame(maxWidth: .infinity)
             }
 
             Section("Codex data") {
