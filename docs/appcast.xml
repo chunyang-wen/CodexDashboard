@@ -4,6 +4,13 @@
         <title>CodexDashboard</title>
         <item>
             <title>0.1.13</title>
+            <description sparkle:format="html"><![CDATA[
+                <h3>What's new in 0.1.13</h3>
+                <ul>
+                    <li>Added subscription quota support for CLIProxyAPI and Wei-Shaw/sub2api, including provider settings and secure credential storage.</li>
+                    <li>Added a two-row menu-bar quota icon option and refined quota marker alignment and settings controls.</li>
+                </ul>
+            ]]></description>
             <pubDate>Wed, 26 Aug 2026 21:37:48 +0800</pubDate>
             <sparkle:version>20260826213306</sparkle:version>
             <sparkle:shortVersionString>0.1.13</sparkle:shortVersionString>
