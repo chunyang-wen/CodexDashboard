@@ -247,7 +247,7 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
 
         switch command {
         case "focus": focusDashboardWindow()
-        case "refreshMetrics": dashboardStore.load()
+        case "refreshMetrics": dashboardStore.refreshPersistedMetrics()
         case "rebuildHistoryIndex": dashboardStore.rebuildHistoryIndex()
         case "settingsChanged":
             guard let settings = DashboardSettingsUpdate(

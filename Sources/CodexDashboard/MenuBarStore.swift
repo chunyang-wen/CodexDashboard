@@ -149,6 +149,9 @@ final class MenuBarStore: ObservableObject {
         sourceRefreshTask = nil
         sourceRefreshGeneration = UUID()
         loadMenuBar(includeLiveQuota: true)
+        Task { [weak self] in
+            await self?.reloadCompactSnapshot(includeSessionCount: false)
+        }
         startPricingMonitoring()
         guard refreshInterval > 0 else { return }
         menuBarMonitorTask = Task { [weak self] in
@@ -281,7 +284,6 @@ final class MenuBarStore: ObservableObject {
         bankedResetTask = nil
         account = nil
         bankedResets = nil
-        menuBarAnalytics = .empty
         historySessionCount = 0
         historyMessage = nil
         Task { [weak self] in
@@ -379,15 +381,9 @@ final class MenuBarStore: ObservableObject {
     }
 
     func reloadCompactSnapshot(includeSessionCount: Bool = true) async {
-        guard menuBarDataIsResident else { return }
         do {
-            let subscriptionSnapshot = try await historicalStore.freshSubscriptionSnapshot()
-            _ = acceptSubscription(subscriptionSnapshot)
-            guard menuBarDataIsResident else { return }
-
             if includeSessionCount {
                 historySessionCount = try await historicalStore.storedSessionCount()
-                guard menuBarDataIsResident else { return }
             }
             let cutoff = analyticsCalendar.date(
                 byAdding: .day,
@@ -405,9 +401,12 @@ final class MenuBarStore: ObservableObject {
                 menuBarAnalytics = MenuBarAnalytics(snapshot: snapshot)
                 try? await historicalStore.recordMenuBarMetrics(snapshot)
             }
+            let subscriptionSnapshot = try await historicalStore.freshSubscriptionSnapshot()
+            _ = acceptSubscription(subscriptionSnapshot)
         } catch {
-            guard menuBarDataIsResident else { return }
-            historyMessage = "Menu-bar metrics could not be loaded: \(error.localizedDescription)"
+            if menuBarDataIsResident {
+                historyMessage = "Menu-bar metrics could not be loaded: \(error.localizedDescription)"
+            }
         }
     }
 

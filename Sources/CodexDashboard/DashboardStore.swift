@@ -586,6 +586,20 @@ final class DashboardStore: ObservableObject {
         load()
     }
 
+    /// Refreshes projections already persisted by the menu-bar source watcher.
+    /// Source events must not restart the full index load, live provider calls,
+    /// or rollout enrichment while the dashboard is open.
+    func refreshPersistedMetrics() {
+        guard dashboardDataIsResident else { return }
+        scheduleAnalyticsRefresh()
+        Task { [weak self] in
+            guard let self,
+                  let snapshot = try? await self.historicalStore.subscriptionSnapshot()
+            else { return }
+            _ = self.acceptSubscription(snapshot)
+        }
+    }
+
     private func startEnrichmentForAvailableHistory() {
         guard !isEnriching else { return }
         let requestID = UUID()

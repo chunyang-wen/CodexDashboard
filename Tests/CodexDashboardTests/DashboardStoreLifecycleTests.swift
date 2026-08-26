@@ -140,7 +140,7 @@ final class DashboardStoreLifecycleTests: XCTestCase {
         XCTAssertGreaterThan(store.trendPeriods[0].usage.total, 0)
     }
 
-    func testReleasingMenuBarMemoryClearsPopoverProjection() async throws {
+    func testClosingMenuBarKeepsCompactProjectionWarm() async throws {
         let userHome = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let suiteName = "DashboardStoreLifecycleTests.Popover.\(UUID().uuidString)"
@@ -198,9 +198,35 @@ final class DashboardStoreLifecycleTests: XCTestCase {
 
         XCTAssertFalse(menuStore.menuBarDataIsResident)
         XCTAssertEqual(menuStore.historySessionCount, 0)
-        XCTAssertTrue(menuStore.menuBarDaily.isEmpty)
+        XCTAssertEqual(menuStore.menuBarDaily.count, 1)
         XCTAssertNil(menuStore.account)
         XCTAssertNil(menuStore.bankedResets)
+    }
+
+    func testPersistedMetricsRefreshDoesNotRestartDashboardLoad() async throws {
+        let userHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let suiteName = "DashboardStoreLifecycleTests.PersistedRefresh.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: userHome)
+        }
+
+        let historicalStore = HistoricalStore(userHome: userHome)
+        try await historicalStore.record([
+            makeSession(id: "persisted-refresh", codexHome: userHome.appendingPathComponent(".codex", isDirectory: true))
+        ])
+
+        let store = DashboardStore(userHome: userHome, defaults: defaults)
+        store.activateDashboard()
+        try await waitUntil { !store.isLoading && !store.isUpdatingAnalytics && store.usage.total > 0 }
+
+        store.refreshPersistedMetrics()
+
+        XCTAssertFalse(store.isLoading)
+        XCTAssertFalse(store.isEnriching)
+        try await waitUntil { !store.isUpdatingAnalytics }
     }
 
     func testMenuBarPathChangeClearsCompactStateAndSynchronizesSubscription() async throws {
@@ -425,7 +451,7 @@ final class DashboardStoreLifecycleTests: XCTestCase {
         XCTAssertEqual(menuStore.subscription?.windows.first?.usedPercent, 15)
     }
 
-    func testMenuBarPopoverCanReleaseItsBoundedProjection() async throws {
+    func testMenuBarPopoverReleasesVisibleStateButKeepsMetricsWarm() async throws {
         let userHome = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let suiteName = "DashboardStoreLifecycleTests.CloseBridge.\(UUID().uuidString)"
@@ -435,17 +461,27 @@ final class DashboardStoreLifecycleTests: XCTestCase {
             try? FileManager.default.removeItem(at: userHome)
         }
 
-        try await HistoricalStore(userHome: userHome).record([
-            makeSession(id: "close-bridge-session", codexHome: userHome.appendingPathComponent(".codex", isDirectory: true))
-        ])
+        try await HistoricalStore(userHome: userHome).recordMenuBarMetrics(
+            MenuBarMetricsSnapshot(days: [
+                MenuBarDayMetrics(
+                    day: .now,
+                    usage: TokenUsage(input: 100, output: 20),
+                    estimatedCost: 0.01,
+                    toolCalls: 1,
+                    skillCalls: 0,
+                    sessions: 1,
+                    activeRuntime: 1
+                )
+            ])
+        )
         let menuStore = MenuBarStore(userHome: userHome, defaults: defaults)
         menuStore.loadPopover()
-        try await waitUntil { menuStore.menuBarDataIsResident }
+        try await waitUntil { menuStore.menuBarDataIsResident && menuStore.menuBarDaily.count == 1 }
 
         XCTAssertTrue(menuStore.menuBarDataIsResident)
         menuStore.releasePopover()
         XCTAssertFalse(menuStore.menuBarDataIsResident)
-        XCTAssertTrue(menuStore.menuBarDaily.isEmpty)
+        XCTAssertEqual(menuStore.menuBarDaily.count, 1)
     }
 
     private func makeSession(id: String, codexHome: URL) -> SessionMetric {
