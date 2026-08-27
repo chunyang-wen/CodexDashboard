@@ -663,7 +663,7 @@ enum MenuBarQuotaIconRenderer {
     }
 
     private static func drawTwoRowsText(_ value: String, centerY: CGFloat, iconInk: NSColor) {
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .medium)
+        let font = NSFont.monospacedDigitSystemFont(ofSize: value.count > 3 ? 5.5 : 7, weight: .medium)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: iconInk

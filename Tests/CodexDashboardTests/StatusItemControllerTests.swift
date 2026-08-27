@@ -136,6 +136,17 @@ final class StatusItemControllerTests: XCTestCase {
     }
 
     @MainActor
+    func testTwoRowsIconKeepsFullWidthPercentageInsideCanvas() throws {
+        let weekly = UsageQuotaWindow(usedPercent: 27, windowMinutes: 10_080, resetsAt: Date(timeIntervalSince1970: 1))
+        let fiveHour = UsageQuotaWindow(usedPercent: 0, windowMinutes: 300, resetsAt: Date(timeIntervalSince1970: 2))
+        let twoRows = MenuBarQuotaIconRenderer.image(windows: [fiveHour, weekly], style: .twoRows)
+        let bounds = try alphaBounds(for: twoRows)
+
+        XCTAssertGreaterThan(bounds.minX, 0)
+        XCTAssertLessThan(bounds.maxX, 36)
+    }
+
+    @MainActor
     private func bitmapBytes(for image: NSImage) throws -> [UInt8] {
         let representation = try XCTUnwrap(image.representations.compactMap { $0 as? NSBitmapImageRep }.first)
         let count = representation.bytesPerRow * representation.pixelsHigh
