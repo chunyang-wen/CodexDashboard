@@ -4,6 +4,15 @@
         <title>CodexDashboard</title>
         <item>
             <title>0.1.14</title>
+            <description sparkle:format="html"><![CDATA[
+                <h3>What's new in 0.1.14</h3>
+                <ul>
+                    <li>Reduced memory use when opening the dashboard and switching tabs by using bounded SQL projections and aggregated timing metrics.</li>
+                    <li>Added pagination for model and project session data, and limited Overview to the information it displays.</li>
+                    <li>Improved menu-bar refresh behavior, provider quota handling, and persisted metrics updates.</li>
+                    <li>Refined dashboard charts, project views, and pricing display.</li>
+                </ul>
+            ]]></description>
             <pubDate>Thu, 27 Aug 2026 12:12:40 +0800</pubDate>
             <sparkle:version>20260827121003</sparkle:version>
             <sparkle:shortVersionString>0.1.14</sparkle:shortVersionString>
