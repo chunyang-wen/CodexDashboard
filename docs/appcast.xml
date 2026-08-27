@@ -3,6 +3,14 @@
     <channel>
         <title>CodexDashboard</title>
         <item>
+            <title>0.1.15</title>
+            <pubDate>Thu, 27 Aug 2026 14:50:34 +0800</pubDate>
+            <sparkle:version>20260827144803</sparkle:version>
+            <sparkle:shortVersionString>0.1.15</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.15/CodexDashboard-0.1.15.zip" length="11793684" type="application/octet-stream" sparkle:edSignature="CklQbRiMHIt7duheOYWddgzAdMEnaPbRCoSGPkKsHnUYlBAafovFiRsAwgmJb8hZTfHdRxK/h8qA+kbkPo2BDg=="/>
+        </item>
+        <item>
             <title>0.1.14</title>
             <description sparkle:format="html"><![CDATA[
                 <h3>What's new in 0.1.14</h3>
@@ -33,22 +41,6 @@
             <sparkle:shortVersionString>0.1.13</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.13/CodexDashboard-0.1.13.zip" length="11621185" type="application/octet-stream" sparkle:edSignature="A0T8bSptdjJAA26sQx14QGKkJQS7e1RfqJnN+5hhjhgxHKT8ic6PBqWeiYGXWGrI1BbkL7+E2NjlZaLOUQXNBg=="/>
-        </item>
-        <item>
-            <title>0.1.12</title>
-            <description sparkle:format="html"><![CDATA[
-                <h3>What's new in 0.1.12</h3>
-                <ul>
-                    <li>Added separate attention markers for the weekly and 5-hour quota windows.</li>
-                    <li>Refreshes live subscription quota data periodically and when the menu-bar popover opens.</li>
-                    <li>Fixed update checks from Settings so finding no update does not reopen the dashboard.</li>
-                </ul>
-            ]]></description>
-            <pubDate>Wed, 26 Aug 2026 05:50:25 +0800</pubDate>
-            <sparkle:version>20260826054722</sparkle:version>
-            <sparkle:shortVersionString>0.1.12</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.12/CodexDashboard-0.1.12.zip" length="11374175" type="application/octet-stream" sparkle:edSignature="IS0GYd2H3mKsy+KbmFC0h6eZKjhCjSJKuEyRLGyhJ1jwXOVbPu89Sik3lh+eDWi9puDM7HY0UaHdvWF/BZUyDw=="/>
         </item>
     </channel>
 </rss>
