@@ -3,6 +3,14 @@
     <channel>
         <title>CodexDashboard</title>
         <item>
+            <title>0.1.14</title>
+            <pubDate>Thu, 27 Aug 2026 12:12:40 +0800</pubDate>
+            <sparkle:version>20260827121003</sparkle:version>
+            <sparkle:shortVersionString>0.1.14</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.14/CodexDashboard-0.1.14.zip" length="11779979" type="application/octet-stream" sparkle:edSignature="gv87r95HoQs8L5W33K5eZbOIfyDMtXSWwGHUmwvkqWi6nHDgHDg1riVM166n5ewVUQUYt7YMn5ekuvakunxeDQ=="/>
+        </item>
+        <item>
             <title>0.1.13</title>
             <description sparkle:format="html"><![CDATA[
                 <h3>What's new in 0.1.13</h3>
@@ -32,21 +40,6 @@
             <sparkle:shortVersionString>0.1.12</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.12/CodexDashboard-0.1.12.zip" length="11374175" type="application/octet-stream" sparkle:edSignature="IS0GYd2H3mKsy+KbmFC0h6eZKjhCjSJKuEyRLGyhJ1jwXOVbPu89Sik3lh+eDWi9puDM7HY0UaHdvWF/BZUyDw=="/>
-        </item>
-        <item>
-            <title>0.1.11</title>
-            <description sparkle:format="html"><![CDATA[
-                <h3>What's new in 0.1.11</h3>
-                <ul>
-                    <li>Fixed startup Dock behavior so the persistent companion process no longer briefly appears and disappears; the dashboard process owns the visible Dock icon.</li>
-                    <li>Clarified the companion and dashboard application labels as CodexDashboard Companion and CodexDashboard.</li>
-                </ul>
-            ]]></description>
-            <pubDate>Tue, 25 Aug 2026 17:01:49 +0800</pubDate>
-            <sparkle:version>20260825165919</sparkle:version>
-            <sparkle:shortVersionString>0.1.11</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.11/CodexDashboard-0.1.11.zip" length="11349109" type="application/octet-stream" sparkle:edSignature="D5C3fqFFnIFv3Q8sNiu1ZlCn6ukmRYHuWFLJ+iWzDEXurOiV+HIO+wg3b3m40uFmDbEwBi42ksECFwQF6ZsCDw=="/>
         </item>
     </channel>
 </rss>
