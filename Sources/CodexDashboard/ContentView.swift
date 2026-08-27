@@ -100,39 +100,39 @@ struct ContentView: View {
                         .padding(18)
                 }
             }
-            .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    Button {
-                        columnVisibility = columnVisibility == .all ? .detailOnly : .all
-                    } label: {
-                        Image(systemName: "sidebar.leading")
-                    }
-                    .help(columnVisibility == .all ? "Hide Sidebar" : "Show Sidebar")
-                    .accessibilityLabel(columnVisibility == .all ? "Hide Sidebar" : "Show Sidebar")
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    columnVisibility = columnVisibility == .all ? .detailOnly : .all
+                } label: {
+                    Image(systemName: "sidebar.leading")
                 }
-                ToolbarItemGroup {
-                    Picker("Aggregation", selection: Binding(
-                        get: { store.range },
-                        set: { store.updateRange($0) }
-                    )) {
-                        ForEach(DashboardStore.Range.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 245)
-                    Button { store.load() } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .help(store.isBusy ? "Restart metrics refresh now" : "Refresh metrics now")
-                    .accessibilityLabel(store.isBusy ? "Restart metrics refresh" : "Refresh metrics")
-                    if store.isEnriching && !store.isUpdatingAnalytics {
-                        MetricProgressBar(value: store.enrichmentFraction)
-                            .frame(width: 76)
-                            .help(store.enrichmentLabel)
-                        Text("\(store.enrichedSessions)/\(store.enrichmentTotal)")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .help(store.enrichmentLabel)
-                    }
+                .help(columnVisibility == .all ? "Hide Sidebar" : "Show Sidebar")
+                .accessibilityLabel(columnVisibility == .all ? "Hide Sidebar" : "Show Sidebar")
+            }
+            ToolbarItemGroup {
+                Picker("Aggregation", selection: Binding(
+                    get: { store.range },
+                    set: { store.updateRange($0) }
+                )) {
+                    ForEach(DashboardStore.Range.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 245)
+                Button { store.load() } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help(store.isBusy ? "Restart metrics refresh now" : "Refresh metrics now")
+                .accessibilityLabel(store.isBusy ? "Restart metrics refresh" : "Refresh metrics")
+                if store.isEnriching && !store.isUpdatingAnalytics {
+                    MetricProgressBar(value: store.enrichmentFraction)
+                        .frame(width: 76)
+                        .help(store.enrichmentLabel)
+                    Text("\(store.enrichedSessions)/\(store.enrichmentTotal)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .help(store.enrichmentLabel)
                 }
             }
         }
@@ -519,7 +519,7 @@ struct ActivityChart: View {
                                         }
                                         let translatedPeriods = Double(value.translation.width / frame.width) * visiblePeriodCount
                                         let proposed = (dragStartScrollPosition ?? scrollPosition) - translatedPeriods
-                                        scrollPosition = min(latestScrollPosition, max(0, proposed))
+                                        setScrollPosition(proposed)
                                         hoveredPeriod = nil
                                         hoverLocation = nil
                                     }
@@ -538,9 +538,7 @@ struct ActivityChart: View {
                                               let rawIndex: Double = proxy.value(atX: x) else { return }
                                         let index = Int(floor(rawIndex))
                                         guard chartPoints.indices.contains(index) else { return }
-                                        withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) {
-                                            selectedPeriodStart = chartPoints[index].period.start
-                                        }
+                                        selectedPeriodStart = chartPoints[index].period.start
                                     }
                             )
 
@@ -577,9 +575,15 @@ struct ActivityChart: View {
     }
 
     private func scroll(by amount: Double) {
-        withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) {
-            scrollPosition = min(latestScrollPosition, max(0, scrollPosition + amount))
-        }
+        setScrollPosition(scrollPosition + amount)
+    }
+
+    private func setScrollPosition(_ proposed: Double) {
+        // The rendered window already rounds to a period index; avoid publishing
+        // fractional drag updates that cannot change the chart contents.
+        let next = min(latestScrollPosition, max(0, proposed.rounded()))
+        guard next != scrollPosition else { return }
+        scrollPosition = next
     }
 
     @ViewBuilder private func edgeScrollControl(_ edge: ScrollEdge) -> some View {
@@ -1567,11 +1571,10 @@ private struct TokenCompositionLegend: View {
     }
 }
 
-private struct ModelTrendChartData {
-    struct Sample: Identifiable {
+private struct ModelTrendChartData: Equatable {
+    struct Sample: Identifiable, Equatable {
         let id: String
         let index: Int
-        let xPosition: Double
         let model: String
         let modelIndex: Int
         let tokens: Double
@@ -1582,9 +1585,8 @@ private struct ModelTrendChartData {
     }
 
     let dates: [Date]
-    private let pointsByModel: [String: [Date: ModelPeriodMetric]]
+    private let allSamples: [Sample]
     let maximumTokens: Double
-    let identity: String
 
     init(points: [ModelPeriodMetric], models: [ModelMetric]) {
         // The chart shows one model page at a time. Do not retain period rows
@@ -1592,7 +1594,7 @@ private struct ModelTrendChartData {
         let modelNames = Set(models.map(\.model))
         let visiblePoints = points.filter { modelNames.contains($0.model) }
         let preparedDates = Array(Set(visiblePoints.map(\.start))).sorted()
-        self.pointsByModel = Dictionary(grouping: visiblePoints, by: \.model).mapValues { values in
+        let preparedPointsByModel = Dictionary(grouping: visiblePoints, by: \.model).mapValues { values in
             Dictionary(uniqueKeysWithValues: values.map { ($0.start, $0) })
         }
         let preparedMaximumTokens = max(1, visiblePoints
@@ -1600,15 +1602,38 @@ private struct ModelTrendChartData {
             .max() ?? 1)
         dates = preparedDates
         maximumTokens = preparedMaximumTokens
-        identity = models.map(\.model).joined(separator: "|") + "#" + preparedDates.map(String.init(describing:)).joined(separator: "|")
+        allSamples = Self.makeSamples(
+            dates: preparedDates,
+            pointsByModel: preparedPointsByModel,
+            maximumTokens: preparedMaximumTokens,
+            models: models
+        )
     }
 
-    func samples(from start: Int, to end: Int, models: [ModelMetric]) -> [Sample] {
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.dates == rhs.dates
+            && lhs.maximumTokens == rhs.maximumTokens
+            && lhs.allSamples == rhs.allSamples
+    }
+
+    func samples(from start: Int, to end: Int) -> [Sample] {
         guard start < end else { return [] }
+        let modelCount = dates.isEmpty ? 0 : allSamples.count / dates.count
+        let startOffset = start * modelCount
+        let endOffset = min(end * modelCount, allSamples.count)
+        guard startOffset < endOffset else { return [] }
+        return Array(allSamples[startOffset..<endOffset])
+    }
+
+    private static func makeSamples(
+        dates: [Date],
+        pointsByModel: [String: [Date: ModelPeriodMetric]],
+        maximumTokens: Double,
+        models: [ModelMetric]
+    ) -> [Sample] {
         var samples: [Sample] = []
-        samples.reserveCapacity((end - start) * models.count)
-        for index in start..<end {
-            let date = dates[index]
+        samples.reserveCapacity(dates.count * models.count)
+        for (index, date) in dates.enumerated() {
             for (modelIndex, model) in models.enumerated() {
                 let point = pointsByModel[model.model]?[date]
                 let usage = point?.usage ?? .zero
@@ -1616,7 +1641,6 @@ private struct ModelTrendChartData {
                 samples.append(Sample(
                     id: "\(model.model)-\(index)",
                     index: index,
-                    xPosition: Double(index - start),
                     model: model.model,
                     modelIndex: modelIndex,
                     tokens: max(0, Double(usage.total)),
@@ -1631,7 +1655,7 @@ private struct ModelTrendChartData {
     }
 }
 
-private struct ModelTrendChart: View {
+private struct ModelTrendChart: View, @MainActor Equatable {
     private enum ScrollEdge {
         case older
         case newer
@@ -1668,7 +1692,7 @@ private struct ModelTrendChart: View {
     }
 
     private var samples: [ModelTrendChartData.Sample] {
-        data.samples(from: visibleStart, to: visibleEnd, models: models)
+        data.samples(from: visibleStart, to: visibleEnd)
     }
 
     private var maximumTokens: Double {
@@ -1677,6 +1701,10 @@ private struct ModelTrendChart: View {
 
     private var cacheAxisPositions: [Double] {
         stride(from: 0, through: 1, by: 0.25).map { $0 * maximumTokens }
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.data == rhs.data && lhs.models == rhs.models && lhs.granularity == rhs.granularity
     }
 
     var body: some View {
@@ -1783,7 +1811,7 @@ private struct ModelTrendChart: View {
                                             }
                                             let translatedPeriods = Double(value.translation.width / frame.width) * visiblePeriodCount
                                             let proposed = (dragStartScrollPosition ?? scrollPosition) - translatedPeriods
-                                            scrollPosition = min(latestScrollPosition, max(0, proposed))
+                                            setScrollPosition(proposed)
                                             hoveredIndex = nil
                                             hoverLocation = nil
                                         }
@@ -1813,7 +1841,7 @@ private struct ModelTrendChart: View {
                 .onAppear {
                     scrollPosition = latestScrollPosition
                 }
-                .onChange(of: data.identity) { _, _ in
+                .onChange(of: data) { _, _ in
                     hoveredIndex = nil
                     hoverLocation = nil
                     hiddenModels = []
@@ -1889,9 +1917,15 @@ private struct ModelTrendChart: View {
     }
 
     private func scroll(by amount: Double) {
-        withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) {
-            scrollPosition = min(latestScrollPosition, max(0, scrollPosition + amount))
-        }
+        setScrollPosition(scrollPosition + amount)
+    }
+
+    private func setScrollPosition(_ proposed: Double) {
+        // The rendered window already rounds to a period index; avoid publishing
+        // fractional drag updates that cannot change the chart contents.
+        let next = min(latestScrollPosition, max(0, proposed.rounded()))
+        guard next != scrollPosition else { return }
+        scrollPosition = next
     }
 
     @ViewBuilder private func edgeScrollControl(_ edge: ScrollEdge) -> some View {
@@ -1936,7 +1970,7 @@ private struct ModelTrendChart: View {
 
     private func tokenMark(for sample: ModelTrendChartData.Sample) -> some ChartContent {
         LineMark(
-            x: .value("Period", sample.xPosition),
+            x: .value("Period", Double(sample.index - visibleStart)),
             y: .value("Tokens", sample.tokens),
             series: .value("Series", sample.tokenSeries)
         )
@@ -1947,7 +1981,7 @@ private struct ModelTrendChart: View {
 
     private func cacheMark(for sample: ModelTrendChartData.Sample) -> some ChartContent {
         LineMark(
-            x: .value("Period", sample.xPosition),
+            x: .value("Period", Double(sample.index - visibleStart)),
             y: .value("Cache hit rate", sample.cacheRate),
             series: .value("Series", sample.cacheSeries)
         )
@@ -2052,6 +2086,7 @@ struct ModelsView: View {
                     models: visibleModels,
                     granularity: store.range.granularity
                 )
+                .equatable()
                 SectionHeader(
                     title: "Model portfolio",
                     subtitle: "All-time aggregated totals for the same models shown in the trend above."
