@@ -85,6 +85,7 @@ final class MenuBarStore: ObservableObject {
     private var sourceRefreshTask: Task<Void, Never>?
     private var sourceRefreshGeneration = UUID()
     private var sourceRefreshInFlight = false
+    private var dashboardIsOpen = false
     private var menuBarAnalytics = MenuBarAnalytics.empty
 
     init(userHome: URL = FileManager.default.homeDirectoryForCurrentUser, defaults: UserDefaults = .standard) {
@@ -111,6 +112,13 @@ final class MenuBarStore: ObservableObject {
 
     func menuBarAggregate(in interval: DateInterval) -> MenuBarUsageAggregate {
         menuBarAnalytics.aggregate(in: interval)
+    }
+
+    /// Defer the host's potentially large initial/recovery reconciliation while
+    /// the helper owns the visible dashboard. This prevents both processes from
+    /// parsing the same source index concurrently.
+    func setDashboardOpen(_ isOpen: Bool) {
+        dashboardIsOpen = isOpen
     }
 
     func loadMenuBar(includeLiveQuota: Bool = false) {
@@ -216,7 +224,7 @@ final class MenuBarStore: ObservableObject {
     private func refreshPricing() async {
         do {
             let snapshot = try await dynamicPricingLoader.refresh()
-            var pricing = try await historicalStore.pricingHistory()
+            var pricing = try await historicalStore.storedPricingHistory()
             var mergedPrices = pricing.schedules.last?.prices ?? PricingRegistry.current.prices
             for (model, price) in snapshot.prices {
                 mergedPrices[model] = price
@@ -226,12 +234,14 @@ final class MenuBarStore: ObservableObject {
                 PricingSchedule(effectiveAt: snapshot.fetchedAt, prices: mergedPrices, source: "models.dev")
             ]))
             try await historicalStore.recordPricing(pricing)
+            metricsDidChange?()
         } catch {
             // Pricing remains available from the bundled catalog or the last cache.
         }
     }
 
     func loadPopover() {
+        CodexMemoryTrace.mark("host.popover.load.begin")
         menuBarDataIsResident = true
         popoverTask?.cancel()
         bankedResetTask?.cancel()
@@ -242,7 +252,15 @@ final class MenuBarStore: ObservableObject {
         let sub2APIConfiguration = DashboardPreferences.sub2APIConfiguration(defaults: defaults)
         popoverTask = Task { [weak self] in
             guard let self else { return }
+            self.isLoading = true
+            defer {
+                if self.menuBarDataIsResident { self.isLoading = false }
+            }
             await self.preparePopover()
+            CodexMemoryTrace.mark("host.popover.compact-ready", details: "days=\(self.menuBarDaily.count)")
+            guard !Task.isCancelled, self.menuBarDataIsResident else { return }
+            await self.refreshLiveQuota()
+            CodexMemoryTrace.mark("host.popover.load.done", details: "days=\(self.menuBarDaily.count)")
         }
         bankedResetTask = Task { [weak self] in
             let snapshot: BankedResetSnapshot? = await Task.detached(priority: .utility) {
@@ -277,6 +295,7 @@ final class MenuBarStore: ObservableObject {
     }
 
     func releasePopover() {
+        CodexMemoryTrace.mark("host.popover.release.begin", details: "days=\(menuBarDaily.count)")
         menuBarDataIsResident = false
         popoverTask?.cancel()
         popoverTask = nil
@@ -290,6 +309,7 @@ final class MenuBarStore: ObservableObject {
             guard let self else { return }
             await self.historicalStore.releaseMemory()
             malloc_zone_pressure_relief(nil, 0)
+            CodexMemoryTrace.mark("host.popover.release.done")
         }
     }
 
@@ -486,6 +506,11 @@ final class MenuBarStore: ObservableObject {
                     guard !Task.isCancelled else { return }
                 }
 
+                while dashboardIsOpen && !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                guard !Task.isCancelled else { return }
+
                 let succeeded = await self.refreshSource(
                     changedPaths: batch.rolloutPaths,
                     indexChanged: batch.indexChanged,
@@ -520,11 +545,11 @@ final class MenuBarStore: ObservableObject {
         do {
             let codexHome = self.codexHome
             let userHome = self.userHome
-            let indexed = try await Task.detached(priority: .background) {
+            if requiresReconciliation {
+                return await reconcileSourceInBatches(codexHome: codexHome, userHome: userHome)
+            }
+            let indexed: [SessionMetric] = try await Task.detached(priority: .background) {
                 let store = CodexStore(codexHome: codexHome, userHome: userHome)
-                if requiresReconciliation {
-                    return try store.loadIndexedSessions(reconcile: true)
-                }
                 if indexChanged {
                     let changed = try store.loadIndexedSessionChanges()
                     if !changed.isEmpty || changedPaths.isEmpty {
@@ -535,20 +560,75 @@ final class MenuBarStore: ObservableObject {
             }.value
             guard !indexed.isEmpty else { return true }
 
-            let pricing = try await historicalStore.pricingHistory()
+            let pricing = try await historicalStore.storedPricingHistory()
             let store = CodexStore(codexHome: codexHome, userHome: userHome)
             var batch: [SessionMetric] = []
             batch.reserveCapacity(10)
-            for await progress in store.enrichmentStream(indexed) {
-                guard !Task.isCancelled else { return true }
-                batch.append(progress.session)
-                if batch.count >= 10 {
+            for chunkStart in stride(from: 0, to: indexed.count, by: 25) {
+                let chunkEnd = min(chunkStart + 25, indexed.count)
+                for await progress in store.enrichmentStream(Array(indexed[chunkStart..<chunkEnd])) {
+                    guard !Task.isCancelled else { return true }
+                    batch.append(progress.session)
+                    if batch.count >= 10 {
+                        try await persistSourceBatch(batch, pricing: pricing)
+                        batch.removeAll(keepingCapacity: true)
+                    }
+                }
+                if !batch.isEmpty {
                     try await persistSourceBatch(batch, pricing: pricing)
                     batch.removeAll(keepingCapacity: true)
                 }
             }
-            if !batch.isEmpty {
-                try await persistSourceBatch(batch, pricing: pricing)
+
+            await reloadCompactSnapshot(includeSessionCount: false)
+            metricsDidChange?()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func reconcileSourceInBatches(codexHome: URL, userHome: URL) async -> Bool {
+        do {
+            let pricing = try await historicalStore.storedPricingHistory()
+            let store = CodexStore(codexHome: codexHome, userHome: userHome)
+            let batchSize = 50
+            var cursor: Int64?
+            while !Task.isCancelled {
+                let cursorForPage = cursor
+                let page = try await Task.detached(priority: .background) {
+                    try store.loadIndexedSessionBatch(afterRowID: cursorForPage, batchSize: batchSize)
+                }.value
+                if page.sourceRowCount == 0 {
+                    try await Task.detached(priority: .background) {
+                        try store.finishIndexedSessionReconciliation()
+                    }.value
+                    break
+                }
+
+                if !page.sessions.isEmpty {
+                    var batch: [SessionMetric] = []
+                    batch.reserveCapacity(batchSize)
+                    for await progress in store.enrichmentStream(page.sessions) {
+                        guard !Task.isCancelled else { return true }
+                        batch.append(progress.session)
+                        if batch.count >= batchSize {
+                            try await persistSourceBatch(batch, pricing: pricing)
+                            batch.removeAll(keepingCapacity: true)
+                        }
+                    }
+                    if !batch.isEmpty {
+                        try await persistSourceBatch(batch, pricing: pricing)
+                    }
+                }
+
+                // Advance the checkpoint only after this page's metrics are safe.
+                try await Task.detached(priority: .background) {
+                    try store.commitIndexedSessionBatch(page)
+                }.value
+                guard let next = page.nextRowID else { break }
+                cursor = next
+                await Task.yield()
             }
 
             await reloadCompactSnapshot(includeSessionCount: false)

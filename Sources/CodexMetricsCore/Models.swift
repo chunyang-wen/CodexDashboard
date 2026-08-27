@@ -1,4 +1,50 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
+import os
+
+/// Opt-in process memory tracing for diagnosing first-open and tab-switch peaks.
+/// Enable with `defaults write com.chunyangwen.CodexDashboard.shared CodexDashboard.MemoryTrace -bool YES`
+/// or by setting `CODEX_DASHBOARD_MEMORY_TRACE=1` before launching the binary.
+public enum CodexMemoryTrace {
+    private static let key = "CodexDashboard.MemoryTrace"
+    private static let logger = Logger(subsystem: "com.chunyangwen.CodexDashboard", category: "memory")
+    private static let enabled = ProcessInfo.processInfo.environment["CODEX_DASHBOARD_MEMORY_TRACE"] == "1"
+        || UserDefaults.standard.bool(forKey: key)
+        || UserDefaults(suiteName: "com.chunyangwen.CodexDashboard.shared")?.bool(forKey: key) == true
+
+    public static func mark(_ stage: String, details: String = "") {
+        guard enabled else { return }
+        #if canImport(Darwin)
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else {
+            logger.notice("stage=\(stage, privacy: .public) memory=unavailable details=\(details, privacy: .public)")
+            return
+        }
+        let current = Double(info.phys_footprint) / 1_048_576
+        var usage = rusage_info_v4()
+        let usageResult = withUnsafeMutablePointer(to: &usage) { pointer in
+            pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                proc_pid_rusage(getpid(), RUSAGE_INFO_V4, $0)
+            }
+        }
+        let peak = usageResult == 0 ? Double(usage.ri_lifetime_max_phys_footprint) / 1_048_576 : current
+        let resident = Double(info.resident_size) / 1_048_576
+        logger.notice(
+            "stage=\(stage, privacy: .public) physical=\(current, format: .fixed(precision: 1))MB peak=\(peak, format: .fixed(precision: 1))MB resident=\(resident, format: .fixed(precision: 1))MB details=\(details, privacy: .public)"
+        )
+        #else
+        logger.notice("stage=\(stage, privacy: .public) memory=unsupported details=\(details, privacy: .public)")
+        #endif
+    }
+}
 
 public struct TokenUsage: Codable, Hashable, Sendable {
     public var input: Int64
@@ -323,23 +369,85 @@ public struct SessionSummary: Identifiable, Codable, Hashable, Sendable {
 public struct ProjectMetric: Identifiable, Hashable, Sendable {
     public var id: String { path }
     public let path: String
+    /// All source paths represented by this project. A project can have more
+    /// than one checkout (for example, a main worktree and a Codex worktree).
+    public let paths: [String]
     public let sessions: [SessionSummary]
+    private let aggregateUsage: TokenUsage?
+    private let aggregateRuntime: TimeInterval?
+    private let aggregateSessionCount: Int?
+    private let aggregateLastActivity: Date?
 
     public init(path: String, sessions: [SessionSummary]) {
         self.path = path
+        self.paths = [path]
         self.sessions = sessions
+        self.aggregateUsage = nil
+        self.aggregateRuntime = nil
+        self.aggregateSessionCount = nil
+        self.aggregateLastActivity = nil
     }
 
     public init(path: String, fullSessions: [SessionMetric]) {
         self.path = path
+        self.paths = [path]
         self.sessions = fullSessions.map(\.summary)
+        self.aggregateUsage = nil
+        self.aggregateRuntime = nil
+        self.aggregateSessionCount = nil
+        self.aggregateLastActivity = nil
+    }
+
+    public init(path: String, paths: [String], sessions: [SessionSummary]) {
+        self.path = path
+        self.paths = paths
+        self.sessions = sessions
+        self.aggregateUsage = nil
+        self.aggregateRuntime = nil
+        self.aggregateSessionCount = nil
+        self.aggregateLastActivity = nil
+    }
+
+    public init(
+        path: String,
+        paths: [String],
+        sessions: [SessionSummary],
+        usage: TokenUsage,
+        activeRuntime: TimeInterval,
+        sessionCount: Int,
+        lastActivity: Date
+    ) {
+        self.path = path
+        self.paths = paths
+        self.sessions = sessions
+        self.aggregateUsage = usage
+        self.aggregateRuntime = activeRuntime
+        self.aggregateSessionCount = sessionCount
+        self.aggregateLastActivity = lastActivity
+    }
+
+    public init(
+        path: String,
+        paths: [String],
+        usage: TokenUsage,
+        activeRuntime: TimeInterval,
+        sessionCount: Int,
+        lastActivity: Date
+    ) {
+        self.path = path
+        self.paths = paths
+        self.sessions = []
+        self.aggregateUsage = usage
+        self.aggregateRuntime = activeRuntime
+        self.aggregateSessionCount = sessionCount
+        self.aggregateLastActivity = lastActivity
     }
 
     public var name: String { URL(fileURLWithPath: path).lastPathComponent }
-    public var usage: TokenUsage { sessions.reduce(.zero) { $0 + $1.usage } }
-    public var activeRuntime: TimeInterval { sessions.reduce(0) { $0 + $1.activeRuntime } }
-    public var sessionCount: Int { sessions.count }
-    public var lastActivity: Date { sessions.map(\.updatedAt).max() ?? .distantPast }
+    public var usage: TokenUsage { aggregateUsage ?? sessions.reduce(.zero) { $0 + $1.usage } }
+    public var activeRuntime: TimeInterval { aggregateRuntime ?? sessions.reduce(0) { $0 + $1.activeRuntime } }
+    public var sessionCount: Int { aggregateSessionCount ?? sessions.count }
+    public var lastActivity: Date { aggregateLastActivity ?? sessions.map(\.updatedAt).max() ?? .distantPast }
     public var activeDays: Int { Set(sessions.map { Calendar.current.startOfDay(for: $0.updatedAt) }).count }
     public var dominantModel: String? {
         Dictionary(grouping: sessions.compactMap(\.model), by: { $0 }).max { $0.value.count < $1.value.count }?.key

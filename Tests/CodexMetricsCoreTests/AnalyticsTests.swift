@@ -3,6 +3,34 @@ import SQLite3
 @testable import CodexMetricsCore
 
 final class AnalyticsTests: XCTestCase {
+    func testProjectsMergeCheckoutsWithTheSameDisplayName() {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        func session(_ id: String, path: String) -> SessionMetric {
+            SessionMetric(
+                id: id, rolloutPath: "/tmp/\(id).jsonl", projectPath: path,
+                title: id, source: "app", provider: "openai", createdAt: date,
+                updatedAt: date, model: "gpt-5.6-luna", reasoningEffort: nil,
+                gitBranch: nil, cliVersion: nil, archived: false,
+                usage: TokenUsage(input: 10), enrichmentAvailable: true
+            )
+        }
+
+        let projects = Analytics.projects(from: [
+            session("main", path: "/Users/example/CodexDashboard"),
+            session("worktree", path: "/Users/example/.codex/worktrees/abcd/CodexDashboard")
+        ])
+
+        XCTAssertEqual(projects.count, 1)
+        XCTAssertEqual(projects[0].sessionCount, 2)
+        XCTAssertEqual(
+            Set(projects[0].paths),
+            Set([
+                "/Users/example/CodexDashboard",
+                "/Users/example/.codex/worktrees/abcd/CodexDashboard"
+            ])
+        )
+    }
+
     func testMenuBarSnapshotAndSessionCountLoadWithoutHydratedArchive() async throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: home) }
@@ -713,7 +741,7 @@ final class AnalyticsTests: XCTestCase {
             model: "gpt-5.6", reasoningEffort: nil, gitBranch: nil, cliVersion: nil,
             archived: false, usage: usage,
             usageEvents: [UsageEvent(date: date, usage: usage, model: "gpt-5.6")],
-            turns: [TurnMetric(completedAt: date, duration: 12, timeToFirstToken: nil, completed: true)],
+            turns: [TurnMetric(completedAt: date, duration: 12, timeToFirstToken: 0.5, completed: true)],
             enrichmentAvailable: true
         )
 
@@ -730,6 +758,13 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(rows[0].estimatedCost, 0.0074, accuracy: 1e-12)
         XCTAssertEqual(rows[0].activeRuntime, 12)
         XCTAssertEqual(rows[0].sessionIDs, ["model-breakdown"])
+
+        let durationSummary = try await store.durationSummary()
+        XCTAssertEqual(durationSummary.turnCount, 1)
+        XCTAssertEqual(durationSummary.medianTurnDuration, 12)
+        XCTAssertEqual(durationSummary.p95TurnDuration, 12)
+        XCTAssertEqual(durationSummary.firstTokenCount, 1)
+        XCTAssertEqual(durationSummary.averageFirstTokenTime, 0.5)
 
         let rebuilt = try await store.rebuildMetricsIndex(pricing: .bundled)
         XCTAssertEqual(rebuilt.sessions.count, 1)
@@ -836,6 +871,16 @@ final class AnalyticsTests: XCTestCase {
             Dictionary(uniqueKeysWithValues: modelTotals.map { ($0.model, $0.sessions) }),
             ["model-a": 2, "model-b": 1]
         )
+        let modelCount = try await store.modelCount()
+        let limitedModels = (try await store.modelMetrics(limit: 1)).map(\.model)
+        let filteredModelPeriods = (try await store.modelPeriodMetrics(
+            granularity: .week,
+            calendar: calendar,
+            models: ["model-b"]
+        )).map(\.model)
+        XCTAssertEqual(modelCount, 2)
+        XCTAssertEqual(limitedModels, ["model-a"])
+        XCTAssertEqual(filteredModelPeriods, ["model-b"])
 
         let dailyRows = try await store.dailyPeriodRows()
         let dailyModelRows = try await store.dailyModelRows()
@@ -1765,9 +1810,19 @@ final class AnalyticsTests: XCTestCase {
                 cli_version TEXT, archived INTEGER);
             INSERT INTO threads VALUES ('first', '/tmp/first.jsonl', '/tmp/a', 'First',
                 'app', 'openai', 90, 100, 10, NULL, NULL, NULL, '', 0);
-            """, nil, nil, nil), SQLITE_OK)
+        """, nil, nil, nil), SQLITE_OK)
 
         let store = CodexStore(codexHome: codexHome, userHome: home)
+        let firstPage = try store.loadIndexedSessionBatch(afterRowID: nil, batchSize: 1)
+        XCTAssertEqual(firstPage.sessions.map(\.id), ["first"])
+        XCTAssertNotNil(firstPage.nextRowID)
+        try store.commitIndexedSessionBatch(firstPage)
+        let endPage = try store.loadIndexedSessionBatch(afterRowID: firstPage.nextRowID, batchSize: 1)
+        XCTAssertTrue(endPage.sessions.isEmpty)
+        try store.commitIndexedSessionBatch(endPage)
+        let unchangedPage = try store.loadIndexedSessionBatch(afterRowID: nil, batchSize: 1)
+        XCTAssertTrue(unchangedPage.sessions.isEmpty)
+        XCTAssertEqual(unchangedPage.sourceRowCount, 1)
         XCTAssertEqual(try store.loadIndexedSessions().map(\.id), ["first"])
         let initialChanges = try store.loadIndexedSessionChanges()
         XCTAssertTrue(initialChanges.isEmpty)
@@ -1788,7 +1843,18 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(refreshed.first { $0.id == "first" }?.title, "First updated")
         XCTAssertEqual(refreshed.first { $0.id == "second" }?.usage.total, 20)
 
+        let projectPage = try store.loadIndexedSessionPage(
+            forProjectPaths: ["/tmp/a"], afterRowID: 0, batchSize: 1
+        )
+        XCTAssertEqual(projectPage.sessions.map(\.id), ["first"])
+        let projectEnd = try store.loadIndexedSessionPage(
+            forProjectPaths: ["/tmp/a"], afterRowID: projectPage.nextRowID ?? 0, batchSize: 1
+        )
+        XCTAssertTrue(projectEnd.sessions.isEmpty)
+
         XCTAssertEqual(sqlite3_exec(source, "DELETE FROM threads WHERE id = 'second';", nil, nil, nil), SQLITE_OK)
+        try store.finishIndexedSessionReconciliation()
+        XCTAssertEqual(try store.loadIndexedSessions().map(\.id), ["first"])
         XCTAssertEqual(try store.loadIndexedSessions(reconcile: true).map(\.id), ["first"])
     }
 

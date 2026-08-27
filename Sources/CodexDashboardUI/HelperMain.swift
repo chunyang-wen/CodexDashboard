@@ -1,4 +1,5 @@
 import AppKit
+import CodexMetricsCore
 import SwiftUI
 
 private enum HelperLifecycleNotification {
@@ -40,6 +41,7 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
     private var isTerminatingForHost = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        CodexMemoryTrace.mark("helper.launch.begin")
         NSApp.setActivationPolicy(.regular)
         readLaunchArguments()
         dashboardStore = DashboardStore(
@@ -51,7 +53,9 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
         installMainMenu()
         createDashboardWindow()
         showDashboardWindow()
+        CodexMemoryTrace.mark("helper.window-visible")
         dashboardStore.load()
+        CodexMemoryTrace.mark("helper.dashboard-load-requested")
         DispatchQueue.main.async { [weak self] in
             self?.sendReadyIfWindowIsVisible(self?.dashboardWindow)
         }

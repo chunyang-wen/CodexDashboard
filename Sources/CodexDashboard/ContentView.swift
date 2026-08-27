@@ -76,7 +76,7 @@ struct ContentView: View {
             }
         } detail: {
             Group {
-                if store.isLoading && store.sessions.isEmpty {
+                if store.isLoading && !store.hasLoadedAnalytics {
                     VStack(spacing: 10) {
                         ActivityIndicator(size: 32)
                         Text("Loading metrics…")
@@ -192,11 +192,9 @@ struct OverviewView: View {
     }
 
     var body: some View {
-        let medianTurn = Analytics.percentile(periodDetails.turnDurations, 0.5)
-        let p95Turn = Analytics.percentile(periodDetails.turnDurations, 0.95)
-        let averageTTFT = periodDetails.firstTokenTimes.isEmpty
-            ? nil
-            : periodDetails.firstTokenTimes.reduce(0, +) / Double(periodDetails.firstTokenTimes.count)
+        let medianTurn = periodDetails.medianTurnDuration
+        let p95Turn = periodDetails.p95TurnDuration
+        let averageTTFT = periodDetails.averageFirstTokenTime
 
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
@@ -225,7 +223,7 @@ struct OverviewView: View {
                     selectedPeriodStart: $selectedPeriodStart
                 )
                 HStack(alignment: .top, spacing: 16) {
-                    TopProjectsView(projects: Array(store.projects.prefix(7)))
+                    TopProjectsView(projects: Array(store.topProjects.prefix(7)))
                     ModelMixView(models: Array(store.models.prefix(7)))
                 }
                 ToolOverviewView(tools: Array(store.tools.prefix(10)), totalCalls: store.toolCalls)
@@ -751,7 +749,7 @@ struct ActivityChart: View {
 }
 
 struct TopProjectsView: View {
-    let projects: [ProjectMetric]
+    let projects: [ProjectAggregateRow]
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             SectionHeader(title: "Top projects", subtitle: "By token volume")
@@ -921,7 +919,10 @@ struct ProjectsView: View {
                             .buttonStyle(.plain)
                             .accessibilityLabel(expandedProjects.contains(project.id) ? "Collapse \(project.name)" : "Expand \(project.name)")
 
-                            Button { selection = .project(project.id) } label: {
+                            Button {
+                                selection = .project(project.id)
+                                store.loadProjectSessions(projectID: project.id)
+                            } label: {
                                 ProjectTreeRow(project: project)
                             }
                             .buttonStyle(.plain)
@@ -941,6 +942,10 @@ struct ProjectsView: View {
                                     .padding(.trailing, 8)
                                     .padding(.vertical, 3)
                                     .background(selection == .session(session.id) ? Color.accentColor.opacity(0.15) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                                    .onAppear {
+                                        guard session.id == project.sessions.last?.id else { return }
+                                        store.loadMoreProjectSessions(projectID: project.id)
+                                    }
                                 }
                             }
                             .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
@@ -952,7 +957,14 @@ struct ProjectsView: View {
         }
         .background(.background.secondary)
         .overlay(alignment: .top) {
-            if store.allProjects.isEmpty {
+            if store.isLoadingSessionHierarchy {
+                VStack(spacing: 10) {
+                    ActivityIndicator(size: 24)
+                    Text("Loading projects…")
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 32)
+            } else if store.allProjects.isEmpty {
                 ContentUnavailableView(
                     "No projects",
                     systemImage: "folder",
@@ -972,7 +984,7 @@ struct ProjectsView: View {
         switch selection {
         case .project(let path):
             if let project = store.allProjects.first(where: { $0.path == path }) {
-                let rangedSessions = store.filteredSessions.filter { $0.projectPath == path }
+                let rangedSessions = project.sessions
                 ProjectDetailLoaderView(
                     project: project,
                     rangedSessions: rangedSessions,
@@ -1014,6 +1026,7 @@ struct ProjectsView: View {
                 }
             } else {
                 expandedProjects.insert(projectID)
+                store.loadProjectSessions(projectID: projectID)
             }
         }
     }
@@ -1045,8 +1058,9 @@ private struct ProjectDetailLoaderView: View {
             toolCalls: project.sessions.reduce(0) { $0 + $1.toolCalls },
             skillCalls: project.sessions.reduce(0) { $0 + $1.skillCalls },
             activeDays: project.activeDays,
-            turnDurations: [],
-            firstTokenTimes: [],
+            medianTurnDuration: nil,
+            p95TurnDuration: nil,
+            averageFirstTokenTime: nil,
             tools: [],
             skills: []
         )
@@ -1069,14 +1083,14 @@ private struct ProjectDetailLoaderView: View {
             indexed = nil
             periods.removeAll()
             sessionIndexes.removeAll()
-            let aggregate = await store.loadProjectAggregate(path: project.path)
+            let aggregate = await store.loadProjectAggregate(paths: project.paths)
             guard !Task.isCancelled else { return }
             indexed = aggregate
 
             let visibleSessions = project.sessions.prefix(8)
             let visibleIDs = Set(visibleSessions.map(\.id))
-            async let periodRows = store.projectPeriods(path: project.path, granularity: granularity)
-            async let indexedCosts = store.indexedSessionCosts(projectPath: project.path, sessionIDs: visibleIDs)
+            async let periodRows = store.projectPeriods(paths: project.paths, granularity: granularity)
+            async let indexedCosts = store.indexedSessionCosts(projectPaths: project.paths, sessionIDs: visibleIDs)
 
             let allCosts = await indexedCosts
             let costs = allCosts.filter { visibleIDs.contains($0.key) }
@@ -1548,13 +1562,15 @@ private struct ModelTrendChartData {
     let identity: String
 
     init(points: [ModelPeriodMetric], models: [ModelMetric]) {
-        let preparedDates = Array(Set(points.map(\.start))).sorted()
-        self.pointsByModel = Dictionary(grouping: points, by: \.model).mapValues { values in
+        // The chart shows one model page at a time. Do not retain period rows
+        // for models that are not visible in this page.
+        let modelNames = Set(models.map(\.model))
+        let visiblePoints = points.filter { modelNames.contains($0.model) }
+        let preparedDates = Array(Set(visiblePoints.map(\.start))).sorted()
+        self.pointsByModel = Dictionary(grouping: visiblePoints, by: \.model).mapValues { values in
             Dictionary(uniqueKeysWithValues: values.map { ($0.start, $0) })
         }
-        let modelNames = Set(models.map(\.model))
-        let preparedMaximumTokens = max(1, points
-            .filter { modelNames.contains($0.model) }
+        let preparedMaximumTokens = max(1, visiblePoints
             .map { max(0, Double($0.usage.total)) }
             .max() ?? 1)
         dates = preparedDates
@@ -1655,8 +1671,6 @@ private struct ModelTrendChart: View {
                     ForEach(samples.filter { isModelVisible($0.model) }) { sample in
                         tokenMark(for: sample)
                         cacheMark(for: sample)
-                        tokenPointMark(for: sample)
-                        cachePointMark(for: sample)
                     }
                     if let hoveredIndex, dates.indices.contains(hoveredIndex) {
                         RuleMark(x: .value("Hovered period", Double(hoveredIndex - visibleStart)))
@@ -1913,24 +1927,6 @@ private struct ModelTrendChart: View {
         .lineStyle(.init(lineWidth: 1.5, lineCap: .round, lineJoin: .round, dash: [5, 4], dashPhase: 0))
     }
 
-    private func tokenPointMark(for sample: ModelTrendChartData.Sample) -> some ChartContent {
-        PointMark(
-            x: .value("Period", Double(sample.index - visibleStart)),
-            y: .value("Tokens", sample.tokens)
-        )
-        .foregroundStyle(seriesColor(sample.modelIndex))
-        .symbolSize(34)
-    }
-
-    private func cachePointMark(for sample: ModelTrendChartData.Sample) -> some ChartContent {
-        PointMark(
-            x: .value("Period", Double(sample.index - visibleStart)),
-            y: .value("Cache hit rate", sample.cacheRate)
-        )
-        .foregroundStyle(seriesColor(sample.modelIndex).opacity(0.68))
-        .symbolSize(24)
-    }
-
     private func hoverCard(for index: Int) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(axisPeriodLabel(dates[index]))
@@ -2007,21 +2003,16 @@ struct ModelsView: View {
     @State private var modelPage = 0
     private let modelPageSize = 4
 
-    private var modelPageCount: Int {
-        max(1, Int(ceil(Double(store.allTimeModels.count) / Double(modelPageSize))))
-    }
-
     private var visibleModels: [ModelMetric] {
-        let safePage = min(modelPage, modelPageCount - 1)
-        return Array(store.allTimeModels.dropFirst(safePage * modelPageSize).prefix(modelPageSize))
+        store.models
     }
 
     private var modelPageSummary: String {
-        guard !store.allTimeModels.isEmpty else { return "0 models" }
-        let safePage = min(modelPage, modelPageCount - 1)
+        guard store.modelCount > 0 else { return "0 models" }
+        let safePage = min(modelPage, store.modelPageCount - 1)
         let start = safePage * modelPageSize
-        let end = min(start + modelPageSize, store.allTimeModels.count)
-        return "Models \(start + 1)–\(end) of \(store.allTimeModels.count)"
+        let end = min(start + visibleModels.count, store.modelCount)
+        return "Models \(start + 1)–\(end) of \(store.modelCount)"
     }
 
     var body: some View {
@@ -2066,8 +2057,13 @@ struct ModelsView: View {
             }.padding(28)
         }
         .navigationTitle("Models")
-        .onChange(of: store.allTimeModels.map(\.id)) { _, _ in
-            modelPage = min(modelPage, modelPageCount - 1)
+        .onAppear {
+            modelPage = min(modelPage, store.modelPageCount - 1)
+            store.updateModelPage(modelPage)
+        }
+        .onChange(of: store.modelPageCount) { _, count in
+            modelPage = min(modelPage, count - 1)
+            store.updateModelPage(modelPage)
         }
     }
 
@@ -2079,23 +2075,25 @@ struct ModelsView: View {
             Spacer()
             Button {
                 modelPage = max(0, modelPage - 1)
+                store.updateModelPage(modelPage)
             } label: {
                 Label("Previous model page", systemImage: "chevron.left")
                     .labelStyle(.iconOnly)
             }
             .disabled(modelPage == 0)
             .help("Show previous models")
-            Text("Page \(min(modelPage + 1, modelPageCount)) of \(modelPageCount)")
+            Text("Page \(min(modelPage + 1, store.modelPageCount)) of \(store.modelPageCount)")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .frame(minWidth: 86)
             Button {
-                modelPage = min(modelPageCount - 1, modelPage + 1)
+                modelPage = min(store.modelPageCount - 1, modelPage + 1)
+                store.updateModelPage(modelPage)
             } label: {
                 Label("Next model page", systemImage: "chevron.right")
                     .labelStyle(.iconOnly)
             }
-            .disabled(modelPage >= modelPageCount - 1)
+            .disabled(modelPage >= store.modelPageCount - 1)
             .help("Show next models")
         }
         .frame(maxWidth: .infinity)

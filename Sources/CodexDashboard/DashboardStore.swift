@@ -25,7 +25,8 @@ private struct DashboardAnalytics: Sendable {
     let modelWeekly: [ModelPeriodMetric]
     let modelMonthly: [ModelPeriodMetric]
     let modelYearly: [ModelPeriodMetric]
-    let turnDurations: [TimeInterval]
+    let medianTurnDuration: TimeInterval?
+    let p95TurnDuration: TimeInterval?
     let averageTTFT: TimeInterval?
     let activeDays: Int
     let toolCalls: Int
@@ -37,14 +38,15 @@ private struct DashboardAnalytics: Sendable {
         filteredSessions: [], allProjects: [], projects: [],
         usage: .zero, estimatedCost: 0, costCoverage: 0, runtime: 0,
         models: [], allTimeModels: [], tools: [], skills: [], daily: [], weekly: [], monthly: [], yearly: [],
-        modelDaily: [], modelWeekly: [], modelMonthly: [], modelYearly: [], turnDurations: [],
+        modelDaily: [], modelWeekly: [], modelMonthly: [], modelYearly: [],
+        medianTurnDuration: nil, p95TurnDuration: nil,
         averageTTFT: nil, activeDays: 0, toolCalls: 0, skillCalls: 0, completedTurns: 0,
         abortedTurns: 0
     )
 
     /// Builds analytics from pre-fetched SQL results instead of iterating an
-    /// in-memory MetricsIndexSnapshot. Tools/skills/turn durations still come
-    /// from the index snapshot; everything else comes from typed SQLite queries.
+    /// in-memory MetricsIndexSnapshot. The active dashboard path keeps only
+    /// scalar duration summaries and typed SQLite projections.
     static func fromSQLResults(
         sessions: [SessionSummary],
         startDate: Date?,
@@ -56,8 +58,9 @@ private struct DashboardAnalytics: Sendable {
         tools: [ToolMetric],
         skills: [SkillMetric],
         granularity: PeriodGranularity = .month,
-        turnDurations: [TimeInterval] = [],
-        firstTokenTimes: [TimeInterval] = []
+        medianTurnDuration: TimeInterval? = nil,
+        p95TurnDuration: TimeInterval? = nil,
+        averageTTFT: TimeInterval? = nil
     ) -> DashboardAnalytics {
         let filtered = sessions.filter { session in
             startDate.map { session.updatedAt >= $0 } ?? true
@@ -86,8 +89,9 @@ private struct DashboardAnalytics: Sendable {
             modelWeekly: granularity == .week ? modelPeriods : [],
             modelMonthly: granularity == .month ? modelPeriods : [],
             modelYearly: granularity == .year ? modelPeriods : [],
-            turnDurations: turnDurations,
-            averageTTFT: firstTokenTimes.isEmpty ? nil : firstTokenTimes.reduce(0, +) / Double(firstTokenTimes.count),
+            medianTurnDuration: medianTurnDuration,
+            p95TurnDuration: p95TurnDuration,
+            averageTTFT: averageTTFT,
             activeDays: aggregate.activeDays,
             toolCalls: aggregate.toolCalls,
             skillCalls: aggregate.skillCalls,
@@ -132,7 +136,8 @@ private struct DashboardAnalytics: Sendable {
             modelWeekly: index.modelPeriods(granularity: .week, since: startDate, calendar: calendar),
             modelMonthly: index.modelPeriods(granularity: .month, since: startDate, calendar: calendar),
             modelYearly: index.modelPeriods(granularity: .year, since: startDate, calendar: calendar),
-            turnDurations: summary.turnDurations,
+            medianTurnDuration: Analytics.percentile(summary.turnDurations, 0.5),
+            p95TurnDuration: Analytics.percentile(summary.turnDurations, 0.95),
             averageTTFT: averageTTFT,
             activeDays: summary.activeDays,
             toolCalls: summary.toolCalls,
@@ -158,7 +163,7 @@ private struct DashboardAnalytics: Sendable {
             runtime: 0,
             models: [], allTimeModels: [], tools: [], skills: [], daily: [], weekly: [], monthly: [], yearly: [],
             modelDaily: [], modelWeekly: [], modelMonthly: [], modelYearly: [],
-            turnDurations: [], averageTTFT: nil, activeDays: 0,
+            medianTurnDuration: nil, p95TurnDuration: nil, averageTTFT: nil, activeDays: 0,
             toolCalls: summary.toolCalls, skillCalls: summary.skillCalls,
             completedTurns: 0, abortedTurns: 0
         )
@@ -200,15 +205,17 @@ struct SQLProjectAggregate: Sendable {
     let toolCalls: Int
     let skillCalls: Int
     let activeDays: Int
-    let turnDurations: [TimeInterval]
-    let firstTokenTimes: [TimeInterval]
+    let medianTurnDuration: TimeInterval?
+    let p95TurnDuration: TimeInterval?
+    let averageFirstTokenTime: TimeInterval?
     let tools: [ToolMetric]
     let skills: [SkillMetric]
 
     static let empty = SQLProjectAggregate(
         usage: .zero, estimatedCost: 0, costCoverage: 0, activeRuntime: 0,
         toolCalls: 0, skillCalls: 0, activeDays: 0,
-        turnDurations: [], firstTokenTimes: [], tools: [], skills: []
+        medianTurnDuration: nil, p95TurnDuration: nil, averageFirstTokenTime: nil,
+        tools: [], skills: []
     )
 }
 
@@ -240,6 +247,8 @@ final class DashboardStore: ObservableObject {
 
     @Published private(set) var sessions: [SessionSummary] = []
     @Published private(set) var isLoading = false
+    @Published private(set) var hasLoadedAnalytics = false
+    @Published private(set) var isLoadingSessionHierarchy = false
     @Published private(set) var isEnriching = false
     @Published private(set) var isUpdatingAnalytics = false
     @Published private(set) var enrichedSessions = 0
@@ -251,6 +260,8 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var pricingSource = "Bundled fallback"
     @Published private(set) var pricingUpdatedAt: Date?
     @Published private(set) var isRefreshingPricing = false
+    @Published private(set) var modelCount = 0
+    @Published private(set) var modelPageCount = 1
     @Published private(set) var isRebuildingHistory = false
     @Published private(set) var historySessionCount = 0
     @Published private(set) var historyMessage: String?
@@ -263,6 +274,10 @@ final class DashboardStore: ObservableObject {
     }
     private let defaults: UserDefaults
     private var loadTask: Task<Void, Never>?
+    private var sessionHierarchyTask: Task<Void, Never>?
+    private var projectSessionTasks: [String: Task<Void, Never>] = [:]
+    private var projectSessionCursors: [String: Int64] = [:]
+    private var projectSessionHasMore: Set<String> = []
     private var enrichmentTask: Task<Void, Never>?
     private var pricingTask: Task<Void, Never>?
     private var analyticsTask: Task<Void, Never>?
@@ -275,7 +290,11 @@ final class DashboardStore: ObservableObject {
     private let userHome: URL
     private let historicalStore: HistoricalStore
     private let dynamicPricingLoader = DynamicPricingLoader()
+    private let modelPageSize = 4
+    private var modelPageIndex = 0
     @Published private var analytics = DashboardAnalytics.empty
+    @Published private(set) var topProjects: [ProjectAggregateRow] = []
+    @Published private(set) var projectCatalog: [ProjectMetric] = []
     private var todayAnalytics = DashboardAnalytics.empty
     private var quotaWeekAnalytics = QuotaWeekAnalytics.empty
     private var metricsIndex = MetricsIndexSnapshot.empty
@@ -307,7 +326,7 @@ final class DashboardStore: ObservableObject {
         return calendar
     }
 
-    var isBusy: Bool { isLoading || isEnriching || isRebuildingHistory }
+    var isBusy: Bool { isLoading || isLoadingSessionHierarchy || isEnriching || isRebuildingHistory }
     var enrichmentFraction: Double {
         enrichmentTotal > 0 ? Double(enrichedSessions) / Double(enrichmentTotal) : 0
     }
@@ -322,8 +341,12 @@ final class DashboardStore: ObservableObject {
 
     var filteredSessions: [SessionSummary] { analytics.filteredSessions }
     /// The project/session hierarchy is structural and independent of chart aggregation.
-    var allProjects: [ProjectMetric] { analytics.allProjects }
-    var projects: [ProjectMetric] { analytics.projects }
+    var allProjects: [ProjectMetric] {
+        activePage == .projects && !projectCatalog.isEmpty ? projectCatalog : analytics.allProjects
+    }
+    var projects: [ProjectMetric] {
+        activePage == .projects && !projectCatalog.isEmpty ? projectCatalog : analytics.projects
+    }
     var usage: TokenUsage { analytics.usage }
     var estimatedCost: Decimal { analytics.estimatedCost }
     var costCoverage: Double { analytics.costCoverage }
@@ -355,7 +378,8 @@ final class DashboardStore: ObservableObject {
     var pricingEffectiveDate: String {
         pricing.latestEffectiveDate?.formatted(.iso8601.year().month().day()) ?? "—"
     }
-    var turnDurations: [TimeInterval] { analytics.turnDurations }
+    var medianTurnDuration: TimeInterval? { analytics.medianTurnDuration }
+    var p95TurnDuration: TimeInterval? { analytics.p95TurnDuration }
     var averageTTFT: TimeInterval? { analytics.averageTTFT }
     var activeDays: Int { analytics.activeDays }
     var toolCalls: Int { analytics.toolCalls }
@@ -371,57 +395,46 @@ final class DashboardStore: ObservableObject {
     var quotaWeekEstimatedCost: Decimal { quotaWeekAnalytics.estimatedCost }
     /// Loads the project aggregate directly from the typed SQL index.
     func loadProjectAggregate(path: String) async -> SQLProjectAggregate {
-        let agg = (try? await historicalStore.aggregateDaily(projectPath: path)) ?? DailyAggregateResult()
-        let tools = (try? await historicalStore.mergedTools(projectPath: path)) ?? []
-        let skills = (try? await historicalStore.mergedSkills(projectPath: path)) ?? []
+        await loadProjectAggregate(paths: [path])
+    }
 
-        return SQLProjectAggregate(
-            usage: agg.usage,
-            estimatedCost: Decimal(agg.estimatedCost),
-            costCoverage: agg.usage.total > 0 ? Double(agg.coveredTokens) / Double(agg.usage.total) : 0,
-            activeRuntime: agg.activeRuntime,
-            toolCalls: agg.toolCalls,
-            skillCalls: agg.skillCalls,
-            activeDays: agg.activeDays,
-            turnDurations: [],
-            firstTokenTimes: [],
-            tools: tools.map {
-                ToolMetric(tool: $0.tool, calls: $0.calls, attributedCalls: $0.attributedCalls,
-                           sessions: $0.sessions, attributedUsage: .zero, estimatedCost: Decimal($0.estimatedCost))
-            },
-            skills: skills.map {
-                SkillMetric(skill: $0.skill, calls: $0.calls, attributedCalls: 0,
-                            sessions: $0.sessions, attributedUsage: .zero, estimatedCost: 0)
+    func loadProjectAggregate(paths: [String]) async -> SQLProjectAggregate {
+        var aggregate = DailyAggregateResult()
+        var toolTotals: [String: (calls: Int, attributedCalls: Int, sessions: Int, cost: Double)] = [:]
+        var skillTotals: [String: (calls: Int, attributedCalls: Int, sessions: Int, cost: Double)] = [:]
+        for path in Set(paths) {
+            let daily = (try? await historicalStore.aggregateDaily(projectPath: path)) ?? DailyAggregateResult()
+            aggregate.usage = aggregate.usage + daily.usage
+            aggregate.estimatedCost += daily.estimatedCost
+            aggregate.coveredTokens += daily.coveredTokens
+            aggregate.activeRuntime += daily.activeRuntime
+            aggregate.toolCalls += daily.toolCalls
+            aggregate.skillCalls += daily.skillCalls
+            aggregate.completedTurns += daily.completedTurns
+            aggregate.activeDays += daily.activeDays
+
+            for tool in (try? await historicalStore.mergedTools(projectPath: path)) ?? [] {
+                var total = toolTotals[tool.tool] ?? (0, 0, 0, 0)
+                total.calls += tool.calls
+                total.attributedCalls += tool.attributedCalls
+                total.sessions += tool.sessions
+                total.cost += tool.estimatedCost
+                toolTotals[tool.tool] = total
             }
-        )
-    }
-
-    func projectPeriods(path: String, granularity: PeriodGranularity, since startDate: Date? = nil) async -> [PeriodMetric] {
-        (try? await historicalStore.periodMetrics(
-            projectPath: path,
-            since: startDate,
-            granularity: granularity,
-            calendar: analyticsCalendar
-        )) ?? []
-    }
-
-    func indexedSessionCosts(projectPath: String, sessionIDs: Set<String>? = nil) async -> [String: IndexedSessionCost] {
-        let results: [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)]?
-        if let sessionIDs {
-            results = try? await historicalStore.sessionCosts(projectPath: projectPath, sessionIDs: sessionIDs)
-        } else {
-            results = try? await historicalStore.sessionCosts(projectPath: projectPath)
+            for skill in (try? await historicalStore.mergedSkills(projectPath: path)) ?? [] {
+                var total = skillTotals[skill.skill] ?? (0, 0, 0, 0)
+                total.calls += skill.calls
+                total.attributedCalls += skill.attributedCalls
+                total.sessions += skill.sessions
+                total.cost += skill.estimatedCost
+                skillTotals[skill.skill] = total
+            }
         }
-        guard let results else { return [:] }
-        return results.mapValues {
-            IndexedSessionCost(estimatedCost: $0.estimatedCost, coveredTokens: $0.coveredTokens, totalTokens: $0.totalTokens)
-        }
-    }
+        // A merged project can have multiple checkouts active on the same day;
+        // count calendar buckets once across all paths.
+        let dayRows = await projectPeriods(paths: paths, granularity: .day)
+        aggregate.activeDays = Set(dayRows.map(\.start)).count
 
-    /// Loads the selected overview period directly from the typed SQL index.
-    func periodAggregate(in interval: DateInterval) async -> SQLProjectAggregate {
-        let aggregate = (try? await historicalStore.aggregateDaily(since: interval.start, before: interval.end)) ?? DailyAggregateResult()
-        let durations = (try? await historicalStore.durationArrays(since: interval.start, before: interval.end)) ?? DurationArrays()
         return SQLProjectAggregate(
             usage: aggregate.usage,
             estimatedCost: Decimal(aggregate.estimatedCost),
@@ -430,8 +443,92 @@ final class DashboardStore: ObservableObject {
             toolCalls: aggregate.toolCalls,
             skillCalls: aggregate.skillCalls,
             activeDays: aggregate.activeDays,
-            turnDurations: durations.turnDurations,
-            firstTokenTimes: durations.firstTokenTimes,
+            medianTurnDuration: nil,
+            p95TurnDuration: nil,
+            averageFirstTokenTime: nil,
+            tools: toolTotals.map { name, value in
+                ToolMetric(tool: name, calls: value.calls, attributedCalls: value.attributedCalls,
+                           sessions: value.sessions, attributedUsage: .zero, estimatedCost: Decimal(value.cost))
+            },
+            skills: skillTotals.map { name, value in
+                SkillMetric(skill: name, calls: value.calls, attributedCalls: value.attributedCalls,
+                            sessions: value.sessions, attributedUsage: .zero, estimatedCost: Decimal(value.cost))
+            }
+        )
+    }
+
+    func projectPeriods(path: String, granularity: PeriodGranularity, since startDate: Date? = nil) async -> [PeriodMetric] {
+        await projectPeriods(paths: [path], granularity: granularity, since: startDate)
+    }
+
+    func projectPeriods(paths: [String], granularity: PeriodGranularity, since startDate: Date? = nil) async -> [PeriodMetric] {
+        var totals: [Date: (usage: TokenUsage, sessions: Int, runtime: TimeInterval, cost: Decimal)] = [:]
+        for path in Set(paths) {
+            let periods = (try? await historicalStore.periodMetrics(
+                projectPath: path,
+                since: startDate,
+                granularity: granularity,
+                calendar: analyticsCalendar
+            )) ?? []
+            for period in periods {
+                var total = totals[period.start] ?? (.zero, 0, 0, 0)
+                total.usage = total.usage + period.usage
+                total.sessions += period.sessions
+                total.runtime += period.activeRuntime
+                total.cost += period.estimatedCost
+                totals[period.start] = total
+            }
+        }
+        return totals.map { start, value in
+            PeriodMetric(start: start, usage: value.usage, sessions: value.sessions,
+                         activeRuntime: value.runtime, estimatedCost: value.cost)
+        }.sorted { $0.start < $1.start }
+    }
+
+    func indexedSessionCosts(projectPath: String, sessionIDs: Set<String>? = nil) async -> [String: IndexedSessionCost] {
+        await indexedSessionCosts(projectPaths: [projectPath], sessionIDs: sessionIDs)
+    }
+
+    func indexedSessionCosts(projectPaths: [String], sessionIDs: Set<String>? = nil) async -> [String: IndexedSessionCost] {
+        var combined: [String: IndexedSessionCost] = [:]
+        for path in Set(projectPaths) {
+        let results: [String: (estimatedCost: Decimal, coveredTokens: Int64, totalTokens: Int64)]?
+        if let sessionIDs {
+                results = try? await historicalStore.sessionCosts(projectPath: path, sessionIDs: sessionIDs)
+        } else {
+                results = try? await historicalStore.sessionCosts(projectPath: path)
+        }
+            for (id, value) in results ?? [:] {
+                let existing = combined[id] ?? IndexedSessionCost(estimatedCost: 0, coveredTokens: 0, totalTokens: 0)
+                combined[id] = IndexedSessionCost(
+                    estimatedCost: existing.estimatedCost + value.estimatedCost,
+                    coveredTokens: existing.coveredTokens + value.coveredTokens,
+                    totalTokens: existing.totalTokens + value.totalTokens
+                )
+            }
+        }
+        return combined
+    }
+
+    /// Loads the selected overview period directly from the typed SQL index.
+    func periodAggregate(in interval: DateInterval) async -> SQLProjectAggregate {
+        let aggregate = (try? await historicalStore.aggregateDaily(since: interval.start, before: interval.end)) ?? DailyAggregateResult()
+        let durations = (try? await historicalStore.durationSummary(since: interval.start, before: interval.end)) ?? DurationSummary()
+        CodexMemoryTrace.mark(
+            "helper.overview.period-summary-ready",
+            details: "turns=\(durations.turnCount) firstTokenSamples=\(durations.firstTokenCount)"
+        )
+        return SQLProjectAggregate(
+            usage: aggregate.usage,
+            estimatedCost: Decimal(aggregate.estimatedCost),
+            costCoverage: aggregate.usage.total > 0 ? Double(aggregate.coveredTokens) / Double(aggregate.usage.total) : 0,
+            activeRuntime: aggregate.activeRuntime,
+            toolCalls: aggregate.toolCalls,
+            skillCalls: aggregate.skillCalls,
+            activeDays: aggregate.activeDays,
+            medianTurnDuration: durations.medianTurnDuration,
+            p95TurnDuration: durations.p95TurnDuration,
+            averageFirstTokenTime: durations.averageFirstTokenTime,
             tools: [],
             skills: []
         )
@@ -476,14 +573,22 @@ final class DashboardStore: ObservableObject {
     }
 
     func load() {
+        CodexMemoryTrace.mark("helper.dashboard-store.load.begin")
         dashboardDataIsResident = true
         loadTask?.cancel()
+        sessionHierarchyTask?.cancel()
+        sessionHierarchyTask = nil
         enrichmentTask?.cancel()
         let requestID = UUID()
         loadID = requestID
         enrichmentID = UUID()
         isLoading = true
+        hasLoadedAnalytics = false
         isEnriching = false
+        isLoadingSessionHierarchy = false
+        sessions = []
+        modelCount = 0
+        modelPageCount = 1
         enrichedSessions = 0
         enrichmentTotal = 0
         errorMessage = nil
@@ -504,7 +609,19 @@ final class DashboardStore: ObservableObject {
             let storedSubscription = try? await historicalStore.subscriptionSnapshot()
                 .flatMap { $0.isUsable ? $0 : nil }
             _ = acceptSubscription(storedSubscription)
-            let liveData: ProviderLiveSnapshot? = await Task.detached(priority: .utility) {
+
+            // Paint only the compact SQL projection. The selected range affects
+            // these queries; the full session hierarchy belongs to Projects.
+            scheduleAnalyticsRefresh()
+            while !hasLoadedAnalytics, !Task.isCancelled, loadID == requestID {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            guard !Task.isCancelled, loadID == requestID else { return }
+            isLoading = false
+
+            // Live quota/account I/O is independent of local metrics and must
+            // never delay the first dashboard frame.
+            let liveDataTask: Task<ProviderLiveSnapshot?, Never> = Task.detached(priority: .utility) {
                 switch provider {
                 case .default:
                     return CLIProxyAPILiveSnapshot(
@@ -518,59 +635,24 @@ final class DashboardStore: ObservableObject {
                     guard let sub2APIConfiguration else { return nil }
                     return await Sub2APIReader.liveData(using: sub2APIConfiguration)
                 }
-            }.value
+            }
+
+            pricing = (try? await historicalStore.storedPricingHistory()) ?? .bundled
+            historySessionCount = (try? await historicalStore.storedSessionCount()) ?? 0
+            if activePage == .projects {
+                loadSessionHierarchy()
+            }
+
+            let liveData: ProviderLiveSnapshot? = await liveDataTask.value
             guard !Task.isCancelled, loadID == requestID else { return }
             if provider != .default {
                 account = liveData?.account
             }
-            let liveSubscription = liveData?.subscription
-            if let liveSubscription, liveSubscription.isUsable {
+            if let liveSubscription = liveData?.subscription, liveSubscription.isUsable {
                 if provider == .default {
                     try? await historicalStore.recordSubscription(liveSubscription)
                 }
                 _ = acceptSubscription(liveSubscription)
-            }
-            let indexed = (try? await Task.detached(priority: .userInitiated) {
-                try CodexStore(codexHome: codexHome).loadIndexedSessions()
-            }.value) ?? []
-            guard !Task.isCancelled, loadID == requestID else { return }
-            do {
-                let merged = try await historicalStore.mergedSessionSummaries(with: indexed)
-                sessions = merged
-                pricing = try await historicalStore.pricingHistory()
-                historySessionCount = try await historicalStore.sessionCount()
-            } catch {
-                sessions = indexed.map(\.summary)
-                historyMessage = "Stored history could not be loaded: \(error.localizedDescription)"
-            }
-            scheduleAnalyticsRefresh()
-            guard !Task.isCancelled, loadID == requestID else { return }
-            isLoading = false
-            startEnrichmentForAvailableHistory()
-            refreshPricing()
-            let cachedSubscription = ([
-                storedSubscription,
-                sessions.compactMap(\.subscription).filter(\.isUsable).max { $0.observedAt < $1.observedAt }
-            ].compactMap { $0 }).max { $0.observedAt < $1.observedAt }
-            if acceptSubscription(cachedSubscription) {
-                scheduleAnalyticsRefresh()
-            }
-            // Older history does not contain parser-extracted quota snapshots.
-            // Keep the bounded tail scan as a one-time compatibility fallback;
-            // once a snapshot is persisted, future loads remain entirely in-memory.
-            let latestSubscription = if cachedSubscription == nil {
-                await Task.detached(priority: .utility) {
-                    SubscriptionReader.latest(from: indexed)
-                }.value
-            } else {
-                cachedSubscription
-            }
-            guard !Task.isCancelled, loadID == requestID else { return }
-            if acceptSubscription(latestSubscription) {
-                scheduleAnalyticsRefresh()
-            }
-            if let latestSubscription {
-                try? await historicalStore.recordSubscription(latestSubscription)
             }
             if provider == .default {
                 account = await Task.detached(priority: .utility) {
@@ -593,11 +675,129 @@ final class DashboardStore: ObservableObject {
         guard dashboardDataIsResident else { return }
         scheduleAnalyticsRefresh()
         Task { [weak self] in
-            guard let self,
-                  let snapshot = try? await self.historicalStore.subscriptionSnapshot()
-            else { return }
-            _ = self.acceptSubscription(snapshot)
+            guard let self else { return }
+            let snapshot = try? await self.historicalStore.subscriptionSnapshot()
+            _ = self.acceptSubscription(snapshot ?? nil)
+            guard self.dashboardDataIsResident,
+                  let storedPricing = try? await self.historicalStore.storedPricingHistory(),
+                  self.pricing != storedPricing else { return }
+            self.pricing = storedPricing
+            self.scheduleAnalyticsRefresh()
         }
+    }
+
+    private func loadSessionHierarchy() {
+        guard dashboardDataIsResident,
+              activePage == .projects,
+              sessionHierarchyTask == nil,
+              projectCatalog.isEmpty else { return }
+        isLoadingSessionHierarchy = true
+        sessionHierarchyTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.sessionHierarchyTask = nil
+                self.isLoadingSessionHierarchy = false
+            }
+            guard !Task.isCancelled, self.dashboardDataIsResident else { return }
+            let rows = (try? await self.historicalStore.projectAggregates()) ?? []
+            self.projectCatalog = rows.map {
+                ProjectMetric(
+                    path: $0.path,
+                    paths: $0.paths,
+                    usage: $0.usage,
+                    activeRuntime: $0.activeRuntime,
+                    sessionCount: $0.sessionCount,
+                    lastActivity: $0.lastActivity
+                )
+            }.sorted { $0.lastActivity > $1.lastActivity }
+        }
+    }
+
+    func loadProjectSessions(projectID: String) {
+        guard let project = projectCatalog.first(where: { $0.id == projectID }),
+              project.sessions.isEmpty,
+              projectSessionTasks[projectID] == nil else { return }
+        loadProjectSessionPage(projectID: projectID, project: project, afterRowID: 0)
+    }
+
+    func loadMoreProjectSessions(projectID: String) {
+        guard projectSessionHasMore.contains(projectID),
+              projectSessionTasks[projectID] == nil,
+              let project = projectCatalog.first(where: { $0.id == projectID }),
+              let cursor = projectSessionCursors[projectID] else { return }
+        loadProjectSessionPage(projectID: projectID, project: project, afterRowID: cursor)
+    }
+
+    private func loadProjectSessionPage(projectID: String, project: ProjectMetric, afterRowID: Int64) {
+        let codexHome = codexHome
+        projectSessionTasks[projectID] = Task { [weak self] in
+            defer { self?.projectSessionTasks[projectID] = nil }
+            guard let self else { return }
+            let indexedPage = (try? await Task.detached(priority: .utility) {
+                try CodexStore(codexHome: codexHome).loadIndexedSessionPage(
+                    forProjectPaths: Set(project.paths),
+                    afterRowID: afterRowID,
+                    batchSize: 50
+                )
+            }.value)
+            guard !Task.isCancelled, self.dashboardDataIsResident else { return }
+            let summaries: [SessionSummary]
+            let nextRowID: Int64?
+            if let indexedPage, !indexedPage.sessions.isEmpty {
+                summaries = (try? await self.historicalStore.mergedSessionSummaries(for: indexedPage.sessions))
+                    ?? indexedPage.sessions.map(\.summary)
+                nextRowID = indexedPage.nextRowID
+            } else if indexedPage == nil || afterRowID == 0,
+                      let historicalPage = try? await self.historicalStore.sessionSummaryPage(
+                          forProjectPaths: Set(project.paths), afterRowID: afterRowID, batchSize: 50
+                      ) {
+                summaries = historicalPage.summaries
+                nextRowID = historicalPage.nextRowID
+            } else {
+                summaries = []
+                nextRowID = nil
+            }
+            guard !Task.isCancelled else { return }
+            guard let index = self.projectCatalog.firstIndex(where: { $0.id == projectID }) else { return }
+            let current = self.projectCatalog[index]
+            let existingIDs = Set(current.sessions.map(\.id))
+            let merged = (current.sessions + summaries.filter { !existingIDs.contains($0.id) })
+                .sorted { $0.updatedAt > $1.updatedAt }
+            self.projectCatalog[index] = ProjectMetric(
+                path: current.path,
+                paths: current.paths,
+                sessions: merged,
+                usage: current.usage,
+                activeRuntime: current.activeRuntime,
+                sessionCount: current.sessionCount,
+                lastActivity: current.lastActivity
+            )
+            self.projectSessionCursors[projectID] = nextRowID
+            if nextRowID == nil {
+                self.projectSessionHasMore.remove(projectID)
+            } else {
+                self.projectSessionHasMore.insert(projectID)
+            }
+            self.sessions = merged
+        }
+    }
+
+    private func releaseSessionHierarchy() {
+        sessionHierarchyTask?.cancel()
+        sessionHierarchyTask = nil
+        for task in projectSessionTasks.values { task.cancel() }
+        projectSessionTasks.removeAll()
+        projectSessionCursors.removeAll()
+        projectSessionHasMore.removeAll()
+        enrichmentTask?.cancel()
+        enrichmentTask = nil
+        enrichmentID = UUID()
+        isLoadingSessionHierarchy = false
+        isEnriching = false
+        enrichedSessions = 0
+        enrichmentTotal = 0
+        sessions = []
+        projectCatalog = []
     }
 
     private func startEnrichmentForAvailableHistory() {
@@ -752,6 +952,18 @@ final class DashboardStore: ObservableObject {
     func updatePage(_ page: DashboardPage) {
         guard activePage != page else { return }
         activePage = page
+        if page == .projects {
+            loadSessionHierarchy()
+        } else {
+            releaseSessionHierarchy()
+        }
+        scheduleAnalyticsRefresh()
+    }
+
+    func updateModelPage(_ page: Int) {
+        let page = max(0, page)
+        guard modelPageIndex != page else { return }
+        modelPageIndex = page
         scheduleAnalyticsRefresh()
     }
 
@@ -789,25 +1001,43 @@ final class DashboardStore: ObservableObject {
                 let page = activePage
                 let granularity = range.granularity
                 let weeklyQuotaWindow = subscription?.windows.first { $0.windowMinutes == 10_080 }
+                let chartStartDate = try? await historicalStore.latestPeriodStart(
+                    granularity: granularity,
+                    limit: 45,
+                    calendar: self.analyticsCalendar
+                )
 
                 // Fully SQL path: typed tables answer every dashboard question
                 // without decoding any JSON blobs.
                 let aggregate = (try? await historicalStore.aggregateDaily()) ?? DailyAggregateResult()
                 let periodRows = (page == .overview || page == .billing)
-                    ? ((try? await historicalStore.periodMetrics(granularity: granularity, calendar: self.analyticsCalendar)) ?? [])
+                    ? ((try? await historicalStore.periodMetrics(since: chartStartDate, granularity: granularity, calendar: self.analyticsCalendar)) ?? [])
+                    : []
+                let modelPageSize = page == .models ? self.modelPageSize : 7
+                let modelOffset = page == .models ? self.modelPageIndex * self.modelPageSize : 0
+                let modelCountResult = page == .models
+                    ? ((try? await historicalStore.modelCount()) ?? 0)
+                    : 0
+                let models = (page == .overview || page == .models)
+                    ? ((try? await historicalStore.modelMetrics(limit: modelPageSize, offset: modelOffset)) ?? [])
                     : []
                 let modelRows = (page == .overview || page == .models)
-                    ? ((try? await historicalStore.modelPeriodMetrics(granularity: granularity, calendar: self.analyticsCalendar)) ?? [])
-                    : []
-                let models = (page == .overview || page == .models)
-                    ? ((try? await historicalStore.modelMetrics()) ?? [])
+                    ? ((try? await historicalStore.modelPeriodMetrics(
+                        since: chartStartDate,
+                        granularity: granularity,
+                        calendar: self.analyticsCalendar,
+                        models: Set(models.map(\.model))
+                    )) ?? [])
                     : []
                 let allTimeModels = page == .models ? models : []
                 let tools = page == .overview
-                    ? ((try? await historicalStore.mergedTools()) ?? [])
+                    ? ((try? await historicalStore.mergedTools(limit: 10)) ?? [])
                     : []
                 let skills = page == .overview
-                    ? ((try? await historicalStore.mergedSkills()) ?? [])
+                    ? ((try? await historicalStore.mergedSkills(limit: 10)) ?? [])
+                    : []
+                let projectRows = page == .overview
+                    ? ((try? await historicalStore.projectAggregates(limit: 7)) ?? [])
                     : []
                 let todayStart = analyticsCalendar.startOfDay(for: .now)
                 let todayAggregateResult = (try? await historicalStore.aggregateDaily(since: todayStart)) ?? DailyAggregateResult()
@@ -823,9 +1053,14 @@ final class DashboardStore: ObservableObject {
                     }
                 }
 
+                CodexMemoryTrace.mark(
+                    "helper.analytics.sql-ready",
+                    details: "models=\(models.count) modelTrend=\(modelRows.count) periods=\(periodRows.count) projects=\(projectRows.count)"
+                )
+
                 let refreshed = await Task.detached(priority: .userInitiated) {
                     var selected = DashboardAnalytics.fromSQLResults(
-                        sessions: page == .overview || page == .projects ? sessions : [],
+                        sessions: page == .projects ? sessions : [],
                         startDate: nil,
                         aggregate: aggregate,
                         periods: periodRows,
@@ -854,7 +1089,7 @@ final class DashboardStore: ObservableObject {
                         models: [], allTimeModels: [], tools: [], skills: [],
                         daily: [], weekly: [], monthly: [], yearly: [],
                         modelDaily: [], modelWeekly: [], modelMonthly: [], modelYearly: [],
-                        turnDurations: [], averageTTFT: nil, activeDays: 0,
+                        medianTurnDuration: nil, p95TurnDuration: nil, averageTTFT: nil, activeDays: 0,
                         toolCalls: todayAggregate.toolCalls, skillCalls: todayAggregate.skillCalls,
                         completedTurns: 0, abortedTurns: 0
                     )
@@ -876,6 +1111,17 @@ final class DashboardStore: ObservableObject {
                 analytics = refreshed.0
                 todayAnalytics = refreshed.1
                 quotaWeekAnalytics = refreshed.2
+                if page == .overview {
+                    topProjects = projectRows
+                } else if page == .models {
+                    modelCount = modelCountResult
+                    modelPageCount = max(1, Int(ceil(Double(modelCountResult) / Double(self.modelPageSize))))
+                }
+                hasLoadedAnalytics = true
+                CodexMemoryTrace.mark(
+                    "helper.analytics.published",
+                    details: "page=\(page) models=\(models.count) modelTrend=\(modelRows.count) sessions=\(sessions.count)"
+                )
                 guard analyticsID != requestID else { return }
             }
         }
@@ -920,10 +1166,20 @@ final class DashboardStore: ObservableObject {
     /// Called when the dashboard window closes. Release all dashboard-only
     /// projections; the menu-bar host owns its separate compact projection.
     func releaseDashboardMemory() {
+        CodexMemoryTrace.mark(
+            "helper.dashboard.release.begin",
+            details: "models=\(models.count) modelTrend=\(modelTrendPeriods.count) sessions=\(sessions.count)"
+        )
         guard dashboardDataIsResident else { return }
         dashboardDataIsResident = false
         loadTask?.cancel()
         loadTask = nil
+        sessionHierarchyTask?.cancel()
+        sessionHierarchyTask = nil
+        for task in projectSessionTasks.values { task.cancel() }
+        projectSessionTasks.removeAll()
+        projectSessionCursors.removeAll()
+        projectSessionHasMore.removeAll()
         enrichmentTask?.cancel()
         enrichmentTask = nil
         analyticsTask?.cancel()
@@ -932,11 +1188,17 @@ final class DashboardStore: ObservableObject {
         rangeRefreshTask?.cancel()
         rangeRefreshTask = nil
         isLoading = false
+        hasLoadedAnalytics = false
+        isLoadingSessionHierarchy = false
         isEnriching = false
         isUpdatingAnalytics = false
         enrichedSessions = 0
         enrichmentTotal = 0
         sessions = []
+        modelCount = 0
+        modelPageCount = 1
+        topProjects = []
+        projectCatalog = []
         analytics = .empty
         todayAnalytics = .empty
         quotaWeekAnalytics = .empty
@@ -957,6 +1219,7 @@ final class DashboardStore: ObservableObject {
             // the process footprint. Return those pages now instead of waiting
             // for system-wide memory pressure.
             malloc_zone_pressure_relief(nil, 0)
+            CodexMemoryTrace.mark("helper.dashboard.release.done")
         }
     }
 

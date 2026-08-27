@@ -106,7 +106,7 @@ final class StatusItemController: NSObject {
             dismissPopover()
             return
         }
-        store.loadMenuBar(includeLiveQuota: true)
+        CodexMemoryTrace.mark("host.status-item.open")
         let anchor = statusItemScreenFrame ?? .zero
         showPopover(anchor: anchor)
     }

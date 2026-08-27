@@ -29,6 +29,48 @@ public enum DynamicPricingError: LocalizedError {
 /// Refreshes a third-party models.dev catalog at most once per day. Bundled and
 /// previously persisted schedules remain authoritative whenever refresh fails.
 public actor DynamicPricingLoader {
+    private struct Catalog: Decodable {
+        let openai: Provider
+    }
+
+    private struct Provider: Decodable {
+        let models: [String: Model]
+    }
+
+    private struct Model: Decodable {
+        let id: String?
+        let cost: Cost?
+    }
+
+    private struct Cost: Decodable {
+        let input: FlexibleNumber?
+        let output: FlexibleNumber?
+        let cacheRead: FlexibleNumber?
+        let cacheWrite: FlexibleNumber?
+
+        enum CodingKeys: String, CodingKey {
+            case input
+            case output
+            case cacheRead = "cache_read"
+            case cacheWrite = "cache_write"
+        }
+    }
+
+    private struct FlexibleNumber: Decodable {
+        let value: Double?
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let number = try? container.decode(Double.self) {
+                value = number
+            } else if let string = try? container.decode(String.self) {
+                value = Double(string)
+            } else {
+                value = nil
+            }
+        }
+    }
+
     private struct State: Codable {
         var lastSuccess: Date?
         var etag: String?
@@ -59,10 +101,12 @@ public actor DynamicPricingLoader {
     }
 
     public func refresh(force: Bool = false, now: Date = .now) async throws -> DynamicPricingSnapshot {
+        CodexMemoryTrace.mark("host.pricing.refresh.begin")
         if !force,
            let memorySnapshot,
            now.timeIntervalSince(memorySnapshot.fetchedAt) < refreshInterval
         {
+            CodexMemoryTrace.mark("host.pricing.refresh.cache-hit", details: "source=memory models=\(memorySnapshot.prices.count)")
             return memorySnapshot
         }
         var state = loadState()
@@ -72,6 +116,7 @@ public actor DynamicPricingLoader {
            let cached = loadCached(fetchedAt: lastSuccess)
         {
             memorySnapshot = cached
+            CodexMemoryTrace.mark("host.pricing.refresh.cache-hit", details: "source=disk models=\(cached.prices.count)")
             return cached
         }
 
@@ -92,20 +137,25 @@ public actor DynamicPricingLoader {
                 state.lastSuccess = now
                 try persistState(state)
                 memorySnapshot = cached
+                CodexMemoryTrace.mark("host.pricing.refresh.cache-hit", details: "source=not-modified models=\(cached.prices.count)")
                 return cached
             }
             guard http.statusCode == 200 else { throw DynamicPricingError.invalidResponse }
             guard data.count <= 20_000_000 else { throw DynamicPricingError.responseTooLarge }
+            CodexMemoryTrace.mark("host.pricing.response-received", details: "bytes=\(data.count)")
             let snapshot = try Self.parse(data, fetchedAt: now, fromCache: false)
+            CodexMemoryTrace.mark("host.pricing.catalog-decoded", details: "models=\(snapshot.prices.count)")
             try persistCache(snapshot.prices)
             state.lastSuccess = now
             state.etag = http.value(forHTTPHeaderField: "ETag")
             state.lastModified = http.value(forHTTPHeaderField: "Last-Modified")
             try persistState(state)
             memorySnapshot = snapshot
+            CodexMemoryTrace.mark("host.pricing.refresh.done", details: "source=network models=\(snapshot.prices.count)")
             return snapshot
         } catch {
             if let memorySnapshot {
+                CodexMemoryTrace.mark("host.pricing.refresh.fallback", details: "source=memory models=\(memorySnapshot.prices.count)")
                 return DynamicPricingSnapshot(
                     prices: memorySnapshot.prices,
                     fetchedAt: memorySnapshot.fetchedAt,
@@ -115,6 +165,7 @@ public actor DynamicPricingLoader {
             if let lastSuccess = state.lastSuccess,
                let cached = loadCached(fetchedAt: lastSuccess) {
                 memorySnapshot = cached
+                CodexMemoryTrace.mark("host.pricing.refresh.fallback", details: "source=disk models=\(cached.prices.count)")
                 return cached
             }
             throw error
@@ -127,23 +178,23 @@ public actor DynamicPricingLoader {
         fromCache: Bool = false
     ) throws -> DynamicPricingSnapshot {
         guard data.count <= 20_000_000 else { throw DynamicPricingError.responseTooLarge }
-        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let openAI = root["openai"] as? [String: Any],
-              let models = openAI["models"] as? [String: Any] else {
+        let catalog: Catalog
+        do {
+            catalog = try JSONDecoder().decode(Catalog.self, from: data)
+        } catch {
             throw DynamicPricingError.invalidResponse
         }
         var prices: [String: ModelPrice] = [:]
-        for (key, rawModel) in models {
-            guard let model = rawModel as? [String: Any],
-                  let identifier = (model["id"] as? String).flatMap({ $0.isEmpty ? nil : $0 }) ?? (key.isEmpty ? nil : key),
-                  let cost = model["cost"] as? [String: Any],
-                  let input = finiteNonnegative(cost["input"]),
-                  let output = finiteNonnegative(cost["output"]),
+        for (key, model) in catalog.openai.models {
+            guard let identifier = model.id.flatMap({ $0.isEmpty ? nil : $0 }) ?? (key.isEmpty ? nil : key),
+                  let cost = model.cost,
+                  let input = finiteNonnegative(cost.input?.value),
+                  let output = finiteNonnegative(cost.output?.value),
                   input <= 1_000,
                   output <= 10_000 else { continue }
-            let cached = finiteNonnegative(cost["cache_read"]) ?? input
+            let cached = finiteNonnegative(cost.cacheRead?.value) ?? input
             guard cached <= 1_000 else { continue }
-            let cacheWrite = finiteNonnegative(cost["cache_write"])
+            let cacheWrite = finiteNonnegative(cost.cacheWrite?.value)
             let multiplier = input > 0 ? Decimal(cacheWrite ?? input) / Decimal(input) : 1
             prices[identifier] = ModelPrice(
                 input: Decimal(input),
@@ -156,13 +207,9 @@ public actor DynamicPricingLoader {
         return DynamicPricingSnapshot(prices: prices, fetchedAt: fetchedAt, fromCache: fromCache)
     }
 
-    private static func finiteNonnegative(_ value: Any?) -> Double? {
-        let number: Double?
-        if let value = value as? NSNumber { number = value.doubleValue }
-        else if let value = value as? String { number = Double(value) }
-        else { number = nil }
-        guard let number, number.isFinite, number >= 0 else { return nil }
-        return number
+    private static func finiteNonnegative(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, value >= 0 else { return nil }
+        return value
     }
 
     private func loadState() -> State {

@@ -112,7 +112,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
         menuStore.metricsDidChange = { [weak self] in
             self?.dashboardCoordinator.refreshMetrics()
         }
-        dashboardCoordinator.stateDidChange = { _ in
+        dashboardCoordinator.stateDidChange = { [weak self] state in
+            self?.menuStore.setDashboardOpen(state != .stopped)
             AppActivationPolicy.hideDockIconIfNoManagedWindowIsVisible()
         }
     }
@@ -261,8 +262,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDele
     }
 
     private func requestDashboard() {
+        CodexMemoryTrace.mark("host.dashboard-request.begin")
         statusItemController?.dismissPopover()
+        CodexMemoryTrace.mark("host.dashboard-request.after-popover-release")
         dashboardCoordinator.requestDashboard()
+        CodexMemoryTrace.mark("host.dashboard-request.after-helper-request")
     }
 
     @objc private func windowWillClose(_ notification: Notification) {

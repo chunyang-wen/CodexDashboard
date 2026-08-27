@@ -6,8 +6,20 @@ public enum PeriodGranularity: String, CaseIterable, Hashable, Sendable {
 
 public enum Analytics {
     public static func projects(from sessions: [SessionSummary]) -> [ProjectMetric] {
-        Dictionary(grouping: sessions, by: \.projectPath)
-            .map { ProjectMetric(path: $0.key, sessions: $0.value.sorted { $0.updatedAt > $1.updatedAt }) }
+        Dictionary(grouping: sessions, by: { $0.projectName.lowercased() })
+            .map { _, groupedSessions in
+                let paths = Array(Set(groupedSessions.map(\.projectPath))).sorted()
+                let representative = paths.max { lhs, rhs in
+                    let leftCount = groupedSessions.filter { $0.projectPath == lhs }.count
+                    let rightCount = groupedSessions.filter { $0.projectPath == rhs }.count
+                    return leftCount == rightCount ? lhs > rhs : leftCount < rightCount
+                } ?? groupedSessions.first?.projectPath ?? "Unknown"
+                return ProjectMetric(
+                    path: representative,
+                    paths: paths,
+                    sessions: groupedSessions.sorted { $0.updatedAt > $1.updatedAt }
+                )
+            }
             .sorted { $0.lastActivity > $1.lastActivity }
     }
 

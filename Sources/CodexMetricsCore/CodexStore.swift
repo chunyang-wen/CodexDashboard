@@ -43,6 +43,87 @@ public final class CodexStore: @unchecked Sendable {
         return try loadIndexedSessionsWithoutCache()
     }
 
+    /// Reads a compact source-index page. Pages are keyset-paginated by source
+    /// row ID so callers never need to retain the complete source index during
+    /// a backfill. The durable checkpoint is advanced separately, after the
+    /// caller has persisted enrichment for the page.
+    public func loadIndexedSessionBatch(
+        afterRowID: Int64?,
+        batchSize: Int = 25
+    ) throws -> IndexedSessionBatch {
+        let databaseURLs = try locateDatabases()
+        var lastFailure: DatabaseReadFailure?
+        for (candidateIndex, databaseURL) in databaseURLs.enumerated() {
+            let attemptCount = candidateIndex == 0 ? 6 : 2
+            for attempt in 0..<attemptCount {
+                do {
+                    let delta = try readIndexedSessions(
+                        from: databaseURL,
+                        after: nil,
+                        afterRowID: afterRowID,
+                        limit: max(1, batchSize)
+                    )
+                    let sessions = if let cache = try? MetricsDatabase(userHome: userHome) {
+                        try cache.sourceSessionsNeedingEnrichment(
+                            sourceKey: codexHome.standardizedFileURL.path,
+                            sessions: delta.sessions
+                        ).map(\.metric)
+                    } else {
+                        delta.sessions.map(\.metric)
+                    }
+                    return IndexedSessionBatch(
+                        sessions: sessions,
+                        nextRowID: delta.sessions.isEmpty ? nil : delta.maxRowID,
+                        sourceRowCount: delta.sessions.count,
+                        maxRowID: delta.maxRowID,
+                        maxUpdatedAt: delta.maxUpdatedAt
+                    )
+                } catch let failure as DatabaseReadFailure {
+                    lastFailure = failure
+                    guard failure.isTransient, attempt < attemptCount - 1 else { break }
+                    Thread.sleep(forTimeInterval: 0.05 * pow(2, Double(attempt)))
+                }
+            }
+        }
+        throw lastFailure?.publicError ?? CodexStoreError.openFailed("Unknown error")
+    }
+
+    /// Commits a page's source mirror and checkpoint after its enrichment has
+    /// been durably written. Replaying a page after interruption is safe.
+    public func commitIndexedSessionBatch(_ batch: IndexedSessionBatch) throws {
+        guard let cache = try? MetricsDatabase(userHome: userHome) else { return }
+        let sourceKey = codexHome.standardizedFileURL.path
+        let sourceSessions = batch.sessions.map {
+            (metric: $0, sourceUpdatedAt: Int64($0.updatedAt.timeIntervalSince1970))
+        }
+        let previous = try cache.sourceIndexCheckpoint(for: sourceKey)
+        try cache.updateSourceIndex(
+            sourceKey: sourceKey,
+            sessions: sourceSessions,
+            checkpoint: .init(
+                maxRowID: max(previous?.maxRowID ?? 0, batch.maxRowID),
+                maxUpdatedAt: max(previous?.maxUpdatedAt ?? 0, batch.maxUpdatedAt)
+            )
+        )
+    }
+
+    /// Removes source-mirror rows deleted from Codex after a full reconciliation.
+    /// The anti-join runs in SQLite, so no source-index ID list is built in Swift.
+    public func finishIndexedSessionReconciliation() throws {
+        guard let cache = try? MetricsDatabase(userHome: userHome) else { return }
+        let sourceKey = codexHome.standardizedFileURL.path
+        var lastError: Error?
+        for databaseURL in try locateDatabases() {
+            do {
+                try cache.pruneSourceIndex(sourceKey: sourceKey, sourceDatabaseURL: databaseURL)
+                return
+            } catch {
+                lastError = error
+            }
+        }
+        if let lastError { throw lastError }
+    }
+
     /// Loads only source-index rows discovered after the durable checkpoint.
     /// The caller owns the already loaded snapshot and can patch these rows in place.
     public func loadIndexedSessionChanges() throws -> [SessionMetric] {
@@ -67,6 +148,72 @@ public final class CodexStore: @unchecked Sendable {
                         after: nil,
                         rolloutPaths: paths
                     ).sessions.map(\.metric).sorted { $0.updatedAt > $1.updatedAt }
+                } catch let failure as DatabaseReadFailure {
+                    lastFailure = failure
+                    guard failure.isTransient, attempt < attemptCount - 1 else { break }
+                    Thread.sleep(forTimeInterval: 0.05 * pow(2, Double(attempt)))
+                }
+            }
+        }
+        throw lastFailure?.publicError ?? CodexStoreError.openFailed("Unknown error")
+    }
+
+    /// Loads only compact index rows belonging to the supplied project paths.
+    /// This is used by the Projects tab after a project is expanded.
+    public func loadIndexedSessions(forProjectPaths paths: Set<String>) throws -> [SessionMetric] {
+        guard !paths.isEmpty else { return [] }
+        let databaseURLs = try locateDatabases()
+        var lastFailure: DatabaseReadFailure?
+        for (candidateIndex, databaseURL) in databaseURLs.enumerated() {
+            let attemptCount = candidateIndex == 0 ? 6 : 2
+            for attempt in 0..<attemptCount {
+                do {
+                    return try readIndexedSessions(
+                        from: databaseURL,
+                        after: nil,
+                        projectPaths: paths
+                    ).sessions.map(\.metric).sorted { $0.updatedAt > $1.updatedAt }
+                } catch let failure as DatabaseReadFailure {
+                    lastFailure = failure
+                    guard failure.isTransient, attempt < attemptCount - 1 else { break }
+                    Thread.sleep(forTimeInterval: 0.05 * pow(2, Double(attempt)))
+                }
+            }
+        }
+        throw lastFailure?.publicError ?? CodexStoreError.openFailed("Unknown error")
+    }
+
+    /// Reads one compact project-session page without retaining the complete
+    /// project in memory. The row-id cursor is stable while the source index is
+    /// appended, so callers can request the next page as the user scrolls.
+    public func loadIndexedSessionPage(
+        forProjectPaths paths: Set<String>,
+        afterRowID: Int64 = 0,
+        batchSize: Int = 50
+    ) throws -> IndexedSessionBatch {
+        guard !paths.isEmpty else {
+            return IndexedSessionBatch(sessions: [], nextRowID: nil)
+        }
+        let databaseURLs = try locateDatabases()
+        var lastFailure: DatabaseReadFailure?
+        for (candidateIndex, databaseURL) in databaseURLs.enumerated() {
+            let attemptCount = candidateIndex == 0 ? 6 : 2
+            for attempt in 0..<attemptCount {
+                do {
+                    let delta = try readIndexedSessions(
+                        from: databaseURL,
+                        after: nil,
+                        afterRowID: afterRowID,
+                        limit: max(1, batchSize),
+                        projectPaths: paths
+                    )
+                    return IndexedSessionBatch(
+                        sessions: delta.sessions.map(\.metric),
+                        nextRowID: delta.sessions.isEmpty ? nil : delta.maxRowID,
+                        sourceRowCount: delta.sessions.count,
+                        maxRowID: delta.maxRowID,
+                        maxUpdatedAt: delta.maxUpdatedAt
+                    )
                 } catch let failure as DatabaseReadFailure {
                     lastFailure = failure
                     guard failure.isTransient, attempt < attemptCount - 1 else { break }
@@ -173,7 +320,10 @@ public final class CodexStore: @unchecked Sendable {
     private func readIndexedSessions(
         from databaseURL: URL,
         after checkpoint: MetricsDatabase.SourceIndexCheckpoint?,
-        rolloutPaths: Set<String> = []
+        afterRowID: Int64? = nil,
+        limit: Int? = nil,
+        rolloutPaths: Set<String> = [],
+        projectPaths: Set<String> = []
     ) throws -> SourceIndexDelta {
         var database: OpaquePointer?
         let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
@@ -191,13 +341,24 @@ public final class CodexStore: @unchecked Sendable {
         let columns = try tableColumns(database)
         let names = ["id", "rollout_path", "cwd", "title", "source", "model_provider", "created_at", "updated_at", "tokens_used", "model", "reasoning_effort", "git_branch", "cli_version", "archived"]
         let selections = names.map { columns.contains($0) ? $0 : "NULL AS \($0)" }.joined(separator: ", ")
-        let sql: String
+        var sql: String
         if !rolloutPaths.isEmpty {
             guard columns.contains("rollout_path") else {
                 throw DatabaseReadFailure.query(code: SQLITE_ERROR, message: "threads.rollout_path is unavailable")
             }
             let placeholders = Array(repeating: "?", count: rolloutPaths.count).joined(separator: ",")
             sql = "SELECT rowid, \(selections) FROM threads WHERE rollout_path IN (\(placeholders))"
+        } else if !projectPaths.isEmpty {
+            guard columns.contains("cwd") else {
+                throw DatabaseReadFailure.query(code: SQLITE_ERROR, message: "threads.cwd is unavailable")
+            }
+            let placeholders = Array(repeating: "?", count: projectPaths.count).joined(separator: ",")
+            sql = "SELECT rowid, \(selections) FROM threads WHERE cwd IN (\(placeholders))"
+            if afterRowID != nil {
+                sql += " AND rowid > ? ORDER BY rowid LIMIT ?"
+            }
+        } else if afterRowID != nil {
+            sql = "SELECT rowid, \(selections) FROM threads WHERE rowid > ? ORDER BY rowid LIMIT ?"
         } else if checkpoint == nil {
             sql = "SELECT rowid, \(selections) FROM threads"
         } else {
@@ -224,13 +385,25 @@ public final class CodexStore: @unchecked Sendable {
             for (index, path) in rolloutPaths.sorted().enumerated() {
                 sqlite3_bind_text(statement, Int32(index + 1), path, -1, Self.transient)
             }
+        } else if !projectPaths.isEmpty {
+            for (index, path) in projectPaths.sorted().enumerated() {
+                sqlite3_bind_text(statement, Int32(index + 1), path, -1, Self.transient)
+            }
+            if let afterRowID {
+                let cursorIndex = Int32(projectPaths.count + 1)
+                sqlite3_bind_int64(statement, cursorIndex, afterRowID)
+                sqlite3_bind_int64(statement, cursorIndex + 1, Int64(limit ?? 25))
+            }
+        } else if let afterRowID {
+            sqlite3_bind_int64(statement, 1, afterRowID)
+            sqlite3_bind_int64(statement, 2, Int64(limit ?? 25))
         } else if let checkpoint {
             sqlite3_bind_int64(statement, 1, checkpoint.maxRowID)
             sqlite3_bind_int64(statement, 2, checkpoint.maxUpdatedAt)
         }
 
         var sessions: [(metric: SessionMetric, sourceUpdatedAt: Int64)] = []
-        var maxRowID = checkpoint?.maxRowID ?? 0
+        var maxRowID = max(checkpoint?.maxRowID ?? 0, afterRowID ?? 0)
         var maxUpdatedAt = checkpoint?.maxUpdatedAt ?? 0
         var stepResult = sqlite3_step(statement)
         while stepResult == SQLITE_ROW {

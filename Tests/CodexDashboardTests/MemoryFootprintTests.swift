@@ -109,11 +109,11 @@ final class MemoryFootprintTests: XCTestCase {
         XCTAssertEqual(menuStore.historySessionCount, 0, "Closed menu-bar mode should not retain history metadata")
 
         // -------------------------------------------------------------
-        // SCENARIO 2: Dashboard Window Opened (Summaries & Analytics Loaded)
+        // SCENARIO 2: Dashboard Window Opened (Aggregate Analytics Only)
         // -------------------------------------------------------------
         dashboardStore.activateDashboard()
         for _ in 0..<100 {
-            if dashboardStore.sessions.count == 1000 && !dashboardStore.isUpdatingAnalytics && !dashboardStore.isLoading {
+            if dashboardStore.topProjects.count == 15 && !dashboardStore.isUpdatingAnalytics && !dashboardStore.isLoading {
                 break
             }
             try await Task.sleep(for: .milliseconds(50))
@@ -123,14 +123,37 @@ final class MemoryFootprintTests: XCTestCase {
         let openDashboardDelta = openDashboardFootprint - baselineFootprint
 
         XCTAssertTrue(dashboardStore.dashboardDataIsResident)
-        XCTAssertEqual(dashboardStore.sessions.count, 1000, "1,000 lightweight summaries loaded")
-        XCTAssertEqual(dashboardStore.allProjects.count, 15)
+        XCTAssertTrue(dashboardStore.sessions.isEmpty, "Overview should not hydrate session summaries")
+        XCTAssertEqual(dashboardStore.topProjects.count, 15)
         XCTAssertGreaterThan(dashboardStore.usage.total, 0)
         XCTAssertGreaterThan(dashboardStore.estimatedCost, 0)
 
         // -------------------------------------------------------------
-        // SCENARIO 3: Single Session Detail Hydrated On-Demand
+        // SCENARIO 3: Projects Page Loads Project Sessions On-Demand
         // -------------------------------------------------------------
+        dashboardStore.updatePage(.projects)
+        for _ in 0..<100 {
+            if dashboardStore.sessions.isEmpty
+                && dashboardStore.allProjects.count == 15
+                && !dashboardStore.isLoadingSessionHierarchy
+                && !dashboardStore.isUpdatingAnalytics { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(dashboardStore.sessions.count, 0)
+        XCTAssertEqual(dashboardStore.allProjects.count, 15)
+
+        let project = try XCTUnwrap(dashboardStore.allProjects.first { $0.path.hasSuffix("Project-12") })
+        dashboardStore.loadProjectSessions(projectID: project.id)
+        for _ in 0..<200 {
+            let loadedCount = dashboardStore.allProjects.first(where: { $0.id == project.id })?.sessions.count ?? 0
+            if loadedCount == 66 { break }
+            if loadedCount > 0 {
+                dashboardStore.loadMoreProjectSessions(projectID: project.id)
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(dashboardStore.allProjects.first(where: { $0.id == project.id })?.sessions.count, 66)
+
         let detailSession = try await dashboardStore.sessionMetric(withID: "session-42")
         XCTAssertNotNil(detailSession)
         XCTAssertEqual(detailSession?.id, "session-42")

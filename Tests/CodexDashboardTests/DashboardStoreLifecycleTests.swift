@@ -89,17 +89,33 @@ final class DashboardStoreLifecycleTests: XCTestCase {
         dashboardStore.activateDashboard()
         dashboardStore.activateDashboard()
         XCTAssertTrue(dashboardStore.dashboardDataIsResident)
-        try await waitUntil { !dashboardStore.isLoading && dashboardStore.sessions.count == 1 }
-        XCTAssertEqual(dashboardStore.sessions.map(\.id), ["lifecycle-session"])
+        try await waitUntil { !dashboardStore.isLoading && dashboardStore.hasLoadedAnalytics }
+        XCTAssertTrue(dashboardStore.hasLoadedAnalytics)
+        XCTAssertTrue(dashboardStore.sessions.isEmpty)
+        XCTAssertEqual(dashboardStore.topProjects.count, 1)
+
+        dashboardStore.updatePage(.projects)
+        try await waitUntil { !dashboardStore.isLoadingSessionHierarchy && dashboardStore.allProjects.count == 1 }
+        XCTAssertTrue(dashboardStore.sessions.isEmpty)
+        dashboardStore.loadProjectSessions(projectID: dashboardStore.allProjects[0].id)
+        try await waitUntil { dashboardStore.allProjects[0].sessions.count == 1 }
+        XCTAssertEqual(dashboardStore.allProjects[0].sessions.map(\.id), ["lifecycle-session"])
+
+        dashboardStore.updatePage(.overview)
+        XCTAssertTrue(dashboardStore.sessions.isEmpty)
 
         dashboardStore.releaseDashboardMemory()
         XCTAssertFalse(dashboardStore.dashboardDataIsResident)
+        XCTAssertFalse(dashboardStore.hasLoadedAnalytics)
         try await waitUntil { dashboardStore.sessions.isEmpty }
         XCTAssertTrue(dashboardStore.filteredSessions.isEmpty)
         XCTAssertTrue(dashboardStore.allProjects.isEmpty)
 
         dashboardStore.activateDashboard()
-        try await waitUntil { !dashboardStore.isLoading && dashboardStore.sessions.count == 1 }
+        try await waitUntil { !dashboardStore.isLoading && dashboardStore.hasLoadedAnalytics }
+        XCTAssertTrue(dashboardStore.sessions.isEmpty)
+        dashboardStore.updatePage(.projects)
+        try await waitUntil { !dashboardStore.isLoadingSessionHierarchy && dashboardStore.allProjects.count == 1 }
         XCTAssertTrue(dashboardStore.dashboardDataIsResident)
     }
 
@@ -138,6 +154,52 @@ final class DashboardStoreLifecycleTests: XCTestCase {
 
         XCTAssertEqual(store.trendPeriods.count, 1)
         XCTAssertGreaterThan(store.trendPeriods[0].usage.total, 0)
+    }
+
+    func testDashboardChartWindowKeepsOnlyLatest45Buckets() async throws {
+        let userHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexHome = userHome.appendingPathComponent(".codex", isDirectory: true)
+        let suiteName = "DashboardStoreLifecycleTests.ChartWindow.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: userHome)
+        }
+
+        let calendar = Calendar.current
+        let latest = calendar.startOfDay(for: .now)
+        let sessions = (0..<60).map { offset in
+            let day = calendar.date(byAdding: .day, value: offset - 59, to: latest)!
+            return SessionMetric(
+                id: "window-\(offset)",
+                rolloutPath: codexHome.appendingPathComponent("sessions/window-\(offset).jsonl").path,
+                projectPath: "/tmp/WindowProject",
+                title: "Window \(offset)",
+                source: "cli",
+                provider: "openai",
+                createdAt: day,
+                updatedAt: day,
+                model: "gpt-test",
+                reasoningEffort: nil,
+                gitBranch: nil,
+                cliVersion: nil,
+                archived: false,
+                usage: TokenUsage(input: 1),
+                usageEvents: [UsageEvent(date: day, usage: TokenUsage(input: 1), model: "gpt-test")],
+                enrichmentAvailable: true
+            )
+        }
+        try await HistoricalStore(userHome: userHome).record(sessions)
+
+        let store = DashboardStore(userHome: userHome, defaults: defaults)
+        store.activateDashboard()
+        try await waitUntil { !store.isLoading && !store.isUpdatingAnalytics }
+        store.updateRange(.day)
+        try await waitUntil { store.range == .day && !store.isUpdatingAnalytics }
+
+        XCTAssertEqual(store.trendPeriods.count, 45)
+        XCTAssertEqual(store.modelTrendPeriods.map(\.start).count, 45)
     }
 
     func testClosingMenuBarKeepsCompactProjectionWarm() async throws {
