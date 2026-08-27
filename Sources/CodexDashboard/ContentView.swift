@@ -308,6 +308,77 @@ private struct ActivityChartPoint: Identifiable {
     let axisLabel: String
 }
 
+private struct ChartHoverOverlay<Selection: Equatable, Card: View>: View {
+    let proxy: ChartProxy
+    let selectionAtX: (ChartProxy, CGFloat) -> Selection?
+    @Binding var selection: Selection?
+    @State private var hoverLocation: CGPoint?
+    let card: (Selection) -> Card
+    let cardPosition: (CGPoint, CGSize) -> CGPoint
+    let onDragChanged: (CGSize, CGRect) -> Void
+    let onDragEnded: () -> Void
+    let onTap: (CGPoint, CGRect) -> Void
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                Rectangle()
+                    .fill(.clear)
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let location):
+                            guard let plotFrame = proxy.plotFrame else { return }
+                            let frame = geometry[plotFrame]
+                            let x = location.x - frame.minX
+                            guard x >= 0, x <= frame.width,
+                                  let nextSelection = selectionAtX(proxy, x) else {
+                                clearHover()
+                                return
+                            }
+                            if selection != nextSelection {
+                                selection = nextSelection
+                            }
+                            hoverLocation = location
+                        case .ended:
+                            clearHover()
+                        }
+                    }
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 2)
+                            .onChanged { value in
+                                guard let plotFrame = proxy.plotFrame else { return }
+                                onDragChanged(value.translation, geometry[plotFrame])
+                            }
+                            .onEnded { _ in
+                                onDragEnded()
+                            }
+                    )
+                    .simultaneousGesture(
+                        SpatialTapGesture()
+                            .onEnded { value in
+                                guard let plotFrame = proxy.plotFrame else { return }
+                                onTap(value.location, geometry[plotFrame])
+                            }
+                    )
+
+                if let selection, let hoverLocation {
+                    card(selection)
+                        .position(cardPosition(hoverLocation, geometry.size))
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+    }
+
+    private func clearHover() {
+        if selection != nil {
+            selection = nil
+        }
+        hoverLocation = nil
+    }
+}
+
 struct ActivityChart: View {
     private enum ScrollEdge {
         case older
@@ -324,7 +395,6 @@ struct ActivityChart: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding private var metric: String
     @State private var hoveredPeriod: PeriodMetric?
-    @State private var hoverLocation: CGPoint?
     @State private var hoveredScrollEdge: ScrollEdge?
     @State private var scrollPosition = 0.0
     @State private var dragStartScrollPosition: Double?
@@ -441,7 +511,8 @@ struct ActivityChart: View {
                     .foregroundStyle(metricColor.opacity(0.78))
                     .accessibilityLabel("Activity recorded, but \(metric.lowercased()) is zero")
                 }
-                if hoveredPeriod?.id == point.id || selectedPeriodStart == point.period.start {
+                let isHighlighted = hoveredPeriod?.id == point.id || selectedPeriodStart == point.period.start
+                if isHighlighted {
                     RuleMark(x: .value("Selected period", Double(point.index) + 0.5))
                         .lineStyle(.init(lineWidth: selectedPeriodStart == point.period.start ? 1.5 : 1, dash: [4, 4]))
                         .foregroundStyle(selectedPeriodStart == point.period.start ? metricColor.opacity(0.8) : .secondary.opacity(0.7))
@@ -482,75 +553,42 @@ struct ActivityChart: View {
                 }
             }
             .chartOverlay { proxy in
-                GeometryReader { geometry in
-                    ZStack {
-                        Rectangle()
-                            .fill(.clear)
-                            .contentShape(Rectangle())
-                            .onContinuousHover { phase in
-                                switch phase {
-                                case .active(let location):
-                                    guard let plotFrame = proxy.plotFrame else { return }
-                                    let frame = geometry[plotFrame]
-                                    let x = location.x - frame.minX
-                                    guard x >= 0, x <= frame.width,
-                                          let rawIndex: Double = proxy.value(atX: x) else {
-                                        hoveredPeriod = nil
-                                        hoverLocation = nil
-                                        return
-                                    }
-                                    let index = Int(floor(rawIndex))
-                                    let nearest = chartPoints.indices.contains(index) ? chartPoints[index].period : nil
-                                    hoveredPeriod = nearest
-                                    hoverLocation = location
-                                case .ended:
-                                    hoveredPeriod = nil
-                                    hoverLocation = nil
-                                }
-                            }
-                            .simultaneousGesture(
-                                DragGesture(minimumDistance: 2)
-                                    .onChanged { value in
-                                        guard canScroll, let plotFrame = proxy.plotFrame else { return }
-                                        let frame = geometry[plotFrame]
-                                        guard frame.width > 0 else { return }
-                                        if dragStartScrollPosition == nil {
-                                            dragStartScrollPosition = scrollPosition
-                                        }
-                                        let translatedPeriods = Double(value.translation.width / frame.width) * visiblePeriodCount
-                                        let proposed = (dragStartScrollPosition ?? scrollPosition) - translatedPeriods
-                                        scrollPosition = min(latestScrollPosition, max(0, proposed))
-                                        hoveredPeriod = nil
-                                        hoverLocation = nil
-                                    }
-                                    .onEnded { _ in
-                                        dragStartScrollPosition = nil
-                                    }
-                            )
-                            .simultaneousGesture(
-                                SpatialTapGesture()
-                                    .onEnded { value in
-                                        guard allowsPeriodSelection else { return }
-                                        guard let plotFrame = proxy.plotFrame else { return }
-                                        let frame = geometry[plotFrame]
-                                        let x = value.location.x - frame.minX
-                                        guard x >= 0, x <= frame.width,
-                                              let rawIndex: Double = proxy.value(atX: x) else { return }
-                                        let index = Int(floor(rawIndex))
-                                        guard chartPoints.indices.contains(index) else { return }
-                                        withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) {
-                                            selectedPeriodStart = chartPoints[index].period.start
-                                        }
-                                    }
-                            )
-
-                        if let hoveredPeriod, let hoverLocation {
-                            hoverCard(hoveredPeriod)
-                                .position(hoverCardPosition(for: hoverLocation, in: geometry.size))
-                                .allowsHitTesting(false)
+                ChartHoverOverlay(
+                    proxy: proxy,
+                    selectionAtX: { proxy, x in
+                        guard let rawIndex: Double = proxy.value(atX: x) else { return nil }
+                        let index = Int(floor(rawIndex))
+                        return chartPoints.indices.contains(index) ? chartPoints[index].period : nil
+                    },
+                    selection: $hoveredPeriod,
+                    card: { period in hoverCard(period) },
+                    cardPosition: hoverCardPosition,
+                    onDragChanged: { translation, frame in
+                        guard canScroll else { return }
+                        guard frame.width > 0 else { return }
+                        if dragStartScrollPosition == nil {
+                            dragStartScrollPosition = scrollPosition
+                        }
+                        let translatedPeriods = Double(translation.width / frame.width) * visiblePeriodCount
+                        let proposed = (dragStartScrollPosition ?? scrollPosition) - translatedPeriods
+                        scrollPosition = min(latestScrollPosition, max(0, proposed))
+                        hoveredPeriod = nil
+                    },
+                    onDragEnded: {
+                        dragStartScrollPosition = nil
+                    },
+                    onTap: { location, frame in
+                        guard allowsPeriodSelection else { return }
+                        let x = location.x - frame.minX
+                        guard x >= 0, x <= frame.width,
+                              let rawIndex: Double = proxy.value(atX: x) else { return }
+                        let index = Int(floor(rawIndex))
+                        guard chartPoints.indices.contains(index) else { return }
+                        withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) {
+                            selectedPeriodStart = chartPoints[index].period.start
                         }
                     }
-                }
+                )
             }
             .frame(height: 220)
             .overlay {
@@ -565,7 +603,6 @@ struct ActivityChart: View {
             .onAppear { scrollPosition = latestScrollPosition }
             .onChange(of: periods.map(\.id)) { _, _ in
                 hoveredPeriod = nil
-                hoverLocation = nil
                 scrollPosition = latestScrollPosition
             }
             .accessibilityHint(allowsPeriodSelection
@@ -1643,7 +1680,6 @@ private struct ModelTrendChart: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hoveredScrollEdge: ScrollEdge?
     @State private var hoveredIndex: Int?
-    @State private var hoverLocation: CGPoint?
     @State private var scrollPosition = 0.0
     @State private var dragStartScrollPosition: Double?
     @State private var hiddenModels = Set<String>()
@@ -1744,61 +1780,34 @@ private struct ModelTrendChart: View {
                     }
                 }
                 .chartOverlay { proxy in
-                    GeometryReader { geometry in
-                        ZStack {
-                            Rectangle()
-                                .fill(.clear)
-                                .contentShape(Rectangle())
-                                .onContinuousHover { phase in
-                                    switch phase {
-                                    case .active(let location):
-                                        guard let plotFrame = proxy.plotFrame else { return }
-                                        let frame = geometry[plotFrame]
-                                        let x = location.x - frame.minX
-                                        guard x >= 0, x <= frame.width,
-                                              let rawIndex: Double = proxy.value(atX: x) else {
-                                            hoveredIndex = nil
-                                            hoverLocation = nil
-                                            return
-                                        }
-                                        let index = min(
-                                            max(visibleStart, visibleStart + Int(rawIndex.rounded())),
-                                            visibleEnd - 1
-                                        )
-                                        hoveredIndex = index
-                                        hoverLocation = location
-                                    case .ended:
-                                        hoveredIndex = nil
-                                        hoverLocation = nil
-                                    }
-                                }
-                                .simultaneousGesture(
-                                    DragGesture(minimumDistance: 2)
-                                        .onChanged { value in
-                                            guard canScroll, let plotFrame = proxy.plotFrame else { return }
-                                            let frame = geometry[plotFrame]
-                                            guard frame.width > 0 else { return }
-                                            if dragStartScrollPosition == nil {
-                                                dragStartScrollPosition = scrollPosition
-                                            }
-                                            let translatedPeriods = Double(value.translation.width / frame.width) * visiblePeriodCount
-                                            let proposed = (dragStartScrollPosition ?? scrollPosition) - translatedPeriods
-                                            scrollPosition = min(latestScrollPosition, max(0, proposed))
-                                            hoveredIndex = nil
-                                            hoverLocation = nil
-                                        }
-                                        .onEnded { _ in
-                                            dragStartScrollPosition = nil
-                                        }
-                                )
-
-                            if let hoveredIndex, let hoverLocation {
-                                hoverCard(for: hoveredIndex, samples: visibleSamples)
-                                    .position(hoverCardPosition(for: hoverLocation, in: geometry.size))
-                                    .allowsHitTesting(false)
+                    ChartHoverOverlay(
+                        proxy: proxy,
+                        selectionAtX: { proxy, x in
+                            guard let rawIndex: Double = proxy.value(atX: x) else { return nil }
+                            return min(
+                                max(visibleStart, visibleStart + Int(rawIndex.rounded())),
+                                visibleEnd - 1
+                            )
+                        },
+                        selection: $hoveredIndex,
+                        card: { index in hoverCard(for: index, samples: visibleSamples) },
+                        cardPosition: hoverCardPosition,
+                        onDragChanged: { translation, frame in
+                            guard canScroll else { return }
+                            guard frame.width > 0 else { return }
+                            if dragStartScrollPosition == nil {
+                                dragStartScrollPosition = scrollPosition
                             }
-                        }
-                    }
+                            let translatedPeriods = Double(translation.width / frame.width) * visiblePeriodCount
+                            let proposed = (dragStartScrollPosition ?? scrollPosition) - translatedPeriods
+                            scrollPosition = min(latestScrollPosition, max(0, proposed))
+                            hoveredIndex = nil
+                        },
+                        onDragEnded: {
+                            dragStartScrollPosition = nil
+                        },
+                        onTap: { _, _ in }
+                    )
                 }
                 .frame(height: 320)
                 .overlay {
@@ -1815,13 +1824,11 @@ private struct ModelTrendChart: View {
                 }
                 .onChange(of: data.identity) { _, _ in
                     hoveredIndex = nil
-                    hoverLocation = nil
                     hiddenModels = []
                     scrollPosition = latestScrollPosition
                 }
                 .onChange(of: granularity) { _, _ in
                     hoveredIndex = nil
-                    hoverLocation = nil
                     scrollPosition = latestScrollPosition
                 }
             }
