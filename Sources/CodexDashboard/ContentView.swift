@@ -2379,24 +2379,22 @@ struct BillingView: View {
         return "A \(unit)-by-\(unit) comparison across all retained usage."
     }
 
-    private var reversedHistoryPeriods: [PeriodMetric] {
-        Array(store.trendPeriods.reversed())
-    }
-
     private var historyPageCount: Int {
-        max(1, Int(ceil(Double(reversedHistoryPeriods.count) / Double(historyPageSize))))
+        max(1, (store.trendPeriods.count + historyPageSize - 1) / historyPageSize)
     }
 
-    private var visibleHistoryPeriods: [PeriodMetric] {
-        let safePage = min(historyPage, historyPageCount - 1)
-        return Array(reversedHistoryPeriods.dropFirst(safePage * historyPageSize).prefix(historyPageSize))
-    }
+    private var historyPageData: (periods: [PeriodMetric], summary: String, pageCount: Int) {
+        let periods = store.trendPeriods
+        let pageCount = max(1, (periods.count + historyPageSize - 1) / historyPageSize)
+        guard !periods.isEmpty else { return ([], "0 periods", pageCount) }
 
-    private var historyPageSummary: String {
-        guard !reversedHistoryPeriods.isEmpty else { return "0 periods" }
-        let start = min(historyPage, historyPageCount - 1) * historyPageSize
-        let end = min(start + historyPageSize, reversedHistoryPeriods.count)
-        return "\(start + 1)–\(end) of \(reversedHistoryPeriods.count) periods"
+        let safePage = min(historyPage, pageCount - 1)
+        let offset = safePage * historyPageSize
+        let end = periods.count - offset
+        let start = max(0, end - historyPageSize)
+        let visiblePeriods = Array(periods[start..<end].reversed())
+        let summary = "\(offset + 1)–\(offset + visiblePeriods.count) of \(periods.count) periods"
+        return (visiblePeriods, summary, pageCount)
     }
 
     private func historyPeriodLabel(_ start: Date) -> String {
@@ -2417,6 +2415,8 @@ struct BillingView: View {
     }
 
     var body: some View {
+        let historyPageData = self.historyPageData
+
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
                 SubscriptionUsageView(snapshot: store.subscription)
@@ -2491,7 +2491,7 @@ struct BillingView: View {
                     }
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     Divider().gridCellColumns(5)
-                    ForEach(visibleHistoryPeriods) { period in
+                    ForEach(historyPageData.periods) { period in
                         GridRow {
                             Text(historyPeriodLabel(period.start)).fontWeight(.medium)
                             Text(period.sessions.formatted()).monospacedDigit()
@@ -2504,7 +2504,7 @@ struct BillingView: View {
                     Divider().gridCellColumns(5)
                     GridRow {
                         HStack(spacing: 12) {
-                            Text(historyPageSummary)
+                            Text(historyPageData.summary)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Spacer()
@@ -2516,16 +2516,16 @@ struct BillingView: View {
                             }
                             .disabled(historyPage == 0)
                             .help("Previous page")
-                            Text("Page \(min(historyPage + 1, historyPageCount)) of \(historyPageCount)")
+                            Text("Page \(min(historyPage + 1, historyPageData.pageCount)) of \(historyPageData.pageCount)")
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
                             Button {
-                                historyPage = min(historyPageCount - 1, historyPage + 1)
+                                historyPage = min(historyPageData.pageCount - 1, historyPage + 1)
                             } label: {
                                 Label("Next page", systemImage: "chevron.right")
                                     .labelStyle(.iconOnly)
                             }
-                            .disabled(historyPage >= historyPageCount - 1)
+                            .disabled(historyPage >= historyPageData.pageCount - 1)
                             .help("Next page")
                         }
                         .frame(maxWidth: .infinity)
