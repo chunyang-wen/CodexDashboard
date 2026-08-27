@@ -2224,6 +2224,7 @@ public struct DailyAggregateResult: Sendable {
 public struct IndexedSessionBatch: Sendable {
     public let sessions: [SessionMetric]
     public let nextRowID: Int64?
+    public let nextUpdatedAt: Int64?
     public let sourceRowCount: Int
     public let maxRowID: Int64
     public let maxUpdatedAt: Int64
@@ -2231,12 +2232,14 @@ public struct IndexedSessionBatch: Sendable {
     public init(
         sessions: [SessionMetric],
         nextRowID: Int64?,
+        nextUpdatedAt: Int64? = nil,
         sourceRowCount: Int = 0,
         maxRowID: Int64 = 0,
         maxUpdatedAt: Int64 = 0
     ) {
         self.sessions = sessions
         self.nextRowID = nextRowID
+        self.nextUpdatedAt = nextUpdatedAt
         self.sourceRowCount = sourceRowCount
         self.maxRowID = maxRowID
         self.maxUpdatedAt = maxUpdatedAt

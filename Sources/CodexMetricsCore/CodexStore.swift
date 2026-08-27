@@ -184,11 +184,13 @@ public final class CodexStore: @unchecked Sendable {
     }
 
     /// Reads one compact project-session page without retaining the complete
-    /// project in memory. The row-id cursor is stable while the source index is
-    /// appended, so callers can request the next page as the user scrolls.
+    /// project in memory. Project pages are newest-first and use an
+    /// updated-at/row-id cursor so callers can request the next page as the
+    /// user scrolls.
     public func loadIndexedSessionPage(
         forProjectPaths paths: Set<String>,
         afterRowID: Int64 = 0,
+        afterUpdatedAt: Int64? = nil,
         batchSize: Int = 50
     ) throws -> IndexedSessionBatch {
         guard !paths.isEmpty else {
@@ -204,12 +206,14 @@ public final class CodexStore: @unchecked Sendable {
                         from: databaseURL,
                         after: nil,
                         afterRowID: afterRowID,
+                        afterUpdatedAt: afterUpdatedAt,
                         limit: max(1, batchSize),
                         projectPaths: paths
                     )
                     return IndexedSessionBatch(
                         sessions: delta.sessions.map(\.metric),
-                        nextRowID: delta.sessions.isEmpty ? nil : delta.maxRowID,
+                        nextRowID: delta.sessions.isEmpty ? nil : delta.lastRowID,
+                        nextUpdatedAt: delta.sessions.isEmpty ? nil : delta.lastUpdatedAt,
                         sourceRowCount: delta.sessions.count,
                         maxRowID: delta.maxRowID,
                         maxUpdatedAt: delta.maxUpdatedAt
@@ -315,12 +319,15 @@ public final class CodexStore: @unchecked Sendable {
         let sessions: [(metric: SessionMetric, sourceUpdatedAt: Int64)]
         let maxRowID: Int64
         let maxUpdatedAt: Int64
+        let lastRowID: Int64
+        let lastUpdatedAt: Int64
     }
 
     private func readIndexedSessions(
         from databaseURL: URL,
         after checkpoint: MetricsDatabase.SourceIndexCheckpoint?,
         afterRowID: Int64? = nil,
+        afterUpdatedAt: Int64? = nil,
         limit: Int? = nil,
         rolloutPaths: Set<String> = [],
         projectPaths: Set<String> = []
@@ -354,8 +361,12 @@ public final class CodexStore: @unchecked Sendable {
             }
             let placeholders = Array(repeating: "?", count: projectPaths.count).joined(separator: ",")
             sql = "SELECT rowid, \(selections) FROM threads WHERE cwd IN (\(placeholders))"
-            if afterRowID != nil {
+            if afterUpdatedAt != nil {
+                sql += " AND (updated_at < ? OR (updated_at = ? AND rowid < ?)) ORDER BY updated_at DESC, rowid DESC LIMIT ?"
+            } else if (afterRowID ?? 0) > 0 {
                 sql += " AND rowid > ? ORDER BY rowid LIMIT ?"
+            } else {
+                sql += " ORDER BY updated_at DESC, rowid DESC LIMIT ?"
             }
         } else if afterRowID != nil {
             sql = "SELECT rowid, \(selections) FROM threads WHERE rowid > ? ORDER BY rowid LIMIT ?"
@@ -389,10 +400,18 @@ public final class CodexStore: @unchecked Sendable {
             for (index, path) in projectPaths.sorted().enumerated() {
                 sqlite3_bind_text(statement, Int32(index + 1), path, -1, Self.transient)
             }
-            if let afterRowID {
+            if let afterUpdatedAt {
                 let cursorIndex = Int32(projectPaths.count + 1)
-                sqlite3_bind_int64(statement, cursorIndex, afterRowID)
+                sqlite3_bind_int64(statement, cursorIndex, afterUpdatedAt)
+                sqlite3_bind_int64(statement, cursorIndex + 1, afterUpdatedAt)
+                sqlite3_bind_int64(statement, cursorIndex + 2, afterRowID ?? 0)
+                sqlite3_bind_int64(statement, cursorIndex + 3, Int64(limit ?? 25))
+            } else if (afterRowID ?? 0) > 0 {
+                let cursorIndex = Int32(projectPaths.count + 1)
+                sqlite3_bind_int64(statement, cursorIndex, afterRowID ?? 0)
                 sqlite3_bind_int64(statement, cursorIndex + 1, Int64(limit ?? 25))
+            } else {
+                sqlite3_bind_int64(statement, Int32(projectPaths.count + 1), Int64(limit ?? 25))
             }
         } else if let afterRowID {
             sqlite3_bind_int64(statement, 1, afterRowID)
@@ -405,10 +424,14 @@ public final class CodexStore: @unchecked Sendable {
         var sessions: [(metric: SessionMetric, sourceUpdatedAt: Int64)] = []
         var maxRowID = max(checkpoint?.maxRowID ?? 0, afterRowID ?? 0)
         var maxUpdatedAt = checkpoint?.maxUpdatedAt ?? 0
+        var lastRowID: Int64 = 0
+        var lastUpdatedAt: Int64 = 0
         var stepResult = sqlite3_step(statement)
         while stepResult == SQLITE_ROW {
             let rowID = int(statement, 0)
             let sourceUpdatedAt = int(statement, 8)
+            lastRowID = rowID
+            lastUpdatedAt = sourceUpdatedAt
             maxRowID = max(maxRowID, rowID)
             maxUpdatedAt = max(maxUpdatedAt, sourceUpdatedAt)
             let total = int(statement, 9)
@@ -437,7 +460,13 @@ public final class CodexStore: @unchecked Sendable {
                 message: String(cString: sqlite3_errmsg(database))
             )
         }
-        return SourceIndexDelta(sessions: sessions, maxRowID: maxRowID, maxUpdatedAt: maxUpdatedAt)
+        return SourceIndexDelta(
+            sessions: sessions,
+            maxRowID: maxRowID,
+            maxUpdatedAt: maxUpdatedAt,
+            lastRowID: lastRowID,
+            lastUpdatedAt: lastUpdatedAt
+        )
     }
 
     /// Enriches indexed sessions with token breakdown and turn timing. This may scan large files;

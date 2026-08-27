@@ -1843,12 +1843,23 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(refreshed.first { $0.id == "first" }?.title, "First updated")
         XCTAssertEqual(refreshed.first { $0.id == "second" }?.usage.total, 20)
 
+        XCTAssertEqual(sqlite3_exec(source, "UPDATE threads SET cwd = '/tmp/a', updated_at = 200 WHERE id = 'second';", nil, nil, nil), SQLITE_OK)
         let projectPage = try store.loadIndexedSessionPage(
             forProjectPaths: ["/tmp/a"], afterRowID: 0, batchSize: 1
         )
-        XCTAssertEqual(projectPage.sessions.map(\.id), ["first"])
+        XCTAssertEqual(projectPage.sessions.map(\.id), ["second"])
+        let projectPage2 = try store.loadIndexedSessionPage(
+            forProjectPaths: ["/tmp/a"],
+            afterRowID: projectPage.nextRowID ?? 0,
+            afterUpdatedAt: projectPage.nextUpdatedAt,
+            batchSize: 1
+        )
+        XCTAssertEqual(projectPage2.sessions.map(\.id), ["first"])
         let projectEnd = try store.loadIndexedSessionPage(
-            forProjectPaths: ["/tmp/a"], afterRowID: projectPage.nextRowID ?? 0, batchSize: 1
+            forProjectPaths: ["/tmp/a"],
+            afterRowID: projectPage2.nextRowID ?? 0,
+            afterUpdatedAt: projectPage2.nextUpdatedAt,
+            batchSize: 1
         )
         XCTAssertTrue(projectEnd.sessions.isEmpty)
 

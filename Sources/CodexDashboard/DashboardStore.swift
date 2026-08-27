@@ -276,7 +276,7 @@ final class DashboardStore: ObservableObject {
     private var loadTask: Task<Void, Never>?
     private var sessionHierarchyTask: Task<Void, Never>?
     private var projectSessionTasks: [String: Task<Void, Never>] = [:]
-    private var projectSessionCursors: [String: Int64] = [:]
+    private var projectSessionCursors: [String: (rowID: Int64, updatedAt: Int64?)] = [:]
     private var projectSessionHasMore: Set<String> = []
     private var enrichmentTask: Task<Void, Never>?
     private var pricingTask: Task<Void, Never>?
@@ -717,7 +717,7 @@ final class DashboardStore: ObservableObject {
         guard let project = projectCatalog.first(where: { $0.id == projectID }),
               project.sessions.isEmpty,
               projectSessionTasks[projectID] == nil else { return }
-        loadProjectSessionPage(projectID: projectID, project: project, afterRowID: 0)
+        loadProjectSessionPage(projectID: projectID, project: project, afterRowID: 0, afterUpdatedAt: nil)
     }
 
     func loadMoreProjectSessions(projectID: String) {
@@ -725,19 +725,30 @@ final class DashboardStore: ObservableObject {
               projectSessionTasks[projectID] == nil,
               let project = projectCatalog.first(where: { $0.id == projectID }),
               let cursor = projectSessionCursors[projectID] else { return }
-        loadProjectSessionPage(projectID: projectID, project: project, afterRowID: cursor)
+        loadProjectSessionPage(
+            projectID: projectID,
+            project: project,
+            afterRowID: cursor.rowID,
+            afterUpdatedAt: cursor.updatedAt
+        )
     }
 
-    private func loadProjectSessionPage(projectID: String, project: ProjectMetric, afterRowID: Int64) {
+    private func loadProjectSessionPage(
+        projectID: String,
+        project: ProjectMetric,
+        afterRowID: Int64,
+        afterUpdatedAt: Int64?
+    ) {
         let codexHome = codexHome
         projectSessionTasks[projectID] = Task { [weak self] in
             defer { self?.projectSessionTasks[projectID] = nil }
             guard let self else { return }
             let indexedPage = (try? await Task.detached(priority: .utility) {
-                try CodexStore(codexHome: codexHome).loadIndexedSessionPage(
-                    forProjectPaths: Set(project.paths),
-                    afterRowID: afterRowID,
-                    batchSize: 50
+                    try CodexStore(codexHome: codexHome).loadIndexedSessionPage(
+                        forProjectPaths: Set(project.paths),
+                        afterRowID: afterRowID,
+                        afterUpdatedAt: afterUpdatedAt,
+                        batchSize: 50
                 )
             }.value)
             guard !Task.isCancelled, self.dashboardDataIsResident else { return }
@@ -747,7 +758,7 @@ final class DashboardStore: ObservableObject {
                 summaries = (try? await self.historicalStore.mergedSessionSummaries(for: indexedPage.sessions))
                     ?? indexedPage.sessions.map(\.summary)
                 nextRowID = indexedPage.nextRowID
-            } else if indexedPage == nil || afterRowID == 0,
+            } else if indexedPage == nil || (afterRowID == 0 && afterUpdatedAt == nil),
                       let historicalPage = try? await self.historicalStore.sessionSummaryPage(
                           forProjectPaths: Set(project.paths), afterRowID: afterRowID, batchSize: 50
                       ) {
@@ -772,11 +783,12 @@ final class DashboardStore: ObservableObject {
                 sessionCount: current.sessionCount,
                 lastActivity: current.lastActivity
             )
-            self.projectSessionCursors[projectID] = nextRowID
-            if nextRowID == nil {
-                self.projectSessionHasMore.remove(projectID)
-            } else {
+            if let nextRowID {
+                self.projectSessionCursors[projectID] = (nextRowID, indexedPage?.nextUpdatedAt)
                 self.projectSessionHasMore.insert(projectID)
+            } else {
+                self.projectSessionCursors.removeValue(forKey: projectID)
+                self.projectSessionHasMore.remove(projectID)
             }
             self.sessions = merged
         }

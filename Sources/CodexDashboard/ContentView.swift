@@ -197,7 +197,7 @@ struct OverviewView: View {
         let averageTTFT = periodDetails.averageFirstTokenTime
 
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            LazyVStack(alignment: .leading, spacing: 24) {
                 HStack(alignment: .top, spacing: 16) {
                     SectionHeader(
                         title: "Codex activity",
@@ -299,6 +299,15 @@ struct OverviewView: View {
     }
 }
 
+private struct ActivityChartPoint: Identifiable {
+    let id: Date
+    let period: PeriodMetric
+    let index: Int
+    let value: Double
+    let hasActivity: Bool
+    let axisLabel: String
+}
+
 struct ActivityChart: View {
     private enum ScrollEdge {
         case older
@@ -353,11 +362,24 @@ struct ActivityChart: View {
         visible.append(contentsOf: periods[start..<end])
         return visible
     }
-    private var axisPositions: [Double] {
+    private var visibleChartPoints: [ActivityChartPoint] {
+        visiblePeriods.enumerated().map { index, period in
+            ActivityChartPoint(
+                id: period.id,
+                period: period,
+                index: index,
+                value: metricValue(period),
+                hasActivity: hasActivity(period),
+                axisLabel: axisPeriodLabel(period.start)
+            )
+        }
+    }
+
+    private func axisPositions(for count: Int) -> [Double] {
         let step = max(1, Int(ceil(visiblePeriodCount / 8)))
-        var positions = stride(from: 0, to: visiblePeriods.count, by: step).map { Double($0) + 0.5 }
-        if !visiblePeriods.isEmpty {
-            let finalPosition = Double(visiblePeriods.count) - 0.5
+        var positions = stride(from: 0, to: count, by: step).map { Double($0) + 0.5 }
+        if count > 0 {
+            let finalPosition = Double(count) - 0.5
             if finalPosition - (positions.last ?? finalPosition) < Double(step) {
                 positions[positions.count - 1] = finalPosition
             } else {
@@ -368,6 +390,9 @@ struct ActivityChart: View {
     }
 
     var body: some View {
+        let chartPoints = visibleChartPoints
+        let axisPositions = axisPositions(for: chartPoints.count)
+
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 SectionHeader(
@@ -398,39 +423,37 @@ struct ActivityChart: View {
             }
             // Charts keeps mark and interaction state for every input element.
             // Keep the history in the store, but render only the visible window.
-            Chart(Array(visiblePeriods.enumerated()), id: \.offset) { item in
+            Chart(chartPoints) { point in
                 RectangleMark(
-                    xStart: .value("Period start", Double(item.offset) + 0.06),
-                    xEnd: .value("Period end", Double(item.offset) + 0.94),
+                    xStart: .value("Period start", Double(point.index) + 0.06),
+                    xEnd: .value("Period end", Double(point.index) + 0.94),
                     yStart: .value("Baseline", 0),
-                    yEnd: .value(metric, metricValue(item.element))
+                    yEnd: .value(metric, point.value)
                 )
                 .foregroundStyle(metricColor.gradient)
                 .cornerRadius(3)
-                if metricValue(item.element) == 0 && hasActivity(item.element) {
+                if point.value == 0 && point.hasActivity {
                     PointMark(
-                        x: .value("Period with activity", Double(item.offset) + 0.5),
+                        x: .value("Period with activity", Double(point.index) + 0.5),
                         y: .value("Zero value", 0)
                     )
-                    .symbol {
-                        Capsule()
-                            .fill(metricColor.opacity(0.78))
-                            .frame(width: 22, height: 5)
-                    }
+                    .symbolSize(28)
+                    .foregroundStyle(metricColor.opacity(0.78))
                     .accessibilityLabel("Activity recorded, but \(metric.lowercased()) is zero")
                 }
-                if hoveredPeriod?.id == item.element.id || selectedPeriodStart == item.element.start {
-                    RuleMark(x: .value("Selected period", Double(item.offset) + 0.5))
-                        .lineStyle(.init(lineWidth: selectedPeriodStart == item.element.start ? 1.5 : 1, dash: [4, 4]))
-                        .foregroundStyle(selectedPeriodStart == item.element.start ? metricColor.opacity(0.8) : .secondary.opacity(0.7))
-                    PointMark(x: .value("Selected period", Double(item.offset) + 0.5), y: .value("Selected value", metricValue(item.element)))
+                if hoveredPeriod?.id == point.id || selectedPeriodStart == point.period.start {
+                    RuleMark(x: .value("Selected period", Double(point.index) + 0.5))
+                        .lineStyle(.init(lineWidth: selectedPeriodStart == point.period.start ? 1.5 : 1, dash: [4, 4]))
+                        .foregroundStyle(selectedPeriodStart == point.period.start ? metricColor.opacity(0.8) : .secondary.opacity(0.7))
+                    PointMark(x: .value("Selected period", Double(point.index) + 0.5), y: .value("Selected value", point.value))
                         .symbolSize(70)
                         .foregroundStyle(metricColor)
-                    PointMark(x: .value("Selected period", Double(item.offset) + 0.5), y: .value("Selected value", metricValue(item.element)))
+                    PointMark(x: .value("Selected period", Double(point.index) + 0.5), y: .value("Selected value", point.value))
                         .symbolSize(22)
                         .foregroundStyle(.background)
                 }
             }
+            .transaction { $0.animation = nil }
             .chartXScale(range: .plotDimension(startPadding: 54, endPadding: 58))
             .chartXAxis {
                 AxisMarks(values: axisPositions) { value in
@@ -438,8 +461,8 @@ struct ActivityChart: View {
                     AxisValueLabel(centered: true, collisionResolution: .disabled) {
                         if let position = value.as(Double.self) {
                             let index = Int(floor(position))
-                            if visiblePeriods.indices.contains(index) {
-                                Text(axisPeriodLabel(visiblePeriods[index].start))
+                            if chartPoints.indices.contains(index) {
+                                Text(chartPoints[index].axisLabel)
                                     .font(.caption2)
                                     .lineLimit(1)
                                     .fixedSize(horizontal: true, vertical: false)
@@ -477,7 +500,7 @@ struct ActivityChart: View {
                                         return
                                     }
                                     let index = Int(floor(rawIndex))
-                                    let nearest = visiblePeriods.indices.contains(index) ? visiblePeriods[index] : nil
+                                    let nearest = chartPoints.indices.contains(index) ? chartPoints[index].period : nil
                                     hoveredPeriod = nearest
                                     hoverLocation = location
                                 case .ended:
@@ -514,9 +537,9 @@ struct ActivityChart: View {
                                         guard x >= 0, x <= frame.width,
                                               let rawIndex: Double = proxy.value(atX: x) else { return }
                                         let index = Int(floor(rawIndex))
-                                        guard visiblePeriods.indices.contains(index) else { return }
+                                        guard chartPoints.indices.contains(index) else { return }
                                         withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) {
-                                            selectedPeriodStart = visiblePeriods[index].start
+                                            selectedPeriodStart = chartPoints[index].period.start
                                         }
                                     }
                             )
@@ -779,6 +802,7 @@ struct ModelMixView: View {
                 BarMark(x: .value("Tokens", model.usage.total), y: .value("Model", model.model))
                     .foregroundStyle(by: .value("Model", model.model))
             }
+            .transaction { $0.animation = nil }
             .chartLegend(.hidden)
             .frame(height: 250)
         }
@@ -1547,6 +1571,7 @@ private struct ModelTrendChartData {
     struct Sample: Identifiable {
         let id: String
         let index: Int
+        let xPosition: Double
         let model: String
         let modelIndex: Int
         let tokens: Double
@@ -1591,6 +1616,7 @@ private struct ModelTrendChartData {
                 samples.append(Sample(
                     id: "\(model.model)-\(index)",
                     index: index,
+                    xPosition: Double(index - start),
                     model: model.model,
                     modelIndex: modelIndex,
                     tokens: max(0, Double(usage.total)),
@@ -1654,6 +1680,8 @@ private struct ModelTrendChart: View {
     }
 
     var body: some View {
+        let visibleSamples = samples.filter { isModelVisible($0.model) }
+
         VStack(alignment: .leading, spacing: 16) {
             SectionHeader(
                 title: "Model trend",
@@ -1668,7 +1696,7 @@ private struct ModelTrendChart: View {
             } else {
                 legend
                 Chart {
-                    ForEach(samples.filter { isModelVisible($0.model) }) { sample in
+                    ForEach(visibleSamples) { sample in
                         tokenMark(for: sample)
                         cacheMark(for: sample)
                     }
@@ -1678,6 +1706,7 @@ private struct ModelTrendChart: View {
                             .foregroundStyle(.secondary.opacity(0.72))
                     }
                 }
+                .transaction { $0.animation = nil }
                 .chartXScale(
                     domain: -0.5...max(0.5, visiblePeriodCount - 0.5),
                     range: .plotDimension(startPadding: 20, endPadding: 24)
@@ -1764,7 +1793,7 @@ private struct ModelTrendChart: View {
                                 )
 
                             if let hoveredIndex, let hoverLocation {
-                                hoverCard(for: hoveredIndex)
+                                hoverCard(for: hoveredIndex, samples: visibleSamples)
                                     .position(hoverCardPosition(for: hoverLocation, in: geometry.size))
                                     .allowsHitTesting(false)
                             }
@@ -1907,7 +1936,7 @@ private struct ModelTrendChart: View {
 
     private func tokenMark(for sample: ModelTrendChartData.Sample) -> some ChartContent {
         LineMark(
-            x: .value("Period", Double(sample.index - visibleStart)),
+            x: .value("Period", sample.xPosition),
             y: .value("Tokens", sample.tokens),
             series: .value("Series", sample.tokenSeries)
         )
@@ -1918,7 +1947,7 @@ private struct ModelTrendChart: View {
 
     private func cacheMark(for sample: ModelTrendChartData.Sample) -> some ChartContent {
         LineMark(
-            x: .value("Period", Double(sample.index - visibleStart)),
+            x: .value("Period", sample.xPosition),
             y: .value("Cache hit rate", sample.cacheRate),
             series: .value("Series", sample.cacheSeries)
         )
@@ -1927,11 +1956,11 @@ private struct ModelTrendChart: View {
         .lineStyle(.init(lineWidth: 1.5, lineCap: .round, lineJoin: .round, dash: [5, 4], dashPhase: 0))
     }
 
-    private func hoverCard(for index: Int) -> some View {
+    private func hoverCard(for index: Int, samples: [ModelTrendChartData.Sample]) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(axisPeriodLabel(dates[index]))
                 .font(.caption.weight(.semibold))
-            ForEach(samples.filter { $0.index == index && isModelVisible($0.model) }) { sample in
+            ForEach(samples.filter { $0.index == index }) { sample in
                 HStack(alignment: .top, spacing: 7) {
                     Circle()
                         .fill(seriesColor(sample.modelIndex))
@@ -2017,7 +2046,7 @@ struct ModelsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            LazyVStack(alignment: .leading, spacing: 24) {
                 ModelTrendChart(
                     data: ModelTrendChartData(points: store.modelTrendPeriods, models: visibleModels),
                     models: visibleModels,
@@ -2119,16 +2148,35 @@ private struct PriceObservation: Identifiable {
     let date: Date
     let price: ModelPrice
     let source: String
+    let inputValue: Double
+    let cachedInputValue: Double
+    let outputValue: Double
 
     var id: Date { date }
 
+    init(date: Date, price: ModelPrice, source: String) {
+        self.date = date
+        self.price = price
+        self.source = source
+        inputValue = price.inputPerMillion.doubleValue
+        cachedInputValue = price.cachedInputPerMillion.doubleValue
+        outputValue = price.outputPerMillion.doubleValue
+    }
+
     func value(for series: PriceSeries) -> Double {
         switch series {
-        case .input: price.inputPerMillion.doubleValue
-        case .cachedInput: price.cachedInputPerMillion.doubleValue
-        case .output: price.outputPerMillion.doubleValue
+        case .input: inputValue
+        case .cachedInput: cachedInputValue
+        case .output: outputValue
         }
     }
+}
+
+private struct PriceChartPoint: Identifiable {
+    let id: String
+    let date: Date
+    let series: PriceSeries
+    let value: Double
 }
 
 private struct ModelPricingView: View {
@@ -2160,9 +2208,20 @@ private struct ModelPricingView: View {
         return result
     }
 
-    private var currentPrice: ModelPrice? { observations.last?.price }
-
     var body: some View {
+        let preparedObservations = observations
+        let currentPrice = preparedObservations.last?.price
+        let chartPoints = PriceSeries.allCases.flatMap { series in
+            preparedObservations.map { observation in
+                PriceChartPoint(
+                    id: "\(series.rawValue)|\(observation.date.timeIntervalSinceReferenceDate)",
+                    date: observation.date,
+                    series: series,
+                    value: observation.value(for: series)
+                )
+            }
+        }
+
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 20) {
                 SectionHeader(
@@ -2192,25 +2251,18 @@ private struct ModelPricingView: View {
                 }
 
                 Chart {
-                    ForEach(PriceSeries.allCases) { series in
-                        ForEach(observations) { observation in
-                            LineMark(
-                                x: .value("Observed", observation.date),
-                                y: .value("USD per million", observation.value(for: series)),
-                                series: .value("Rate", series.rawValue)
-                            )
-                            .interpolationMethod(.stepEnd)
-                            .lineStyle(.init(lineWidth: 2.25, lineCap: .round, lineJoin: .round))
-                            .foregroundStyle(by: .value("Rate", series.rawValue))
-                            PointMark(
-                                x: .value("Observed", observation.date),
-                                y: .value("USD per million", observation.value(for: series))
-                            )
-                            .foregroundStyle(by: .value("Rate", series.rawValue))
-                            .symbolSize(32)
-                        }
+                    ForEach(chartPoints) { point in
+                        LineMark(
+                            x: .value("Observed", point.date),
+                            y: .value("USD per million", point.value),
+                            series: .value("Rate", point.series.rawValue)
+                        )
+                        .interpolationMethod(.stepEnd)
+                        .lineStyle(.init(lineWidth: 2.25, lineCap: .round, lineJoin: .round))
+                        .foregroundStyle(by: .value("Rate", point.series.rawValue))
                     }
                 }
+                .transaction { $0.animation = nil }
                 .chartForegroundStyleScale([
                     PriceSeries.input.rawValue: PriceSeries.input.color,
                     PriceSeries.cachedInput.rawValue: PriceSeries.cachedInput.color,
@@ -2232,11 +2284,11 @@ private struct ModelPricingView: View {
 
                 HStack {
                     Label(
-                        "\(observations.count) saved rate card\(observations.count == 1 ? "" : "s") for \(model)",
+                        "\(preparedObservations.count) saved rate card\(preparedObservations.count == 1 ? "" : "s") for \(model)",
                         systemImage: "clock.arrow.circlepath"
                     )
                     Spacer()
-                    if let latest = observations.last {
+                    if let latest = preparedObservations.last {
                         Text("Latest: \(latest.source) · \(latest.date.formatted(date: .abbreviated, time: .shortened))")
                     }
                 }
@@ -2366,7 +2418,7 @@ struct BillingView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+            LazyVStack(alignment: .leading, spacing: 22) {
                 SubscriptionUsageView(snapshot: store.subscription)
                 Divider()
                 SectionHeader(
