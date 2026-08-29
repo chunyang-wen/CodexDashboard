@@ -98,6 +98,9 @@ final class MenuBarStore: ObservableObject {
         subscriptionProvider = DashboardPreferences.subscriptionProvider(defaults: defaults)
         refreshInterval = defaults.object(forKey: DashboardPreferences.metricsRefreshIntervalKey) as? Double ?? 60
         weekStartsMonday = defaults.object(forKey: DashboardPreferences.weekStartsMondayKey) as? Bool ?? true
+        if subscriptionProvider == .sub2API {
+            subscription = DashboardPreferences.cachedSub2APISubscription(defaults: defaults)
+        }
     }
 
     var analyticsCalendar: Calendar {
@@ -137,9 +140,16 @@ final class MenuBarStore: ObservableObject {
             do {
                 let snapshot = try await self.historicalStore.freshSubscriptionSnapshot()
                 guard !Task.isCancelled, self.loadID == requestID else { return }
-                _ = self.acceptSubscription(snapshot)
-                if includeLiveQuota {
-                    await self.refreshLiveQuota(requestID: requestID)
+                if includeLiveQuota, self.subscriptionProvider != .default {
+                    let receivedLiveQuota = await self.refreshLiveQuota(requestID: requestID)
+                    if !receivedLiveQuota, self.subscription == nil {
+                        _ = self.acceptSubscription(snapshot)
+                    }
+                } else {
+                    _ = self.acceptSubscription(snapshot)
+                    if includeLiveQuota {
+                        _ = await self.refreshLiveQuota(requestID: requestID)
+                    }
                 }
             } catch {
                 guard !Task.isCancelled, self.loadID == requestID else { return }
@@ -174,11 +184,14 @@ final class MenuBarStore: ObservableObject {
         startSourceMonitoring()
     }
 
-    private func refreshLiveQuota(requestID: UUID? = nil) async {
+    @discardableResult
+    private func refreshLiveQuota(requestID: UUID? = nil) async -> Bool {
         let codexHome = self.codexHome
         let provider = subscriptionProvider
-        let cliProxyAPIConfiguration = DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults)
-        let sub2APIConfiguration = DashboardPreferences.sub2APIConfiguration(defaults: defaults)
+        let cliProxyAPIConfiguration = provider == .cliProxyAPI
+            ? DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults) : nil
+        let sub2APIConfiguration = provider == .sub2API
+            ? DashboardPreferences.sub2APIConfiguration(defaults: defaults) : nil
         let liveData: ProviderLiveSnapshot? = await Task.detached(priority: .utility) {
             switch provider {
             case .default:
@@ -200,15 +213,18 @@ final class MenuBarStore: ObservableObject {
         guard !Task.isCancelled,
               requestID.map({ $0 == self.loadID }) ?? true,
               let live = liveData?.subscription,
-              live.isUsable else { return }
+              live.isUsable else { return false }
 
         if provider == .default {
             try? await self.historicalStore.recordSubscription(live)
+        } else if provider == .sub2API {
+            DashboardPreferences.cacheSub2APISubscription(live, defaults: defaults)
         }
         let quotaChanged = subscription?.hasSameQuota(as: live) != true
         if acceptSubscription(live), quotaChanged {
             self.metricsDidChange?()
         }
+        return true
     }
 
     private func startPricingMonitoring() {
@@ -248,8 +264,10 @@ final class MenuBarStore: ObservableObject {
         bankedResets = nil
         let codexHome = codexHome
         let provider = subscriptionProvider
-        let cliProxyAPIConfiguration = DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults)
-        let sub2APIConfiguration = DashboardPreferences.sub2APIConfiguration(defaults: defaults)
+        let cliProxyAPIConfiguration = provider == .cliProxyAPI
+            ? DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults) : nil
+        let sub2APIConfiguration = provider == .sub2API
+            ? DashboardPreferences.sub2APIConfiguration(defaults: defaults) : nil
         popoverTask = Task { [weak self] in
             guard let self else { return }
             self.isLoading = true
@@ -259,7 +277,7 @@ final class MenuBarStore: ObservableObject {
             await self.preparePopover()
             CodexMemoryTrace.mark("host.popover.compact-ready", details: "days=\(self.menuBarDaily.count)")
             guard !Task.isCancelled, self.menuBarDataIsResident else { return }
-            await self.refreshLiveQuota()
+            _ = await self.refreshLiveQuota()
             CodexMemoryTrace.mark("host.popover.load.done", details: "days=\(self.menuBarDaily.count)")
         }
         bankedResetTask = Task { [weak self] in
@@ -360,6 +378,9 @@ final class MenuBarStore: ObservableObject {
         account = nil
         bankedResets = nil
         _ = acceptSubscription(validatedSubscription)
+        if subscriptionProvider == .sub2API, let validatedSubscription {
+            DashboardPreferences.cacheSub2APISubscription(validatedSubscription, defaults: defaults)
+        }
         settingsDidChange?()
         loadMenuBar(includeLiveQuota: true)
         if menuBarDataIsResident {
@@ -422,8 +443,10 @@ final class MenuBarStore: ObservableObject {
                 menuBarAnalytics = MenuBarAnalytics(snapshot: snapshot)
                 try? await historicalStore.recordMenuBarMetrics(snapshot)
             }
-            let subscriptionSnapshot = try await historicalStore.freshSubscriptionSnapshot()
-            _ = acceptSubscription(subscriptionSnapshot)
+            if subscriptionProvider == .default {
+                let subscriptionSnapshot = try await historicalStore.freshSubscriptionSnapshot()
+                _ = acceptSubscription(subscriptionSnapshot)
+            }
         } catch {
             if menuBarDataIsResident {
                 historyMessage = "Menu-bar metrics could not be loaded: \(error.localizedDescription)"

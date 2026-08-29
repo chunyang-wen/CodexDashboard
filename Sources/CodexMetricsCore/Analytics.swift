@@ -6,21 +6,18 @@ public enum PeriodGranularity: String, CaseIterable, Hashable, Sendable {
 
 public enum Analytics {
     public static func projects(from sessions: [SessionSummary]) -> [ProjectMetric] {
-        Dictionary(grouping: sessions, by: { $0.projectName.lowercased() })
-            .map { _, groupedSessions in
-                let paths = Array(Set(groupedSessions.map(\.projectPath))).sorted()
-                let representative = paths.max { lhs, rhs in
-                    let leftCount = groupedSessions.filter { $0.projectPath == lhs }.count
-                    let rightCount = groupedSessions.filter { $0.projectPath == rhs }.count
-                    return leftCount == rightCount ? lhs > rhs : leftCount < rightCount
-                } ?? groupedSessions.first?.projectPath ?? "Unknown"
-                return ProjectMetric(
-                    path: representative,
-                    paths: paths,
+        let projects: [ProjectMetric] = Dictionary(grouping: sessions, by: \.projectPath)
+            .map { path, groupedSessions in
+                ProjectMetric(
+                    path: path,
+                    paths: [path],
                     sessions: groupedSessions.sorted { $0.updatedAt > $1.updatedAt }
                 )
             }
-            .sorted { $0.lastActivity > $1.lastActivity }
+        return projects.sorted { lhs, rhs in
+            if lhs.lastActivity != rhs.lastActivity { return lhs.lastActivity > rhs.lastActivity }
+            return lhs.path < rhs.path
+        }
     }
 
     public static func projects(from sessions: [SessionMetric]) -> [ProjectMetric] {
@@ -398,6 +395,11 @@ public enum MetricFormatters {
         formatter.unitsStyle = .abbreviated
         formatter.maximumUnitCount = 2
         return formatter.string(from: interval) ?? "—"
+    }
+
+    public static func age(since date: Date, relativeTo now: Date = .now) -> String {
+        let interval = now.timeIntervalSince(date)
+        return interval < 1 ? "now" : duration(interval)
     }
 
     public static func currency(_ value: Decimal) -> String {

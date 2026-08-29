@@ -523,20 +523,22 @@ final class MetricsDatabase: @unchecked Sendable {
     func projectAggregates(limit: Int? = nil) throws -> [ProjectAggregateRow] {
         try lockedThrowing {
             var sql = """
-                SELECT project_path,
-                       SUM(input_tokens), SUM(cached_input), SUM(cache_write),
-                       SUM(output_tokens), SUM(reasoning), SUM(total_tokens),
-                       SUM(active_runtime), COUNT(DISTINCT session_id), MAX(day)
-                FROM daily_contribution
-                GROUP BY project_path
-                ORDER BY SUM(total_tokens) DESC
+                SELECT c.project_path,
+                       SUM(c.input_tokens), SUM(c.cached_input), SUM(c.cache_write),
+                       SUM(c.output_tokens), SUM(c.reasoning), SUM(c.total_tokens),
+                       SUM(c.active_runtime), COUNT(DISTINCT c.session_id),
+                       MAX(COALESCE(h.updated_at, c.day))
+                FROM daily_contribution c
+                LEFT JOIN historical_session h ON h.id = c.session_id
+                GROUP BY c.project_path
+                ORDER BY SUM(c.total_tokens) DESC
                 """
             if let limit { sql += " LIMIT \(max(1, limit))" }
 
             guard let statement = prepare(sql) else { throw databaseError() }
             defer { sqlite3_finalize(statement) }
 
-            var rowsByName: [String: ProjectAggregateRow] = [:]
+            var rows: [ProjectAggregateRow] = []
             while sqlite3_step(statement) == SQLITE_ROW {
                 guard let path = textValue(statement, 0) else { continue }
                 let row = ProjectAggregateRow(
@@ -554,21 +556,9 @@ final class MetricsDatabase: @unchecked Sendable {
                     sessionCount: Int(int64OrZero(statement, 8)),
                     lastActivity: Date(timeIntervalSince1970: doubleOrZero(statement, 9))
                 )
-                let key = row.name.lowercased()
-                if let existing = rowsByName[key] {
-                    rowsByName[key] = ProjectAggregateRow(
-                        path: existing.sessionCount >= row.sessionCount ? existing.path : row.path,
-                        paths: Array(Set(existing.paths + row.paths)).sorted(),
-                        usage: existing.usage + row.usage,
-                        activeRuntime: existing.activeRuntime + row.activeRuntime,
-                        sessionCount: existing.sessionCount + row.sessionCount,
-                        lastActivity: max(existing.lastActivity, row.lastActivity)
-                    )
-                } else {
-                    rowsByName[key] = row
-                }
+                rows.append(row)
             }
-            return rowsByName.values.sorted { $0.usage.total > $1.usage.total }
+            return rows
         }
     }
 

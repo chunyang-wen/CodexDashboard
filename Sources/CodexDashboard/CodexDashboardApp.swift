@@ -1080,11 +1080,17 @@ private struct DashboardSettingsView: View {
             cliProxyAPIEndpoint = DashboardPreferences.sharedDefaults().string(
                 forKey: DashboardPreferences.cliProxyAPIEndpointKey
             ) ?? cliProxyAPIEndpoint
-            cliProxyAPIManagementKey = DashboardKeychain.readManagementKey() ?? ""
             sub2APIEndpoint = DashboardPreferences.sharedDefaults().string(
                 forKey: DashboardPreferences.sub2APIEndpointKey
             ) ?? sub2APIEndpoint
-            sub2APIAdminToken = DashboardKeychain.readSub2APIAdminToken() ?? ""
+            switch selectedSubscriptionProvider {
+            case .default:
+                break
+            case .cliProxyAPI:
+                cliProxyAPIManagementKey = DashboardKeychain.readManagementKey() ?? ""
+            case .sub2API:
+                sub2APIAdminToken = DashboardKeychain.readSub2APIAdminToken() ?? ""
+            }
             sub2APIAccountID = DashboardPreferences.sharedDefaults().string(
                 forKey: DashboardPreferences.sub2APIAccountIDKey
             ) ?? ""

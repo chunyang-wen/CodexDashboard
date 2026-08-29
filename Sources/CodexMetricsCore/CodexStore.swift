@@ -346,7 +346,7 @@ public final class CodexStore: @unchecked Sendable {
         sqlite3_busy_timeout(database, 250)
 
         let columns = try tableColumns(database)
-        let names = ["id", "rollout_path", "cwd", "title", "source", "model_provider", "created_at", "updated_at", "tokens_used", "model", "reasoning_effort", "git_branch", "cli_version", "archived"]
+        let names = ["id", "rollout_path", "cwd", "title", "source", "model_provider", "created_at", "updated_at", "tokens_used", "model", "reasoning_effort", "git_branch", "cli_version", "archived", "name"]
         let selections = names.map { columns.contains($0) ? $0 : "NULL AS \($0)" }.joined(separator: ", ")
         var sql: String
         if !rolloutPaths.isEmpty {
@@ -435,11 +435,12 @@ public final class CodexStore: @unchecked Sendable {
             maxRowID = max(maxRowID, rowID)
             maxUpdatedAt = max(maxUpdatedAt, sourceUpdatedAt)
             let total = int(statement, 9)
+            let canonicalName = text(statement, 15)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let metric = SessionMetric(
                 id: text(statement, 1) ?? UUID().uuidString,
                 rolloutPath: text(statement, 2) ?? "",
-                projectPath: normalizedPath(text(statement, 3) ?? "Unknown"),
-                title: text(statement, 4) ?? "",
+                projectPath: normalizedPath(text(statement, 3)),
+                title: canonicalName.flatMap { $0.isEmpty ? nil : $0 } ?? text(statement, 4) ?? "",
                 source: text(statement, 5) ?? "unknown",
                 provider: text(statement, 6) ?? "unknown",
                 createdAt: Date(timeIntervalSince1970: Double(int(statement, 7))),
@@ -662,8 +663,10 @@ public final class CodexStore: @unchecked Sendable {
         return columns
     }
 
-    private func normalizedPath(_ path: String) -> String {
-        URL(fileURLWithPath: path).standardizedFileURL.path
+    private func normalizedPath(_ path: String?) -> String {
+        guard let path = path?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !path.isEmpty else { return "Unknown" }
+        return URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
     private func text(_ statement: OpaquePointer, _ index: Int32) -> String? {

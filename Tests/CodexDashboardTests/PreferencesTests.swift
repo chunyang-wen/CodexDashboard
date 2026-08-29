@@ -105,6 +105,7 @@ final class PreferencesTests: XCTestCase {
                 DashboardPreferences.cliProxyAPIEndpointKey,
                 DashboardPreferences.sub2APIEndpointKey,
                 DashboardPreferences.sub2APIAccountIDKey,
+                DashboardPreferences.sub2APISubscriptionCacheKey,
                 DashboardPreferences.metricsRefreshIntervalKey,
                 DashboardPreferences.weekStartsMondayKey,
                 DashboardPreferences.dashboardRangeKey,
@@ -121,5 +122,29 @@ final class PreferencesTests: XCTestCase {
                 DashboardPreferences.menuBarUsageTrendMetricKey
             ])
         )
+    }
+
+    @MainActor
+    func testSub2APICachedQuotaIsRestoredOnlyForTheSelectedAccount() {
+        let suiteName = "PreferencesTests.Sub2APICache.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(DashboardSubscriptionProvider.sub2API.rawValue, forKey: DashboardPreferences.subscriptionProviderKey)
+        defaults.set("42", forKey: DashboardPreferences.sub2APIAccountIDKey)
+        let subscription = SubscriptionSnapshot(
+            planType: "cached",
+            limitID: "sub2api",
+            limitName: nil,
+            windows: [UsageQuotaWindow(usedPercent: 25, windowMinutes: 300, resetsAt: .now)],
+            credits: nil,
+            rateLimitReachedType: nil,
+            observedAt: .now
+        )
+
+        DashboardPreferences.cacheSub2APISubscription(subscription, defaults: defaults)
+
+        XCTAssertEqual(MenuBarStore(defaults: defaults).subscription, subscription)
+        defaults.set("84", forKey: DashboardPreferences.sub2APIAccountIDKey)
+        XCTAssertNil(MenuBarStore(defaults: defaults).subscription)
     }
 }

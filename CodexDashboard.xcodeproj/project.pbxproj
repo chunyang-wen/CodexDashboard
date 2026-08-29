@@ -19,6 +19,9 @@
 		A10000000000000000000009 /* Conversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000009 /* Conversation.swift */; };
 		A1000000000000000000000A /* MetricsIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000A /* MetricsIndex.swift */; };
 		A1000000000000000000000B /* CodexSourcePaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000B /* CodexSourcePaths.swift */; };
+		A1000000000000000000000C /* SessionGraph.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000C /* SessionGraph.swift */; };
+		A1000000000000000000000D /* SessionGraphStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000D /* SessionGraphStore.swift */; };
+		A1000000000000000000000E /* SessionGraphLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000E /* SessionGraphLayout.swift */; };
 		A20000000000000000000001 /* CodexDashboardApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* CodexDashboardApp.swift */; };
 		A20000000000000000000007 /* MenuBarStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000007 /* MenuBarStore.swift */; };
 		A20000000000000000000008 /* DashboardProcessCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000008 /* DashboardProcessCoordinator.swift */; };
@@ -28,6 +31,8 @@
 		A2000000000000000000000E /* CodexSourceWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* CodexSourceWatcher.swift */; };
 		A30000000000000000000001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000001 /* main.swift */; };
 		A40000000000000000000001 /* AnalyticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40000000000000000000001 /* AnalyticsTests.swift */; };
+		A40000000000000000000002 /* SessionGraphTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40000000000000000000002 /* SessionGraphTests.swift */; };
+		A40000000000000000000003 /* SessionGraphLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40000000000000000000003 /* SessionGraphLayoutTests.swift */; };
 		A50000000000000000000001 /* CodexMetricsCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* CodexMetricsCore.framework */; };
 		A50000000000000000000002 /* CodexMetricsCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* CodexMetricsCore.framework */; };
 		A50000000000000000000003 /* CodexMetricsCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* CodexMetricsCore.framework */; };
@@ -43,6 +48,8 @@
 		A70000000000000000000007 /* ConversationInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* ConversationInspectorView.swift */; };
 		A7000000000000000000000A /* DashboardHelperView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000004 /* DashboardHelperView.swift */; };
 		A7000000000000000000000B /* DashboardPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* DashboardPreferences.swift */; };
+		A7000000000000000000000C /* ProjectStructuredView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* ProjectStructuredView.swift */; };
+		A7000000000000000000000D /* SessionGraphCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000B /* SessionGraphCanvas.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -121,6 +128,9 @@
 		B10000000000000000000009 /* Conversation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Conversation.swift; sourceTree = "<group>"; };
 		B1000000000000000000000A /* MetricsIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricsIndex.swift; sourceTree = "<group>"; };
 		B1000000000000000000000B /* CodexSourcePaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSourcePaths.swift; sourceTree = "<group>"; };
+		B1000000000000000000000C /* SessionGraph.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionGraph.swift; sourceTree = "<group>"; };
+		B1000000000000000000000D /* SessionGraphStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionGraphStore.swift; sourceTree = "<group>"; };
+		B1000000000000000000000E /* SessionGraphLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionGraphLayout.swift; sourceTree = "<group>"; };
 		B20000000000000000000001 /* CodexDashboardApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexDashboardApp.swift; sourceTree = "<group>"; };
 		B20000000000000000000002 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
 		B20000000000000000000003 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -130,9 +140,13 @@
 		B20000000000000000000007 /* MenuBarStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStore.swift; sourceTree = "<group>"; };
 		B20000000000000000000008 /* DashboardProcessCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardProcessCoordinator.swift; sourceTree = "<group>"; };
 		B20000000000000000000009 /* DashboardPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardPreferences.swift; sourceTree = "<group>"; };
+		B2000000000000000000000A /* ProjectStructuredView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectStructuredView.swift; sourceTree = "<group>"; };
+		B2000000000000000000000B /* SessionGraphCanvas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionGraphCanvas.swift; sourceTree = "<group>"; };
 		B2000000000000000000000C /* StatusItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusItemController.swift; sourceTree = "<group>"; };
 		B30000000000000000000001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		B40000000000000000000001 /* AnalyticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalyticsTests.swift; sourceTree = "<group>"; };
+		B40000000000000000000002 /* SessionGraphTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionGraphTests.swift; sourceTree = "<group>"; };
+		B40000000000000000000003 /* SessionGraphLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionGraphLayoutTests.swift; sourceTree = "<group>"; };
 		B50000000000000000000001 /* CodexMetricsCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = CodexMetricsCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		B50000000000000000000002 /* CodexDashboard.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexDashboard.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B50000000000000000000003 /* codex-metrics */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "codex-metrics"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -229,6 +243,9 @@
 				B10000000000000000000009 /* Conversation.swift */,
 				B1000000000000000000000A /* MetricsIndex.swift */,
 				B1000000000000000000000B /* CodexSourcePaths.swift */,
+				B1000000000000000000000C /* SessionGraph.swift */,
+				B1000000000000000000000D /* SessionGraphStore.swift */,
+				B1000000000000000000000E /* SessionGraphLayout.swift */,
 			);
 			path = CodexMetricsCore;
 			sourceTree = "<group>";
@@ -246,6 +263,8 @@
 				B20000000000000000000006 /* CodexSourceWatcher.swift */,
 				B20000000000000000000007 /* MenuBarStore.swift */,
 				B20000000000000000000009 /* DashboardPreferences.swift */,
+				B2000000000000000000000A /* ProjectStructuredView.swift */,
+				B2000000000000000000000B /* SessionGraphCanvas.swift */,
 				B2000000000000000000000C /* StatusItemController.swift */,
 				B80000000000000000000002 /* MenuBarPopoverView.swift */,
 				B60000000000000000000004 /* Assets.xcassets */,
@@ -285,6 +304,8 @@
 			isa = PBXGroup;
 			children = (
 				B40000000000000000000001 /* AnalyticsTests.swift */,
+				B40000000000000000000002 /* SessionGraphTests.swift */,
+				B40000000000000000000003 /* SessionGraphLayoutTests.swift */,
 			);
 			path = CodexMetricsCoreTests;
 			sourceTree = "<group>";
@@ -479,6 +500,9 @@
 				A10000000000000000000009 /* Conversation.swift in Sources */,
 				A1000000000000000000000A /* MetricsIndex.swift in Sources */,
 				A1000000000000000000000B /* CodexSourcePaths.swift in Sources */,
+				A1000000000000000000000C /* SessionGraph.swift in Sources */,
+				A1000000000000000000000D /* SessionGraphStore.swift in Sources */,
+				A1000000000000000000000E /* SessionGraphLayout.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -509,6 +533,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A40000000000000000000001 /* AnalyticsTests.swift in Sources */,
+				A40000000000000000000002 /* SessionGraphTests.swift in Sources */,
+				A40000000000000000000003 /* SessionGraphLayoutTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -523,6 +549,8 @@
 				A70000000000000000000007 /* ConversationInspectorView.swift in Sources */,
 				A7000000000000000000000A /* DashboardHelperView.swift in Sources */,
 				A7000000000000000000000B /* DashboardPreferences.swift in Sources */,
+				A7000000000000000000000C /* ProjectStructuredView.swift in Sources */,
+				A7000000000000000000000D /* SessionGraphCanvas.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -582,8 +610,10 @@
 		F41000000000000000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEFINES_MODULE = YES;
+				DEVELOPMENT_TEAM = 4LK28PK96X;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
@@ -609,8 +639,10 @@
 		F41000000000000000000002 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEFINES_MODULE = YES;
+				DEVELOPMENT_TEAM = 4LK28PK96X;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
@@ -688,6 +720,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4LK28PK96X;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -705,6 +738,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4LK28PK96X;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -723,6 +757,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4LK28PK96X;
 				GENERATE_INFOPLIST_FILE = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.local.CodexDashboard.CoreTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -736,6 +771,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4LK28PK96X;
 				GENERATE_INFOPLIST_FILE = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.local.CodexDashboard.CoreTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";

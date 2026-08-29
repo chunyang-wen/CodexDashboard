@@ -249,6 +249,10 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var hasLoadedAnalytics = false
     @Published private(set) var isLoadingSessionHierarchy = false
+    @Published private(set) var isLoadingProjectSessionGraph = false
+    @Published private(set) var projectSessionGraph: SessionGraph?
+    @Published private(set) var projectSessionGraphProjectID: String?
+    @Published private(set) var projectSessionGraphError: String?
     @Published private(set) var isEnriching = false
     @Published private(set) var isUpdatingAnalytics = false
     @Published private(set) var enrichedSessions = 0
@@ -278,6 +282,8 @@ final class DashboardStore: ObservableObject {
     private var projectSessionTasks: [String: Task<Void, Never>] = [:]
     private var projectSessionCursors: [String: (rowID: Int64, updatedAt: Int64?)] = [:]
     private var projectSessionHasMore: Set<String> = []
+    private var projectSessionGraphTask: Task<Void, Never>?
+    private var projectSessionGraphLoadID = UUID()
     private var enrichmentTask: Task<Void, Never>?
     private var pricingTask: Task<Void, Never>?
     private var analyticsTask: Task<Void, Never>?
@@ -602,8 +608,10 @@ final class DashboardStore: ObservableObject {
             }
             let codexHome = self.codexHome
             let provider = self.subscriptionProvider
-            let cliProxyAPIConfiguration = DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults)
-            let sub2APIConfiguration = DashboardPreferences.sub2APIConfiguration(defaults: defaults)
+            let cliProxyAPIConfiguration = provider == .cliProxyAPI
+                ? DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults) : nil
+            let sub2APIConfiguration = provider == .sub2API
+                ? DashboardPreferences.sub2APIConfiguration(defaults: defaults) : nil
             // The status item should reflect quota immediately; do not make
             // it wait for the much heavier session merge and index load.
             let storedSubscription = try? await historicalStore.subscriptionSnapshot()
@@ -700,16 +708,11 @@ final class DashboardStore: ObservableObject {
             }
             guard !Task.isCancelled, self.dashboardDataIsResident else { return }
             let rows = (try? await self.historicalStore.projectAggregates()) ?? []
-            self.projectCatalog = rows.map {
-                ProjectMetric(
-                    path: $0.path,
-                    paths: $0.paths,
-                    usage: $0.usage,
-                    activeRuntime: $0.activeRuntime,
-                    sessionCount: $0.sessionCount,
-                    lastActivity: $0.lastActivity
-                )
-            }.sorted { $0.lastActivity > $1.lastActivity }
+            let catalog = await Task.detached(priority: .utility) {
+                ProjectCatalogBuilder.make(rows: rows)
+            }.value
+            guard !Task.isCancelled, self.dashboardDataIsResident else { return }
+            self.projectCatalog = catalog
         }
     }
 
@@ -731,6 +734,57 @@ final class DashboardStore: ObservableObject {
             afterRowID: cursor.rowID,
             afterUpdatedAt: cursor.updatedAt
         )
+    }
+
+    func loadProjectSessionGraph(projectID: String) {
+        guard dashboardDataIsResident,
+              activePage == .projects,
+              let project = projectCatalog.first(where: { $0.id == projectID }) else { return }
+        if projectSessionGraphProjectID == projectID, projectSessionGraph != nil { return }
+
+        projectSessionGraphTask?.cancel()
+        let loadID = UUID()
+        projectSessionGraphLoadID = loadID
+        projectSessionGraphProjectID = projectID
+        projectSessionGraph = nil
+        projectSessionGraphError = nil
+        isLoadingProjectSessionGraph = true
+        let codexHome = codexHome
+        let paths = Set(project.paths)
+
+        projectSessionGraphTask = Task { [weak self] in
+            defer {
+                if let self, self.projectSessionGraphLoadID == loadID {
+                    self.projectSessionGraphTask = nil
+                    self.isLoadingProjectSessionGraph = false
+                }
+            }
+            do {
+                let graph = try await Task.detached(priority: .utility) {
+                    try CodexStore(codexHome: codexHome).loadSessionGraph(forProjectPaths: paths)
+                }.value
+                guard !Task.isCancelled,
+                      let self,
+                      self.dashboardDataIsResident,
+                      self.activePage == .projects,
+                      self.projectSessionGraphLoadID == loadID,
+                      self.projectSessionGraphProjectID == projectID else { return }
+                self.projectSessionGraph = graph
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled,
+                      let self,
+                      self.projectSessionGraphLoadID == loadID else { return }
+                self.projectSessionGraphError = error.localizedDescription
+            }
+        }
+    }
+
+    func retryProjectSessionGraph() {
+        guard let projectID = projectSessionGraphProjectID else { return }
+        projectSessionGraphProjectID = nil
+        loadProjectSessionGraph(projectID: projectID)
     }
 
     private func loadProjectSessionPage(
@@ -781,7 +835,8 @@ final class DashboardStore: ObservableObject {
                 usage: current.usage,
                 activeRuntime: current.activeRuntime,
                 sessionCount: current.sessionCount,
-                lastActivity: current.lastActivity
+                lastActivity: current.lastActivity,
+                kind: current.kind
             )
             if let nextRowID {
                 self.projectSessionCursors[projectID] = (nextRowID, indexedPage?.nextUpdatedAt)
@@ -801,6 +856,7 @@ final class DashboardStore: ObservableObject {
         projectSessionTasks.removeAll()
         projectSessionCursors.removeAll()
         projectSessionHasMore.removeAll()
+        releaseProjectSessionGraph()
         enrichmentTask?.cancel()
         enrichmentTask = nil
         enrichmentID = UUID()
@@ -810,6 +866,16 @@ final class DashboardStore: ObservableObject {
         enrichmentTotal = 0
         sessions = []
         projectCatalog = []
+    }
+
+    private func releaseProjectSessionGraph() {
+        projectSessionGraphTask?.cancel()
+        projectSessionGraphTask = nil
+        projectSessionGraphLoadID = UUID()
+        projectSessionGraph = nil
+        projectSessionGraphProjectID = nil
+        projectSessionGraphError = nil
+        isLoadingProjectSessionGraph = false
     }
 
     private func startEnrichmentForAvailableHistory() {
@@ -1154,8 +1220,10 @@ final class DashboardStore: ObservableObject {
 
     private func refreshBankedResets(from codexHome: URL) {
         let provider = subscriptionProvider
-        let cliProxyAPIConfiguration = DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults)
-        let sub2APIConfiguration = DashboardPreferences.sub2APIConfiguration(defaults: defaults)
+        let cliProxyAPIConfiguration = provider == .cliProxyAPI
+            ? DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults) : nil
+        let sub2APIConfiguration = provider == .sub2API
+            ? DashboardPreferences.sub2APIConfiguration(defaults: defaults) : nil
         bankedResetTask?.cancel()
         bankedResetTask = Task { [weak self] in
             let snapshot = await Task.detached(priority: .utility) {
@@ -1192,6 +1260,7 @@ final class DashboardStore: ObservableObject {
         projectSessionTasks.removeAll()
         projectSessionCursors.removeAll()
         projectSessionHasMore.removeAll()
+        releaseProjectSessionGraph()
         enrichmentTask?.cancel()
         enrichmentTask = nil
         analyticsTask?.cancel()

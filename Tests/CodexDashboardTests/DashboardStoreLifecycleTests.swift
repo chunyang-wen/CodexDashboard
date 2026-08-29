@@ -1,10 +1,66 @@
 @testable import CodexDashboard
 import CodexMetricsCore
 import Foundation
+import SQLite3
 import XCTest
 
 @MainActor
 final class DashboardStoreLifecycleTests: XCTestCase {
+    func testProjectGraphSwitchingPublishesLatestAndLeavingProjectsReleasesIt() async throws {
+        let userHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexHome = userHome.appendingPathComponent(".codex", isDirectory: true)
+        let suiteName = "DashboardStoreLifecycleTests.Graph.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: userHome)
+        }
+        try FileManager.default.createDirectory(at: codexHome, withIntermediateDirectories: true)
+        let projectA = userHome.appendingPathComponent("GraphA", isDirectory: true)
+        let projectB = userHome.appendingPathComponent("GraphB", isDirectory: true)
+        for project in [projectA, projectB] {
+            try FileManager.default.createDirectory(
+                at: project.appendingPathComponent(".git", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+        }
+        try createGraphSourceDatabase(
+            at: codexHome.appendingPathComponent("state_5.sqlite"),
+            projectA: projectA.path,
+            projectB: projectB.path
+        )
+        try await HistoricalStore(userHome: userHome).record([
+            makeSession(id: "graph-a", codexHome: codexHome, projectPath: projectA.path),
+            makeSession(id: "graph-b", codexHome: codexHome, projectPath: projectB.path)
+        ])
+
+        let store = DashboardStore(
+            userHome: userHome,
+            defaults: defaults,
+            codexHome: codexHome
+        )
+        store.activateDashboard()
+        try await waitUntil { !store.isLoading && store.hasLoadedAnalytics }
+        store.updatePage(.projects)
+        try await waitUntil { !store.isLoadingSessionHierarchy && store.allProjects.count == 2 }
+
+        store.loadProjectSessionGraph(projectID: projectA.path)
+        store.loadProjectSessionGraph(projectID: projectB.path)
+        try await waitUntil {
+            store.projectSessionGraphProjectID == projectB.path
+                && store.projectSessionGraph?.nodes.map(\.id) == ["graph-b"]
+                && !store.isLoadingProjectSessionGraph
+        }
+
+        XCTAssertEqual(store.projectSessionGraph?.projectNodeCount, 1)
+        store.updatePage(.overview)
+        XCTAssertNil(store.projectSessionGraph)
+        XCTAssertNil(store.projectSessionGraphProjectID)
+        XCTAssertNil(store.projectSessionGraphError)
+        XCTAssertFalse(store.isLoadingProjectSessionGraph)
+    }
+
     func testNewestValidQuotaWinsRegardlessOfProvider() {
         let initialDate = Date(timeIntervalSince1970: 100)
         let parsedDate = Date(timeIntervalSince1970: 200)
@@ -498,6 +554,29 @@ final class DashboardStoreLifecycleTests: XCTestCase {
         XCTAssertEqual(menuStore.subscription?.planType, "fallback")
     }
 
+    func testSub2APIStartupDoesNotReplaceAccountCacheWithDefaultQuota() async throws {
+        let userHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let suiteName = "DashboardStoreLifecycleTests.Sub2APIStartup.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: userHome)
+        }
+        defaults.set(DashboardSubscriptionProvider.sub2API.rawValue, forKey: DashboardPreferences.subscriptionProviderKey)
+        defaults.set("42", forKey: DashboardPreferences.sub2APIAccountIDKey)
+        let cached = makeSubscription(usedPercent: 25, observedAt: Date(timeIntervalSince1970: 100))
+        let defaultQuota = makeSubscription(usedPercent: 75, observedAt: Date(timeIntervalSince1970: 200))
+        DashboardPreferences.cacheSub2APISubscription(cached, defaults: defaults)
+        try await HistoricalStore(userHome: userHome).recordSubscription(defaultQuota)
+
+        let menuStore = MenuBarStore(userHome: userHome, defaults: defaults)
+        menuStore.loadMenuBar(includeLiveQuota: true)
+        try await waitUntil { !menuStore.isLoading }
+
+        XCTAssertEqual(menuStore.subscription, cached)
+    }
+
     func testFailedProviderRefreshKeepsLastValidQuota() async throws {
         let userHome = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -560,12 +639,16 @@ final class DashboardStoreLifecycleTests: XCTestCase {
         XCTAssertEqual(menuStore.menuBarDaily.count, 1)
     }
 
-    private func makeSession(id: String, codexHome: URL) -> SessionMetric {
+    private func makeSession(
+        id: String,
+        codexHome: URL,
+        projectPath: String = "/tmp/Project"
+    ) -> SessionMetric {
         let date = Date.now
         return SessionMetric(
             id: id,
             rolloutPath: codexHome.appendingPathComponent("sessions/\(id).jsonl").path,
-            projectPath: "/tmp/Project",
+            projectPath: projectPath,
             title: id,
             source: "cli",
             provider: "openai",
@@ -579,6 +662,60 @@ final class DashboardStoreLifecycleTests: XCTestCase {
             usage: TokenUsage(input: 100, output: 20),
             enrichmentAvailable: true
         )
+    }
+
+    private func createGraphSourceDatabase(at url: URL, projectA: String, projectB: String) throws {
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        var database: OpaquePointer?
+        guard sqlite3_open(url.path, &database) == SQLITE_OK else {
+            throw NSError(domain: "DashboardStoreLifecycleTests", code: 1)
+        }
+        defer { if let database { sqlite3_close(database) } }
+        let sql = """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY, rollout_path TEXT, cwd TEXT, title TEXT,
+                source TEXT, created_at INTEGER, updated_at INTEGER, model TEXT
+            );
+            CREATE TABLE thread_spawn_edges (
+                parent_thread_id TEXT NOT NULL,
+                child_thread_id TEXT NOT NULL PRIMARY KEY,
+                status TEXT NOT NULL
+            );
+            """
+        guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
+            throw NSError(
+                domain: "DashboardStoreLifecycleTests",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: database.map { String(cString: sqlite3_errmsg($0)) } ?? "SQLite error"]
+            )
+        }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "INSERT INTO threads VALUES (?, ?, ?, ?, 'cli', ?, ?, 'gpt-test')",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK, let statement else {
+            throw NSError(domain: "DashboardStoreLifecycleTests", code: 3)
+        }
+        defer { sqlite3_finalize(statement) }
+        for row in [
+            ("graph-a", "/tmp/graph-a.jsonl", projectA, "Graph A", 10, 20),
+            ("graph-b", "/tmp/graph-b.jsonl", projectB, "Graph B", 30, 40)
+        ] {
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+            sqlite3_bind_text(statement, 1, row.0, -1, transient)
+            sqlite3_bind_text(statement, 2, row.1, -1, transient)
+            sqlite3_bind_text(statement, 3, row.2, -1, transient)
+            sqlite3_bind_text(statement, 4, row.3, -1, transient)
+            sqlite3_bind_int64(statement, 5, Int64(row.4))
+            sqlite3_bind_int64(statement, 6, Int64(row.5))
+            guard sqlite3_step(statement) == SQLITE_DONE else {
+                throw NSError(domain: "DashboardStoreLifecycleTests", code: 4)
+            }
+        }
     }
 
     private func waitUntil(

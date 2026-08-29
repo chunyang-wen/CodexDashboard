@@ -3,7 +3,97 @@ import SQLite3
 @testable import CodexMetricsCore
 
 final class AnalyticsTests: XCTestCase {
-    func testProjectsMergeCheckoutsWithTheSameDisplayName() {
+    func testDelegationDisplayTitleUsesInputInsteadOfTransportMarkup() {
+        let title = """
+            <codex_delegation>
+              <source_thread_id>parent</source_thread_id>
+              <input>Investigate the chart rendering bottleneck.</input>
+            </codex_delegation>
+            """
+
+        XCTAssertEqual(
+            SessionTitleFormatter.displayTitle(title),
+            "Investigate the chart rendering bottleneck."
+        )
+        XCTAssertEqual(SessionTitleFormatter.displayTitle("  Plain title  "), "Plain title")
+        XCTAssertEqual(SessionTitleFormatter.displayTitle(""), "Untitled session")
+    }
+
+    func testProjectCatalogUsesExactCWDAndKeepsMissingCWDLast() {
+        let rows = [
+            ProjectAggregateRow(
+                path: "/Volumes/OfflineDisk/work/project",
+                usage: TokenUsage(input: 10),
+                activeRuntime: 2,
+                sessionCount: 1,
+                lastActivity: Date(timeIntervalSince1970: 20)
+            ),
+            ProjectAggregateRow(
+                path: "/Volumes/OfflineDisk/work/project",
+                usage: TokenUsage(input: 2),
+                activeRuntime: 1,
+                sessionCount: 1,
+                lastActivity: Date(timeIntervalSince1970: 15)
+            ),
+            ProjectAggregateRow(
+                path: "/scratch/one",
+                usage: TokenUsage(input: 4),
+                activeRuntime: 1,
+                sessionCount: 1,
+                lastActivity: Date(timeIntervalSince1970: 30)
+            ),
+            ProjectAggregateRow(
+                path: "Unknown",
+                usage: TokenUsage(input: 6),
+                activeRuntime: 3,
+                sessionCount: 2,
+                lastActivity: Date(timeIntervalSince1970: 10)
+            )
+        ]
+
+        let catalog = ProjectCatalogBuilder.make(rows: rows)
+
+        XCTAssertEqual(catalog.map(\.kind), [.project, .project, .standalone])
+        XCTAssertEqual(catalog[0].path, "/scratch/one")
+        XCTAssertEqual(catalog[1].path, "/Volumes/OfflineDisk/work/project")
+        XCTAssertEqual(catalog[1].sessionCount, 2)
+        XCTAssertEqual(catalog[1].usage.input, 12)
+        XCTAssertEqual(catalog[2].name, "Standalone sessions")
+        XCTAssertEqual(catalog[2].paths, ["Unknown"])
+    }
+
+    func testProjectAggregateLastActivityUsesPreciseSessionUpdateTime() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let updatedAt = Date(timeIntervalSince1970: 1_800_000_123)
+        let session = SessionMetric(
+            id: "precise-project-activity",
+            rolloutPath: "/tmp/precise-project-activity.jsonl",
+            projectPath: "/Volumes/OfflineDisk/work/project",
+            title: "Precise activity",
+            source: "app",
+            provider: "openai",
+            createdAt: updatedAt.addingTimeInterval(-60),
+            updatedAt: updatedAt,
+            model: "gpt-test",
+            reasoningEffort: nil,
+            gitBranch: nil,
+            cliVersion: nil,
+            archived: false,
+            usage: TokenUsage(total: 10),
+            usageEvents: [UsageEvent(date: updatedAt, usage: TokenUsage(total: 10))],
+            enrichmentAvailable: true
+        )
+        let store = HistoricalStore(userHome: home)
+
+        _ = try await store.record([session])
+        let projects = try await store.projectAggregates()
+        let project = try XCTUnwrap(projects.first)
+
+        XCTAssertEqual(project.lastActivity.timeIntervalSince1970, updatedAt.timeIntervalSince1970, accuracy: 0.001)
+    }
+
+    func testProjectsKeepDifferentCWDsWithTheSameDisplayNameSeparate() {
         let date = Date(timeIntervalSince1970: 1_800_000_000)
         func session(_ id: String, path: String) -> SessionMetric {
             SessionMetric(
@@ -20,15 +110,11 @@ final class AnalyticsTests: XCTestCase {
             session("worktree", path: "/Users/example/.codex/worktrees/abcd/CodexDashboard")
         ])
 
-        XCTAssertEqual(projects.count, 1)
-        XCTAssertEqual(projects[0].sessionCount, 2)
-        XCTAssertEqual(
-            Set(projects[0].paths),
-            Set([
-                "/Users/example/CodexDashboard",
-                "/Users/example/.codex/worktrees/abcd/CodexDashboard"
-            ])
-        )
+        XCTAssertEqual(projects.count, 2)
+        XCTAssertEqual(Set(projects.map(\.path)), [
+            "/Users/example/CodexDashboard",
+            "/Users/example/.codex/worktrees/abcd/CodexDashboard"
+        ])
     }
 
     func testMenuBarSnapshotAndSessionCountLoadWithoutHydratedArchive() async throws {
@@ -227,6 +313,12 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(MetricFormatters.compactNumber(12_608_731), "12.6M")
         XCTAssertEqual(MetricFormatters.compactNumber(1_900_000_000), "1.9B")
         XCTAssertEqual(MetricFormatters.compactNumber(21_000), "21K")
+    }
+
+    func testStaticAgeFormatting() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(MetricFormatters.age(since: now, relativeTo: now), "now")
+        XCTAssertEqual(MetricFormatters.age(since: now.addingTimeInterval(-90), relativeTo: now), "1m 30s")
     }
 
     func testRolloutParserExtractsUsageAndTiming() throws {
@@ -1792,6 +1884,27 @@ final class AnalyticsTests: XCTestCase {
 
         let sessions = try CodexStore(codexHome: codexHome, userHome: home).loadIndexedSessions()
         XCTAssertEqual(sessions.map(\.id), ["fallback-session"])
+    }
+
+    func testCodexStorePrefersCanonicalThreadNameOverRawTitle() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexHome = home.appendingPathComponent(".codex", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(codexHome.appendingPathComponent("state_5.sqlite").path, &database), SQLITE_OK)
+        defer { if let database { sqlite3_close(database) } }
+        XCTAssertEqual(sqlite3_exec(database, """
+            CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, name TEXT, updated_at INTEGER);
+            INSERT INTO threads VALUES ('named', 'Raw request with attachment metadata', 'Fix project overview visibility', 2);
+            INSERT INTO threads VALUES ('legacy', 'Legacy title', '   ', 1);
+            """, nil, nil, nil), SQLITE_OK)
+
+        let sessions = try CodexStore(codexHome: codexHome, userHome: home).loadIndexedSessions()
+        let titles = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.title) })
+        XCTAssertEqual(titles["named"], "Fix project overview visibility")
+        XCTAssertEqual(titles["legacy"], "Legacy title")
     }
 
     func testCodexStoreIncrementallyMirrorsNewAndUpdatedThreadRows() throws {

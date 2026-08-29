@@ -12,6 +12,7 @@ enum DashboardPreferences {
     static let cliProxyAPIEndpointKey = "cliProxyAPIEndpoint"
     static let sub2APIEndpointKey = "sub2APIEndpoint"
     static let sub2APIAccountIDKey = "sub2APIAccountID"
+    static let sub2APISubscriptionCacheKey = "sub2APISubscriptionCache"
     static let metricsRefreshIntervalKey = "metricsRefreshInterval"
     static let weekStartsMondayKey = "weekStartsMonday"
     static let dashboardRangeKey = "dashboardRange"
@@ -49,7 +50,12 @@ enum DashboardPreferences {
         menuBarUsageTrendMetricKey
     ]
 
-    static let allPersistedKeys = Set([migrationVersionKey] + migratedKeys)
+    static let allPersistedKeys = Set([migrationVersionKey, sub2APISubscriptionCacheKey] + migratedKeys)
+
+    private struct Sub2APISubscriptionCache: Codable {
+        let accountID: String
+        let subscription: SubscriptionSnapshot
+    }
 
     static func sharedDefaults() -> UserDefaults {
         UserDefaults(suiteName: suiteName) ?? .standard
@@ -75,6 +81,26 @@ enum DashboardPreferences {
               let accountID = Int64(defaults.string(forKey: sub2APIAccountIDKey) ?? ""),
               accountID > 0 else { return nil }
         return Sub2APIConfiguration(baseURL: url, adminToken: token, accountID: accountID)
+    }
+
+    static func cachedSub2APISubscription(defaults: UserDefaults = sharedDefaults()) -> SubscriptionSnapshot? {
+        guard let accountID = defaults.string(forKey: sub2APIAccountIDKey),
+              let data = defaults.data(forKey: sub2APISubscriptionCacheKey),
+              let cache = try? JSONDecoder().decode(Sub2APISubscriptionCache.self, from: data),
+              cache.accountID == accountID,
+              cache.subscription.isUsable else { return nil }
+        return cache.subscription
+    }
+
+    static func cacheSub2APISubscription(
+        _ subscription: SubscriptionSnapshot,
+        defaults: UserDefaults = sharedDefaults()
+    ) {
+        guard subscription.isUsable,
+              let accountID = defaults.string(forKey: sub2APIAccountIDKey) else { return }
+        let cache = Sub2APISubscriptionCache(accountID: accountID, subscription: subscription)
+        guard let data = try? JSONEncoder().encode(cache) else { return }
+        defaults.set(data, forKey: sub2APISubscriptionCacheKey)
     }
 
     @discardableResult
@@ -137,6 +163,12 @@ enum DashboardKeychain {
     private static let service = "com.chunyangwen.CodexDashboard"
     private static let account = "cliProxyAPIManagementKey"
     private static let sub2APIAdminTokenAccount = "sub2APIAdminAccessToken"
+    private static let lock = NSLock()
+    private nonisolated(unsafe) static var cachedValues: [String: CachedValue] = [:]
+
+    private enum CachedValue {
+        case value(String?)
+    }
 
     static func readManagementKey() -> String? {
         read(account: account)
@@ -147,6 +179,10 @@ enum DashboardKeychain {
     }
 
     private static func read(account: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        if case let .value(value)? = cachedValues[account] { return value }
+
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
@@ -155,9 +191,15 @@ enum DashboardKeychain {
             kSecMatchLimit: kSecMatchLimitOne
         ]
         var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        let value: String?
+        if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+           let data = result as? Data {
+            value = String(data: data, encoding: .utf8)
+        } else {
+            value = nil
+        }
+        cachedValues[account] = .value(value)
+        return value
     }
 
     @discardableResult
@@ -172,6 +214,8 @@ enum DashboardKeychain {
 
     @discardableResult
     private static func save(_ key: String, account: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
@@ -180,7 +224,9 @@ enum DashboardKeychain {
         ]
         if trimmed.isEmpty {
             let status = SecItemDelete(query as CFDictionary)
-            return status == errSecSuccess || status == errSecItemNotFound
+            let succeeded = status == errSecSuccess || status == errSecItemNotFound
+            if succeeded { cachedValues[account] = .value(nil) }
+            return succeeded
         }
 
         let data = Data(trimmed.utf8)
@@ -189,12 +235,17 @@ enum DashboardKeychain {
             kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlock
         ]
         let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecSuccess { return true }
+        if updateStatus == errSecSuccess {
+            cachedValues[account] = .value(trimmed)
+            return true
+        }
         guard updateStatus == errSecItemNotFound else { return false }
         var addQuery = query
         addQuery[kSecValueData] = data
         addQuery[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlock
-        return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
+        let succeeded = SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
+        if succeeded { cachedValues[account] = .value(trimmed) }
+        return succeeded
     }
 }
 

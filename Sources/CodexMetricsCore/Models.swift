@@ -238,7 +238,7 @@ public struct SessionMetric: Identifiable, Codable, Hashable, Sendable {
     public var projectName: String {
         URL(fileURLWithPath: projectPath).lastPathComponent.isEmpty ? projectPath : URL(fileURLWithPath: projectPath).lastPathComponent
     }
-    public var displayTitle: String { title.isEmpty ? "Untitled session" : title }
+    public var displayTitle: String { SessionTitleFormatter.displayTitle(title) }
     public var displaySource: String { originator ?? source }
     public var sessionSpan: TimeInterval { max(0, updatedAt.timeIntervalSince(createdAt)) }
     public var activeRuntime: TimeInterval { turns.reduce(0) { $0 + $1.duration } }
@@ -361,26 +361,28 @@ public struct SessionSummary: Identifiable, Codable, Hashable, Sendable {
     public var projectName: String {
         URL(fileURLWithPath: projectPath).lastPathComponent.isEmpty ? projectPath : URL(fileURLWithPath: projectPath).lastPathComponent
     }
-    public var displayTitle: String { title.isEmpty ? "Untitled session" : title }
+    public var displayTitle: String { SessionTitleFormatter.displayTitle(title) }
     public var displaySource: String { originator ?? source }
     public var sessionSpan: TimeInterval { max(0, updatedAt.timeIntervalSince(createdAt)) }
 }
 
 public struct ProjectMetric: Identifiable, Hashable, Sendable {
-    public var id: String { path }
+    public var id: String { kind == .standalone ? "standalone-sessions" : path }
     public let path: String
     /// All source paths represented by this project. A project can have more
     /// than one checkout (for example, a main worktree and a Codex worktree).
     public let paths: [String]
+    public let kind: ProjectMetricKind
     public let sessions: [SessionSummary]
     private let aggregateUsage: TokenUsage?
     private let aggregateRuntime: TimeInterval?
     private let aggregateSessionCount: Int?
     private let aggregateLastActivity: Date?
 
-    public init(path: String, sessions: [SessionSummary]) {
+    public init(path: String, sessions: [SessionSummary], kind: ProjectMetricKind = .project) {
         self.path = path
         self.paths = [path]
+        self.kind = kind
         self.sessions = sessions
         self.aggregateUsage = nil
         self.aggregateRuntime = nil
@@ -388,9 +390,10 @@ public struct ProjectMetric: Identifiable, Hashable, Sendable {
         self.aggregateLastActivity = nil
     }
 
-    public init(path: String, fullSessions: [SessionMetric]) {
+    public init(path: String, fullSessions: [SessionMetric], kind: ProjectMetricKind = .project) {
         self.path = path
         self.paths = [path]
+        self.kind = kind
         self.sessions = fullSessions.map(\.summary)
         self.aggregateUsage = nil
         self.aggregateRuntime = nil
@@ -398,9 +401,10 @@ public struct ProjectMetric: Identifiable, Hashable, Sendable {
         self.aggregateLastActivity = nil
     }
 
-    public init(path: String, paths: [String], sessions: [SessionSummary]) {
+    public init(path: String, paths: [String], sessions: [SessionSummary], kind: ProjectMetricKind = .project) {
         self.path = path
         self.paths = paths
+        self.kind = kind
         self.sessions = sessions
         self.aggregateUsage = nil
         self.aggregateRuntime = nil
@@ -415,10 +419,12 @@ public struct ProjectMetric: Identifiable, Hashable, Sendable {
         usage: TokenUsage,
         activeRuntime: TimeInterval,
         sessionCount: Int,
-        lastActivity: Date
+        lastActivity: Date,
+        kind: ProjectMetricKind = .project
     ) {
         self.path = path
         self.paths = paths
+        self.kind = kind
         self.sessions = sessions
         self.aggregateUsage = usage
         self.aggregateRuntime = activeRuntime
@@ -432,10 +438,12 @@ public struct ProjectMetric: Identifiable, Hashable, Sendable {
         usage: TokenUsage,
         activeRuntime: TimeInterval,
         sessionCount: Int,
-        lastActivity: Date
+        lastActivity: Date,
+        kind: ProjectMetricKind = .project
     ) {
         self.path = path
         self.paths = paths
+        self.kind = kind
         self.sessions = []
         self.aggregateUsage = usage
         self.aggregateRuntime = activeRuntime
@@ -443,7 +451,9 @@ public struct ProjectMetric: Identifiable, Hashable, Sendable {
         self.aggregateLastActivity = lastActivity
     }
 
-    public var name: String { URL(fileURLWithPath: path).lastPathComponent }
+    public var name: String {
+        kind == .standalone ? "Standalone sessions" : URL(fileURLWithPath: path).lastPathComponent
+    }
     public var usage: TokenUsage { aggregateUsage ?? sessions.reduce(.zero) { $0 + $1.usage } }
     public var activeRuntime: TimeInterval { aggregateRuntime ?? sessions.reduce(0) { $0 + $1.activeRuntime } }
     public var sessionCount: Int { aggregateSessionCount ?? sessions.count }
@@ -451,6 +461,102 @@ public struct ProjectMetric: Identifiable, Hashable, Sendable {
     public var activeDays: Int { Set(sessions.map { Calendar.current.startOfDay(for: $0.updatedAt) }).count }
     public var dominantModel: String? {
         Dictionary(grouping: sessions.compactMap(\.model), by: { $0 }).max { $0.value.count < $1.value.count }?.key
+    }
+}
+
+public enum ProjectMetricKind: Hashable, Sendable {
+    case project
+    case standalone
+}
+
+public enum SessionTitleFormatter {
+    public static func displayTitle(_ rawTitle: String) -> String {
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return "Untitled session" }
+        guard title.hasPrefix("<codex_delegation") else { return title }
+        guard let data = title.data(using: .utf8) else { return "Delegated session" }
+
+        let delegate = DelegationInputParser()
+        let parser = XMLParser(data: data)
+        parser.delegate = delegate
+        guard parser.parse() else { return "Delegated session" }
+        let input = delegate.input.trimmingCharacters(in: .whitespacesAndNewlines)
+        return input.isEmpty ? "Delegated session" : input
+    }
+}
+
+private final class DelegationInputParser: NSObject, XMLParserDelegate {
+    var input = ""
+    private var isReadingInput = false
+
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributeDict: [String: String] = [:]
+    ) {
+        if elementName == "input" { isReadingInput = true }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        if isReadingInput { input += string }
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        didEndElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?
+    ) {
+        if elementName == "input" { isReadingInput = false }
+    }
+}
+
+public enum ProjectCatalogBuilder {
+    public static func make(rows: [ProjectAggregateRow]) -> [ProjectMetric] {
+        var grouped: [String: [ProjectAggregateRow]] = [:]
+        var standalone: [ProjectAggregateRow] = []
+
+        for row in rows {
+            let cwd = row.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cwd.isEmpty, cwd != "Unknown" {
+                grouped[cwd, default: []].append(row)
+            } else {
+                standalone.append(row)
+            }
+        }
+
+        var projects: [ProjectMetric] = grouped.map { cwd, rows in
+            metric(path: cwd, rows: rows, kind: .project)
+        }
+        projects.sort { lhs, rhs in
+            if lhs.lastActivity != rhs.lastActivity { return lhs.lastActivity > rhs.lastActivity }
+            return lhs.path < rhs.path
+        }
+
+        if !standalone.isEmpty {
+            let representative = standalone.max { $0.lastActivity < $1.lastActivity }!.path
+            projects.append(metric(path: representative, rows: standalone, kind: .standalone))
+        }
+        return projects
+    }
+
+    private static func metric(
+        path: String,
+        rows: [ProjectAggregateRow],
+        kind: ProjectMetricKind
+    ) -> ProjectMetric {
+        ProjectMetric(
+            path: path,
+            paths: Array(Set(rows.flatMap(\.paths))).sorted(),
+            sessions: [],
+            usage: rows.reduce(.zero) { $0 + $1.usage },
+            activeRuntime: rows.reduce(0) { $0 + $1.activeRuntime },
+            sessionCount: rows.reduce(0) { $0 + $1.sessionCount },
+            lastActivity: rows.map(\.lastActivity).max() ?? .distantPast,
+            kind: kind
+        )
     }
 }
 
