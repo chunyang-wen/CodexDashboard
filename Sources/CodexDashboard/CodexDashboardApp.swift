@@ -1266,9 +1266,10 @@ private struct DashboardSettingsView: View {
             subscriptionProviderRaw = DashboardSubscriptionProvider.sub2API.rawValue
             selectedSubscriptionProviderRaw = subscriptionProviderRaw
             if store.subscriptionProvider == .sub2API {
-                store.refreshSubscriptionProvider()
+                store.refreshSubscriptionProvider(validatedSubscription: result.subscription)
             } else {
                 store.updateSubscriptionProvider(.sub2API)
+                store.receiveMenuBarSubscription(result.subscription)
             }
             sub2APIValidationState = .valid(result.message)
         }

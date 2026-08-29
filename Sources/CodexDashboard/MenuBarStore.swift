@@ -351,7 +351,7 @@ final class MenuBarStore: ObservableObject {
         refreshSubscriptionProvider()
     }
 
-    func refreshSubscriptionProvider() {
+    func refreshSubscriptionProvider(validatedSubscription: SubscriptionSnapshot? = nil) {
         loadTask?.cancel()
         loadTask = nil
         bankedResetTask?.cancel()
@@ -359,6 +359,7 @@ final class MenuBarStore: ObservableObject {
         subscription = nil
         account = nil
         bankedResets = nil
+        _ = acceptSubscription(validatedSubscription)
         settingsDidChange?()
         loadMenuBar(includeLiveQuota: true)
         if menuBarDataIsResident {

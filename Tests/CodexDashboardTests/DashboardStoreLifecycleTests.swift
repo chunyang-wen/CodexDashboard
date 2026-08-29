@@ -31,6 +31,20 @@ final class DashboardStoreLifecycleTests: XCTestCase {
         XCTAssertEqual(proxyStore.subscription?.windows.first?.usedPercent, 30)
     }
 
+    func testProviderActivationPublishesValidatedQuotaImmediately() {
+        let suiteName = "DashboardStoreLifecycleTests.ProviderActivation.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(DashboardSubscriptionProvider.sub2API.rawValue, forKey: DashboardPreferences.subscriptionProviderKey)
+        let store = MenuBarStore(defaults: defaults)
+        store.receiveMenuBarSubscription(makeSubscription(usedPercent: 10, observedAt: Date(timeIntervalSince1970: 100)))
+        let validated = makeSubscription(usedPercent: 70, observedAt: Date(timeIntervalSince1970: 200))
+
+        store.refreshSubscriptionProvider(validatedSubscription: validated)
+
+        XCTAssertEqual(store.subscription?.windows.first?.usedPercent, 70)
+    }
+
     func testMenuBarLoadDoesNotHydrateDashboardAndReopenRestoresIt() async throws {
         let userHome = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

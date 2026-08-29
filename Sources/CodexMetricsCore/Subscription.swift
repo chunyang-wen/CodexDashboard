@@ -531,10 +531,12 @@ public struct Sub2APIConfiguration: Equatable, Sendable {
 public struct Sub2APIValidationResult: Sendable {
     public let isValid: Bool
     public let message: String
+    public let subscription: SubscriptionSnapshot?
 
-    public init(isValid: Bool, message: String) {
+    public init(isValid: Bool, message: String, subscription: SubscriptionSnapshot? = nil) {
         self.isValid = isValid
         self.message = message
+        self.subscription = subscription
     }
 }
 
@@ -604,12 +606,17 @@ public enum Sub2APIReader {
         }
         do {
             let quota = try await quota(using: configuration)
+            let subscription = snapshot(fromQuota: quota, observedAt: .now)
             let plan = (quota["plan_type"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                 ?? (quota["planName"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             let suffix = plan.map { " (\($0))" } ?? ""
             let email = (quota["email"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             let identity = email.map { " (\($0))" } ?? suffix
-            return Sub2APIValidationResult(isValid: true, message: "Connected successfully\(identity).")
+            return Sub2APIValidationResult(
+                isValid: true,
+                message: "Connected successfully\(identity).",
+                subscription: subscription
+            )
         } catch {
             return Sub2APIValidationResult(
                 isValid: false,
