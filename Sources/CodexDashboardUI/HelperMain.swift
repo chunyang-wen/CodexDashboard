@@ -40,16 +40,6 @@ private final class HelperAppDelegate: NSObject, NSApplicationDelegate, NSWindow
     private var observesLifecycleCommands = false
     private var isTerminatingForHost = false
 
-    func applicationWillFinishLaunching(_ notification: Notification) {
-        let hostIconURL = Bundle.main.bundleURL
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Resources/AppIcon.icns")
-        if let hostIcon = NSImage(contentsOf: hostIconURL) {
-            NSApp.applicationIconImage = hostIcon
-        }
-    }
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         CodexMemoryTrace.mark("helper.launch.begin")
         NSApp.setActivationPolicy(.regular)
