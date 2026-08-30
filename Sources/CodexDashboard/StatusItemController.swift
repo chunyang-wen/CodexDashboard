@@ -220,6 +220,7 @@ final class StatusItemController: NSObject {
         let windows = subscription?.windows.sorted { $0.windowMinutes < $1.windowMinutes } ?? []
         let style = MenuBarQuotaIconStyle(rawValue: defaults.string(forKey: DashboardPreferences.menuBarQuotaIconStyleKey) ?? "rings") ?? .rings
         let alertMarkers = alertMarkers(for: windows)
+        statusItem.length = style.statusItemLength
         button.image = MenuBarQuotaIconRenderer.image(windows: windows, style: style, alertMarkers: alertMarkers)
         button.image?.isTemplate = alertMarkers.isEmpty
         let quotaDescription = windows.isEmpty

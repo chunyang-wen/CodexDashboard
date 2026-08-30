@@ -406,6 +406,10 @@ enum MenuBarQuotaIconStyle: String, CaseIterable, Identifiable {
     case twoRows
 
     var id: String { rawValue }
+    var statusItemLength: CGFloat {
+        self == .twoRows ? NSStatusItem.variableLength : NSStatusItem.squareLength
+    }
+
     var label: String {
         switch self {
         case .rings: "Concentric rings"
@@ -438,6 +442,7 @@ private struct CodexDashboardApplication: App {
 @MainActor
 enum MenuBarQuotaIconRenderer {
     private static let alertLineWidth: CGFloat = 1.4
+    private static let twoRowsCanvasWidth: CGFloat = 28
 
     struct AlertMarkers: Hashable {
         static let none = AlertMarkers(primary: nil, secondary: nil)
@@ -477,11 +482,11 @@ enum MenuBarQuotaIconRenderer {
         style: MenuBarQuotaIconStyle,
         alertMarkers: AlertMarkers
     ) -> NSImage {
-        let size = NSSize(width: 18, height: 18)
+        let size = NSSize(width: style == .twoRows ? twoRowsCanvasWidth : 18, height: 18)
         let image = NSImage(size: size)
         guard let representation = NSBitmapImageRep(
             bitmapDataPlanes: nil,
-            pixelsWide: 36,
+            pixelsWide: Int(size.width * 2),
             pixelsHigh: 36,
             bitsPerSample: 8,
             samplesPerPixel: 4,
@@ -663,14 +668,14 @@ enum MenuBarQuotaIconRenderer {
     }
 
     private static func drawTwoRowsText(_ value: String, centerY: CGFloat, iconInk: NSColor) {
-        let font = NSFont.monospacedDigitSystemFont(ofSize: value.count > 3 ? 5.5 : 7, weight: .medium)
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .regular)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: iconInk
         ]
         let size = (value as NSString).size(withAttributes: attributes)
         let rect = NSRect(
-            x: 9 - size.width / 2,
+            x: twoRowsCanvasWidth / 2 - size.width / 2,
             y: centerY - size.height / 2,
             width: size.width,
             height: size.height

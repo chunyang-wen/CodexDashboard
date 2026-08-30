@@ -140,10 +140,18 @@ final class StatusItemControllerTests: XCTestCase {
         let weekly = UsageQuotaWindow(usedPercent: 27, windowMinutes: 10_080, resetsAt: Date(timeIntervalSince1970: 1))
         let fiveHour = UsageQuotaWindow(usedPercent: 0, windowMinutes: 300, resetsAt: Date(timeIntervalSince1970: 2))
         let twoRows = MenuBarQuotaIconRenderer.image(windows: [fiveHour, weekly], style: .twoRows)
+        let representation = try XCTUnwrap(twoRows.representations.compactMap { $0 as? NSBitmapImageRep }.first)
         let bounds = try alphaBounds(for: twoRows)
 
+        XCTAssertEqual(twoRows.size, NSSize(width: 28, height: 18))
+        XCTAssertGreaterThan(bounds.width, 36)
         XCTAssertGreaterThan(bounds.minX, 0)
-        XCTAssertLessThan(bounds.maxX, 36)
+        XCTAssertLessThan(bounds.maxX, CGFloat(representation.pixelsWide))
+    }
+
+    func testOnlyTwoRowsUsesIntrinsicStatusItemWidth() {
+        XCTAssertEqual(MenuBarQuotaIconStyle.twoRows.statusItemLength, NSStatusItem.variableLength)
+        XCTAssertEqual(MenuBarQuotaIconStyle.rings.statusItemLength, NSStatusItem.squareLength)
     }
 
     @MainActor
