@@ -20,11 +20,11 @@ final class HelperTargetPackagingTests: XCTestCase {
             encoding: .utf8
         )
         let popoverSource = try String(
-            contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboard/MenuBarPopoverView.swift"),
+            contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboard/Views/MenuBar/MenuBarPopoverView.swift"),
             encoding: .utf8
         )
         let statusItemSource = try String(
-            contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboard/StatusItemController.swift"),
+            contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboard/Services/StatusItemController.swift"),
             encoding: .utf8
         )
         let statusItemGateSource = try String(
@@ -32,11 +32,11 @@ final class HelperTargetPackagingTests: XCTestCase {
             encoding: .utf8
         )
         let hostSource = try String(
-            contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboard/CodexDashboardApp.swift"),
+            contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboard/App/CodexDashboardApp.swift"),
             encoding: .utf8
         )
         let coordinatorSource = try String(
-            contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboard/DashboardProcessCoordinator.swift"),
+            contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboard/Services/DashboardProcessCoordinator.swift"),
             encoding: .utf8
         )
         let infoURL = repositoryRoot.appendingPathComponent("Sources/CodexDashboardUI/Info.plist")

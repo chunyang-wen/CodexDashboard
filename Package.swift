@@ -27,7 +27,7 @@ let package = Package(
                 "CodexMetricsCore",
                 .product(name: "Sparkle", package: "Sparkle")
             ],
-            exclude: ["Assets.xcassets"]
+            exclude: ["Assets.xcassets", "Info.plist"]
         ),
         .testTarget(
             name: "CodexMetricsCoreTests",

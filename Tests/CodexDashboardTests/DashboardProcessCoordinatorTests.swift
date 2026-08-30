@@ -24,7 +24,7 @@ final class DashboardProcessCoordinatorTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let coordinatorSource = try String(
-            contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboard/DashboardProcessCoordinator.swift"),
+            contentsOf: repositoryRoot.appendingPathComponent("Sources/CodexDashboard/Services/DashboardProcessCoordinator.swift"),
             encoding: .utf8
         )
         let helperSource = try String(

@@ -145,8 +145,9 @@ final class Milestone6BoundaryTests: XCTestCase {
         let hostSources = hostBuild.components(separatedBy: "E30000000000000000000001 /* Sources */").first ?? ""
 
         for file in [
-            "Components.swift", "ContentView.swift", "DashboardStore.swift",
-            "ConversationInspectorView.swift"
+            "MetricComponents.swift", "ContentView.swift", "DashboardStore.swift",
+            "ConversationInspectorView.swift", "OverviewView.swift", "ProjectsView.swift",
+            "ModelsView.swift", "ModelPricingView.swift", "BillingView.swift"
         ] {
             XCTAssertFalse(hostSources.contains(file), "\(file) must remain helper-only")
         }
@@ -163,7 +164,7 @@ final class Milestone6BoundaryTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let source = try String(
-            contentsOf: root.appendingPathComponent("Sources/CodexDashboard/MenuBarStore.swift"),
+            contentsOf: root.appendingPathComponent("Sources/CodexDashboard/ViewModels/MenuBarStore.swift"),
             encoding: .utf8
         )
         for forbidden in [
