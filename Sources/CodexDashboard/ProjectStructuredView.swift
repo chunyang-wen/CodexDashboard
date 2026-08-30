@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ProjectStructuredView: View {
     @EnvironmentObject private var store: DashboardStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let project: ProjectMetric
     @State private var selectedWorkflowID: String?
     @State private var selectedNodeID: String?
@@ -25,15 +26,13 @@ struct ProjectStructuredView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            summaryBar
-            Divider()
             if let presentation, !presentation.workflows.isEmpty {
-                controlsBar
+                workflowToolbar
                 Divider()
             }
             contentRegion
-            if inspectedSessionID == nil, let selectedNode { selectionBar(selectedNode) }
         }
+        .animation(reduceMotion ? nil : .snappy(duration: 0.28), value: inspectedSessionID)
         .task(id: project.id) {
             selectedNodeID = nil
             inspectedSessionID = nil
@@ -49,60 +48,55 @@ struct ProjectStructuredView: View {
         }
     }
 
-    private var summaryBar: some View {
-        HStack(spacing: 12) {
-            Image(systemName: project.kind == .standalone ? "tray.full" : "point.3.connected.trianglepath.dotted")
-            Text(project.name)
-                .font(.headline)
-                .lineLimit(1)
-                .textSelection(.enabled)
-            if let presentation, let graph {
-                Text("\(presentation.workflows.count) workflows")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if graph.isTruncated {
-                    Label("Latest \(graph.requestedLimit)", systemImage: "clock.arrow.circlepath")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-            }
-            Spacer()
-            Button {
-                fitRequestID = UUID()
-            } label: {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-            }
-            .buttonStyle(.borderless)
-            .help("Fit workflow")
-            .disabled(selectedWorkflow == nil)
-        }
-        .padding(.horizontal, 16)
-        .frame(height: 44)
-    }
-
-    private var controlsBar: some View {
-        HStack(spacing: 12) {
+    private var workflowToolbar: some View {
+        HStack(spacing: 10) {
             if let presentation {
                 Picker("Workflow", selection: workflowSelection) {
                     ForEach(presentation.workflows) { workflow in
-                        Text("\(workflow.title) (\(workflow.nodeCount))")
-                            .lineLimit(1)
+                        Label(workflow.title, systemImage: "point.3.connected.trianglepath.dotted")
                             .tag(workflow.id)
                     }
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
-                .frame(maxWidth: 360, alignment: .leading)
-                if let workflow = selectedWorkflow, workflow.hiddenNodeCount > 0 {
-                    Text("\(workflow.hiddenNodeCount) more not shown")
+                .controlSize(.regular)
+                .frame(width: 300, alignment: .leading)
+
+                if let workflow = selectedWorkflow {
+                    Text("\(workflow.nodeCount) \(workflow.nodeCount == 1 ? "session" : "sessions")")
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.secondary)
+                    if workflow.hiddenNodeCount > 0 {
+                        Text("\(workflow.hiddenNodeCount) more not shown")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                 }
             }
+
+            if let graph, graph.isTruncated {
+                Label("Latest \(graph.requestedLimit)", systemImage: "clock.arrow.circlepath")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Spacer()
+
+            Button {
+                fitRequestID = UUID()
+            } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .help("Fit workflow")
+            .accessibilityLabel("Fit workflow")
+            .disabled(selectedWorkflow == nil)
         }
-        .padding(.horizontal, 16)
-        .frame(height: 42)
+        .padding(.horizontal, 12)
+        .frame(height: 44)
+        .background(.regularMaterial)
     }
 
     private var workflowSelection: Binding<String> {
@@ -123,8 +117,9 @@ struct ProjectStructuredView: View {
             if let inspectedSessionID {
                 Divider()
                 sessionInspector(sessionID: inspectedSessionID)
-                    .frame(width: 480)
+                    .frame(width: 440)
                     .frame(maxHeight: .infinity)
+                    .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
             }
         }
     }
@@ -194,45 +189,4 @@ struct ProjectStructuredView: View {
         }
     }
 
-    private var selectedNode: SessionGraphNode? {
-        guard let selectedNodeID else { return nil }
-        return graph?.nodes.first { $0.id == selectedNodeID }
-    }
-
-    private func selectionBar(_ node: SessionGraphNode) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: iconName(for: node.kind))
-                .foregroundStyle(node.scope == .external ? .orange : .blue)
-            Text(node.title)
-                .font(.subheadline.weight(.medium))
-                .lineLimit(1)
-                .textSelection(.enabled)
-            if let model = node.model {
-                Text(model)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer()
-            if node.projectPath != nil {
-                Button("Show Metrics") { inspectSession(node.id) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-            }
-        }
-        .padding(.horizontal, 16)
-        .frame(height: 44)
-        .background(.background.secondary)
-        .overlay(alignment: .top) { Divider() }
-    }
-
-    private func iconName(for kind: SessionGraphNodeKind) -> String {
-        switch kind {
-        case .user: "person.crop.circle"
-        case .subagent: "cpu"
-        case .automation: "clock.arrow.2.circlepath"
-        case .agentCreatedThread: "plus.bubble"
-        case .unknown: "questionmark.circle"
-        }
-    }
 }
