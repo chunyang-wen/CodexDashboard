@@ -4,6 +4,13 @@
         <title>CodexDashboard</title>
         <item>
             <title>0.2.1</title>
+            <description sparkle:format="html"><![CDATA[
+                <h3>What's new in v0.2.1</h3>
+                <ul>
+                    <li>Updated the menu-bar usage chart to show a rolling 30-day history with seven upcoming day slots.</li>
+                    <li>Corrected Today and This Week placement across month boundaries, including clearer date labels and unclipped week markers.</li>
+                </ul>
+            ]]></description>
             <pubDate>Mon, 31 Aug 2026 06:35:32 +0800</pubDate>
             <sparkle:version>20260831063251</sparkle:version>
             <sparkle:shortVersionString>0.2.1</sparkle:shortVersionString>
