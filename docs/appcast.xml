@@ -4,6 +4,15 @@
         <title>CodexDashboard</title>
         <item>
             <title>0.2.0</title>
+            <description sparkle:format="html"><![CDATA[
+                <h3>What's new in v0.2.0</h3>
+                <ul>
+                    <li>Reorganized the dashboard into focused Overview, Projects, Models, and Usage &amp; Billing views with clearer navigation and controls.</li>
+                    <li>Added project session graphs and structured workflow inspection for exploring how sessions and related activity connect.</li>
+                    <li>Added richer daily usage details and paginated billing history, with smoother chart interactions and lower rendering overhead.</li>
+                    <li>Improved menu-bar quota presentation and subscription-provider reliability, including refreshed Sub2API sessions and preserved validated credentials.</li>
+                </ul>
+            ]]></description>
             <pubDate>Sun, 30 Aug 2026 19:36:23 +0800</pubDate>
             <sparkle:version>20260830193306</sparkle:version>
             <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
