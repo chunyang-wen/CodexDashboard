@@ -394,6 +394,7 @@ private struct MenuUsageSummary {
 
 private struct MenuUsageTrendView: View {
     @Binding var metric: MenuUsageTrendMetric
+    @State private var hoveredDay: Date?
     let days: [MenuUsageDay]
     let currentWeekDays: ClosedRange<Int>
     let todayDay: Int
@@ -414,7 +415,7 @@ private struct MenuUsageTrendView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "chart.line.uptrend.xyaxis")
                         .foregroundStyle(.teal)
-                    Text(insightLabel)
+                    Text(hoveredDayLabel ?? insightLabel)
                         .foregroundStyle(.secondary)
                 }
                 .font(.caption2.weight(.medium))
@@ -489,6 +490,13 @@ private struct MenuUsageTrendView: View {
                     }
                     .accessibilityLabel(day.date.formatted(date: .long, time: .omitted))
                     .accessibilityValue(dayValueLabel(day))
+                    .onHover { isHovering in
+                        if isHovering {
+                            hoveredDay = day.date
+                        } else if hoveredDay == day.date {
+                            hoveredDay = nil
+                        }
+                    }
             }
         }
         .frame(width: contentWidth, height: 78, alignment: .bottom)
@@ -632,6 +640,13 @@ private struct MenuUsageTrendView: View {
         guard average > 0 else { return "No usage recorded this month" }
         let ratio = summaryValue(today) / average
         return "Today is \(ratio.formatted(.number.precision(.fractionLength(1))))× daily avg"
+    }
+
+    private var hoveredDayLabel: String? {
+        guard let hoveredDay,
+              let day = days.first(where: { $0.date == hoveredDay }) else { return nil }
+        let date = day.date.formatted(.dateTime.month(.abbreviated).day())
+        return "\(date): \(dayValueLabel(day))"
     }
 
     private func monthAnchorLabel(day: Int) -> String {
