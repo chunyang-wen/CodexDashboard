@@ -3,6 +3,14 @@
     <channel>
         <title>CodexDashboard</title>
         <item>
+            <title>0.2.0</title>
+            <pubDate>Sun, 30 Aug 2026 19:36:23 +0800</pubDate>
+            <sparkle:version>20260830193306</sparkle:version>
+            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.2.0/CodexDashboard-0.2.0.zip" length="12283287" type="application/octet-stream" sparkle:edSignature="kcZ1vYPr1+xJtCZvf76tyS+0Wi+sbuOU9EPo7fCMCBh6jaZfuYqqvu/7nv21krx0YVdV25SJCb5fKajBpmgxAA=="/>
+        </item>
+        <item>
             <title>0.1.15</title>
             <pubDate>Thu, 27 Aug 2026 14:50:34 +0800</pubDate>
             <sparkle:version>20260827144803</sparkle:version>
@@ -26,21 +34,6 @@
             <sparkle:shortVersionString>0.1.14</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.14/CodexDashboard-0.1.14.zip" length="11779979" type="application/octet-stream" sparkle:edSignature="gv87r95HoQs8L5W33K5eZbOIfyDMtXSWwGHUmwvkqWi6nHDgHDg1riVM166n5ewVUQUYt7YMn5ekuvakunxeDQ=="/>
-        </item>
-        <item>
-            <title>0.1.13</title>
-            <description sparkle:format="html"><![CDATA[
-                <h3>What's new in 0.1.13</h3>
-                <ul>
-                    <li>Added subscription quota support for CLIProxyAPI and Wei-Shaw/sub2api, including provider settings and secure credential storage.</li>
-                    <li>Added a two-row menu-bar quota icon option and refined quota marker alignment and settings controls.</li>
-                </ul>
-            ]]></description>
-            <pubDate>Wed, 26 Aug 2026 21:37:48 +0800</pubDate>
-            <sparkle:version>20260826213306</sparkle:version>
-            <sparkle:shortVersionString>0.1.13</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.13/CodexDashboard-0.1.13.zip" length="11621185" type="application/octet-stream" sparkle:edSignature="A0T8bSptdjJAA26sQx14QGKkJQS7e1RfqJnN+5hhjhgxHKT8ic6PBqWeiYGXWGrI1BbkL7+E2NjlZaLOUQXNBg=="/>
         </item>
     </channel>
 </rss>
