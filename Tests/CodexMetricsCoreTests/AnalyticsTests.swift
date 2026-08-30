@@ -1520,6 +1520,42 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertNil(unlimited?.credits?.balance)
     }
 
+    func testSub2APIAccessTokenRefreshTimingUsesExpiryLeeway() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func token(expiringAt timestamp: TimeInterval) throws -> String {
+            let data = try JSONSerialization.data(withJSONObject: ["exp": timestamp])
+            let payload = data.base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+            return "header.\(payload).signature"
+        }
+
+        XCTAssertTrue(Sub2APIReader.accessTokenNeedsRefresh(try token(expiringAt: now.timeIntervalSince1970), now: now))
+        XCTAssertTrue(Sub2APIReader.accessTokenNeedsRefresh(try token(expiringAt: now.timeIntervalSince1970 + 299), now: now))
+        XCTAssertFalse(Sub2APIReader.accessTokenNeedsRefresh(try token(expiringAt: now.timeIntervalSince1970 + 301), now: now))
+        XCTAssertFalse(Sub2APIReader.accessTokenNeedsRefresh("opaque-token", now: now))
+    }
+
+    func testSub2APIReaderParsesRotatedSessionTokens() throws {
+        XCTAssertEqual(
+            try Sub2APIReader.sessionTokens(from: [
+                "access_token": "next-access",
+                "refresh_token": "next-refresh",
+                "expires_in": 86_400
+            ]),
+            Sub2APISessionTokens(
+                accessToken: "next-access",
+                refreshToken: "next-refresh",
+                expiresIn: 86_400
+            )
+        )
+        XCTAssertThrowsError(try Sub2APIReader.sessionTokens(from: [
+            "access_token": "next-access",
+            "expires_in": 86_400
+        ]))
+    }
+
     func testSubscriptionReaderLabelsCustomProviderQuotaAsAPI() {
         let snapshot = SubscriptionReader.snapshot(
             from: [

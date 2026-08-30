@@ -390,7 +390,7 @@ final class DashboardStore: ObservableObject {
             let cliProxyAPIConfiguration = provider == .cliProxyAPI
                 ? DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults) : nil
             let sub2APIConfiguration = provider == .sub2API
-                ? DashboardPreferences.sub2APIConfiguration(defaults: defaults) : nil
+                ? await DashboardPreferences.refreshedSub2APIConfiguration(defaults: defaults) : nil
             // The status item should reflect quota immediately; do not make
             // it wait for the much heavier session merge and index load.
             let storedSubscription = try? await historicalStore.subscriptionSnapshot()
@@ -999,12 +999,13 @@ final class DashboardStore: ObservableObject {
 
     private func refreshBankedResets(from codexHome: URL) {
         let provider = subscriptionProvider
+        let defaults = defaults
         let cliProxyAPIConfiguration = provider == .cliProxyAPI
             ? DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults) : nil
-        let sub2APIConfiguration = provider == .sub2API
-            ? DashboardPreferences.sub2APIConfiguration(defaults: defaults) : nil
         bankedResetTask?.cancel()
         bankedResetTask = Task { [weak self] in
+            let sub2APIConfiguration = provider == .sub2API
+                ? await DashboardPreferences.refreshedSub2APIConfiguration(defaults: defaults) : nil
             let snapshot = await Task.detached(priority: .utility) {
                 switch provider {
                 case .default:

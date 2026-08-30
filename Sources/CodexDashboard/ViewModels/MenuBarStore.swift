@@ -191,7 +191,7 @@ final class MenuBarStore: ObservableObject {
         let cliProxyAPIConfiguration = provider == .cliProxyAPI
             ? DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults) : nil
         let sub2APIConfiguration = provider == .sub2API
-            ? DashboardPreferences.sub2APIConfiguration(defaults: defaults) : nil
+            ? await DashboardPreferences.refreshedSub2APIConfiguration(defaults: defaults) : nil
         let liveData: ProviderLiveSnapshot? = await Task.detached(priority: .utility) {
             switch provider {
             case .default:
@@ -264,10 +264,9 @@ final class MenuBarStore: ObservableObject {
         bankedResets = nil
         let codexHome = codexHome
         let provider = subscriptionProvider
+        let defaults = defaults
         let cliProxyAPIConfiguration = provider == .cliProxyAPI
             ? DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults) : nil
-        let sub2APIConfiguration = provider == .sub2API
-            ? DashboardPreferences.sub2APIConfiguration(defaults: defaults) : nil
         popoverTask = Task { [weak self] in
             guard let self else { return }
             self.isLoading = true
@@ -281,6 +280,8 @@ final class MenuBarStore: ObservableObject {
             CodexMemoryTrace.mark("host.popover.load.done", details: "days=\(self.menuBarDaily.count)")
         }
         bankedResetTask = Task { [weak self] in
+            let sub2APIConfiguration = provider == .sub2API
+                ? await DashboardPreferences.refreshedSub2APIConfiguration(defaults: defaults) : nil
             let snapshot: BankedResetSnapshot? = await Task.detached(priority: .utility) {
                 switch provider {
                 case .default:

@@ -556,18 +556,33 @@ public struct Sub2APISignInResult: Sendable {
     public let isValid: Bool
     public let message: String
     public let accessToken: String?
+    public let refreshToken: String?
     public let accounts: [Sub2APIAdminAccount]
 
     public init(
         isValid: Bool,
         message: String,
         accessToken: String? = nil,
+        refreshToken: String? = nil,
         accounts: [Sub2APIAdminAccount] = []
     ) {
         self.isValid = isValid
         self.message = message
         self.accessToken = accessToken
+        self.refreshToken = refreshToken
         self.accounts = accounts
+    }
+}
+
+public struct Sub2APISessionTokens: Equatable, Sendable {
+    public let accessToken: String
+    public let refreshToken: String
+    public let expiresIn: TimeInterval
+
+    public init(accessToken: String, refreshToken: String, expiresIn: TimeInterval) {
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.expiresIn = expiresIn
     }
 }
 
@@ -639,7 +654,8 @@ public enum Sub2APIReader {
             if (login["requires_2fa"] as? Bool) == true {
                 return Sub2APISignInResult(isValid: false, message: "This admin account requires two-factor authentication.")
             }
-            guard let accessToken = login["access_token"] as? String, !accessToken.isEmpty else {
+            guard let accessToken = login["access_token"] as? String, !accessToken.isEmpty,
+                  let refreshToken = login["refresh_token"] as? String, !refreshToken.isEmpty else {
                 throw URLError(.cannotParseResponse)
             }
             let accounts = try await fetchAccounts(baseURL: baseURL, adminToken: accessToken)
@@ -647,6 +663,7 @@ public enum Sub2APIReader {
                 isValid: true,
                 message: accounts.isEmpty ? "Signed in, but no upstream accounts were found." : "Signed in successfully. Select an upstream account.",
                 accessToken: accessToken,
+                refreshToken: refreshToken,
                 accounts: accounts
             )
         } catch {
@@ -659,6 +676,46 @@ public enum Sub2APIReader {
 
     public static func accounts(baseURL: URL, adminToken: String) async -> [Sub2APIAdminAccount] {
         (try? await fetchAccounts(baseURL: baseURL, adminToken: adminToken)) ?? []
+    }
+
+    public static func refreshSession(refreshToken: String, baseURL: URL) async throws -> Sub2APISessionTokens {
+        var request = URLRequest(url: apiURL(for: baseURL, path: ["auth", "refresh"]))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Codex Dashboard", forHTTPHeaderField: "User-Agent")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["refresh_token": refreshToken])
+        let object = try await responseObject(for: request)
+        return try sessionTokens(from: object)
+    }
+
+    static func sessionTokens(from object: [String: Any]) throws -> Sub2APISessionTokens {
+        guard let accessToken = object["access_token"] as? String, !accessToken.isEmpty,
+              let nextRefreshToken = object["refresh_token"] as? String, !nextRefreshToken.isEmpty,
+              let expiresIn = number(object["expires_in"]), expiresIn > 0 else {
+            throw URLError(.cannotParseResponse)
+        }
+        return Sub2APISessionTokens(
+            accessToken: accessToken,
+            refreshToken: nextRefreshToken,
+            expiresIn: expiresIn
+        )
+    }
+
+    public static func accessTokenNeedsRefresh(
+        _ token: String,
+        now: Date = .now,
+        leeway: TimeInterval = 300
+    ) -> Bool {
+        let segments = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard segments.count == 3 else { return false }
+        var payload = String(segments[1]).replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        payload.append(String(repeating: "=", count: (4 - payload.count % 4) % 4))
+        guard let data = Data(base64Encoded: payload),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let expiresAt = number(object["exp"]) else { return false }
+        return expiresAt <= now.timeIntervalSince1970 + leeway
     }
 
     public static func snapshot(fromQuota value: [String: Any], observedAt: Date) -> SubscriptionSnapshot? {

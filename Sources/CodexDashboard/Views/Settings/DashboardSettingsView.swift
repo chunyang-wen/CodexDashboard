@@ -25,6 +25,7 @@ struct DashboardSettingsView: View {
     @State private var sub2APIAdminEmail = ""
     @State private var sub2APIAdminPassword = ""
     @State private var sub2APIAdminToken = ""
+    @State private var sub2APIRefreshToken = ""
     @State private var sub2APIAccounts: [Sub2APIAdminAccount] = []
     @State private var sub2APIAccountID = ""
     @State private var sub2APIValidationState: SubscriptionProviderValidationState = .idle
@@ -141,7 +142,7 @@ struct DashboardSettingsView: View {
                                 .font(.caption)
                         }
                     }
-                    Text("Sign-in uses the password only for authentication. The returned admin access token is stored in macOS Keychain; the endpoint and selected account are stored in preferences.")
+                    Text("Sign-in uses the password only for authentication. The returned session tokens are stored in macOS Keychain; the endpoint and selected account are stored in preferences.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
@@ -275,6 +276,7 @@ struct DashboardSettingsView: View {
                 cliProxyAPIManagementKey = DashboardKeychain.readManagementKey() ?? ""
             case .sub2API:
                 sub2APIAdminToken = DashboardKeychain.readSub2APIAdminToken() ?? ""
+                sub2APIRefreshToken = DashboardKeychain.readSub2APIRefreshToken() ?? ""
             }
             sub2APIAccountID = DashboardPreferences.sharedDefaults().string(
                 forKey: DashboardPreferences.sub2APIAccountIDKey
@@ -366,9 +368,14 @@ struct DashboardSettingsView: View {
     }
 
     private func reloadSub2APIAccounts() {
-        guard let url = URL(string: sub2APIEndpoint), !sub2APIAdminToken.isEmpty else { return }
         Task {
-            sub2APIAccounts = await Sub2APIReader.accounts(baseURL: url, adminToken: sub2APIAdminToken)
+            guard let configuration = await DashboardPreferences.refreshedSub2APIConfiguration() else { return }
+            sub2APIAdminToken = configuration.adminToken
+            sub2APIRefreshToken = DashboardKeychain.readSub2APIRefreshToken() ?? ""
+            sub2APIAccounts = await Sub2APIReader.accounts(
+                baseURL: configuration.baseURL,
+                adminToken: configuration.adminToken
+            )
         }
     }
 
@@ -433,16 +440,28 @@ struct DashboardSettingsView: View {
             return
         }
         sub2APIValidationState = .validating
-        let configuration = Sub2APIConfiguration(baseURL: url, adminToken: adminToken, accountID: accountID)
+        let initialConfiguration = Sub2APIConfiguration(baseURL: url, adminToken: adminToken, accountID: accountID)
         Task {
+            let configuration: Sub2APIConfiguration
+            if DashboardKeychain.readSub2APIAdminToken() == adminToken,
+               let refreshed = await DashboardPreferences.refreshedSub2APIConfiguration() {
+                configuration = refreshed
+                sub2APIAdminToken = refreshed.adminToken
+                sub2APIRefreshToken = DashboardKeychain.readSub2APIRefreshToken() ?? ""
+            } else {
+                configuration = initialConfiguration
+            }
             let result = await Sub2APIReader.validate(using: configuration)
             guard selectedSubscriptionProvider == .sub2API else { return }
             guard result.isValid else {
                 sub2APIValidationState = .invalid(result.message)
                 return
             }
-            guard DashboardKeychain.saveSub2APIAdminToken(adminToken) else {
-                sub2APIValidationState = .invalid("Could not save the admin access token to Keychain.")
+            guard DashboardKeychain.saveSub2APICredentials(
+                accessToken: configuration.adminToken,
+                refreshToken: sub2APIRefreshToken
+            ) else {
+                sub2APIValidationState = .invalid("Could not save the admin session tokens to Keychain.")
                 return
             }
             DashboardPreferences.sharedDefaults().set(
@@ -483,11 +502,15 @@ struct DashboardSettingsView: View {
         let password = sub2APIAdminPassword
         Task {
             let result = await Sub2APIReader.signIn(email: email, password: password, baseURL: url)
-            guard result.isValid, let accessToken = result.accessToken else {
+            guard result.isValid,
+                  let accessToken = result.accessToken,
+                  let refreshToken = result.refreshToken,
+                  !refreshToken.isEmpty else {
                 sub2APIValidationState = .invalid(result.message)
                 return
             }
             sub2APIAdminToken = accessToken
+            sub2APIRefreshToken = refreshToken
             sub2APIAccounts = result.accounts
             if !result.accounts.contains(where: { String($0.id) == sub2APIAccountID }) {
                 sub2APIAccountID = result.accounts.first.map { String($0.id) } ?? ""

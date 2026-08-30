@@ -1,5 +1,6 @@
 import Foundation
 import CodexMetricsCore
+import Darwin
 import Security
 
 enum DashboardPreferences {
@@ -83,6 +84,16 @@ enum DashboardPreferences {
         return Sub2APIConfiguration(baseURL: url, adminToken: token, accountID: accountID)
     }
 
+    @MainActor
+    static func refreshedSub2APIConfiguration(
+        defaults: UserDefaults = sharedDefaults()
+    ) async -> Sub2APIConfiguration? {
+        guard let configuration = sub2APIConfiguration(defaults: defaults) else { return nil }
+        guard Sub2APIReader.accessTokenNeedsRefresh(configuration.adminToken),
+              DashboardKeychain.readSub2APIRefreshToken()?.isEmpty == false else { return configuration }
+        return await Sub2APISessionRefreshCoordinator.shared.refreshIfNeeded(configuration)
+    }
+
     static func cachedSub2APISubscription(defaults: UserDefaults = sharedDefaults()) -> SubscriptionSnapshot? {
         guard let accountID = defaults.string(forKey: sub2APIAccountIDKey),
               let data = defaults.data(forKey: sub2APISubscriptionCacheKey),
@@ -163,6 +174,7 @@ enum DashboardKeychain {
     private static let service = "com.chunyangwen.CodexDashboard"
     private static let account = "cliProxyAPIManagementKey"
     private static let sub2APIAdminTokenAccount = "sub2APIAdminAccessToken"
+    private static let sub2APIRefreshTokenAccount = "sub2APIAdminRefreshToken"
     private static let lock = NSLock()
     private nonisolated(unsafe) static var cachedValues: [String: CachedValue] = [:]
 
@@ -178,10 +190,22 @@ enum DashboardKeychain {
         read(account: sub2APIAdminTokenAccount)
     }
 
-    private static func read(account: String) -> String? {
+    static func readSub2APIRefreshToken() -> String? {
+        read(account: sub2APIRefreshTokenAccount)
+    }
+
+    static func readFreshSub2APIAdminToken() -> String? {
+        read(account: sub2APIAdminTokenAccount, useCache: false)
+    }
+
+    static func readFreshSub2APIRefreshToken() -> String? {
+        read(account: sub2APIRefreshTokenAccount, useCache: false)
+    }
+
+    private static func read(account: String, useCache: Bool = true) -> String? {
         lock.lock()
         defer { lock.unlock() }
-        if case let .value(value)? = cachedValues[account] { return value }
+        if useCache, case let .value(value)? = cachedValues[account] { return value }
 
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
@@ -208,8 +232,9 @@ enum DashboardKeychain {
     }
 
     @discardableResult
-    static func saveSub2APIAdminToken(_ token: String) -> Bool {
-        save(token, account: sub2APIAdminTokenAccount)
+    static func saveSub2APICredentials(accessToken: String, refreshToken: String) -> Bool {
+        guard save(accessToken, account: sub2APIAdminTokenAccount) else { return false }
+        return save(refreshToken, account: sub2APIRefreshTokenAccount)
     }
 
     @discardableResult
@@ -246,6 +271,49 @@ enum DashboardKeychain {
         let succeeded = SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
         if succeeded { cachedValues[account] = .value(trimmed) }
         return succeeded
+    }
+}
+
+private actor Sub2APISessionRefreshCoordinator {
+    static let shared = Sub2APISessionRefreshCoordinator()
+
+    func refreshIfNeeded(_ configuration: Sub2APIConfiguration) async -> Sub2APIConfiguration {
+        let lockURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("com.chunyangwen.CodexDashboard.sub2api-refresh.lock")
+        let descriptor = Darwin.open(lockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else { return configuration }
+        defer { Darwin.close(descriptor) }
+
+        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+            guard !Task.isCancelled else { return configuration }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        defer { flock(descriptor, LOCK_UN) }
+
+        let accessToken = DashboardKeychain.readFreshSub2APIAdminToken() ?? configuration.adminToken
+        guard Sub2APIReader.accessTokenNeedsRefresh(accessToken),
+              let refreshToken = DashboardKeychain.readFreshSub2APIRefreshToken(),
+              !refreshToken.isEmpty else {
+            return Sub2APIConfiguration(
+                baseURL: configuration.baseURL,
+                adminToken: accessToken,
+                accountID: configuration.accountID
+            )
+        }
+
+        guard let tokens = try? await Sub2APIReader.refreshSession(
+            refreshToken: refreshToken,
+            baseURL: configuration.baseURL
+        ), DashboardKeychain.saveSub2APICredentials(
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken
+        ) else { return configuration }
+
+        return Sub2APIConfiguration(
+            baseURL: configuration.baseURL,
+            adminToken: tokens.accessToken,
+            accountID: configuration.accountID
+        )
     }
 }
 
