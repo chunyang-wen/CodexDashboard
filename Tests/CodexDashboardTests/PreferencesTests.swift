@@ -60,6 +60,19 @@ final class PreferencesTests: XCTestCase {
         XCTAssertTrue(interval.contains(sunday))
     }
 
+    func testMenuUsageTrendShowsThirtyDaysBackAndSevenDaysAhead() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let august31 = calendar.date(from: DateComponents(year: 2026, month: 8, day: 31, hour: 12))!
+
+        let dates = menuUsageTrendDates(now: august31, calendar: calendar)
+
+        XCTAssertEqual(dates.count, 38)
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day], from: dates.first!), DateComponents(year: 2026, month: 8, day: 1))
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day], from: dates[30]), DateComponents(year: 2026, month: 8, day: 31))
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day], from: dates.last!), DateComponents(year: 2026, month: 9, day: 7))
+    }
+
     @MainActor
     func testPeriodBucketsKeepDistinctSessionsAndMondayWeekBoundaries() {
         var calendar = Calendar(identifier: .gregorian)

@@ -320,46 +320,32 @@ struct MenuBarDashboardView: View {
         let today = store.menuBarAggregate(in: todayInterval)
         let week = store.menuBarAggregate(in: weekInterval)
         let month = store.menuBarAggregate(in: monthInterval)
+        let trendDates = menuUsageTrendDates(now: now, calendar: calendar)
 
         return MenuUsageTrendView(
             metric: usageTrendMetric,
-            days: monthUsageDays(in: monthInterval, calendar: calendar),
-            currentWeekDays: currentWeekDays(
-                weekInterval: weekInterval,
-                monthInterval: monthInterval,
-                calendar: calendar
-            ),
-            todayDay: calendar.component(.day, from: now),
+            days: trendUsageDays(on: trendDates, calendar: calendar),
+            currentWeek: weekInterval,
+            todayDate: calendar.startOfDay(for: now),
             today: MenuUsageSummary(aggregate: today),
             week: MenuUsageSummary(aggregate: week),
             month: MenuUsageSummary(aggregate: month)
         )
     }
 
-    private func monthUsageDays(in interval: DateInterval, calendar: Calendar) -> [MenuUsageDay] {
+    private func trendUsageDays(on dates: [Date], calendar: Calendar) -> [MenuUsageDay] {
         let dailyByStart = Dictionary(store.menuBarDaily.map { (calendar.startOfDay(for: $0.start), $0) }) { _, latest in latest }
-        let dayCount = calendar.range(of: .day, in: .month, for: interval.start)?.count ?? 1
-
-        var days: [MenuUsageDay] = []
-        days.reserveCapacity(dayCount)
-        for offset in 0..<dayCount {
-            if let date = calendar.date(byAdding: .day, value: offset, to: interval.start) {
-                let start = calendar.startOfDay(for: date)
-                days.append(MenuUsageDay(date: start, period: dailyByStart[start]))
-            }
+        return dates.map { date in
+            let start = calendar.startOfDay(for: date)
+            return MenuUsageDay(date: start, period: dailyByStart[start])
         }
-        return days
     }
+}
 
-    private func currentWeekDays(
-        weekInterval: DateInterval,
-        monthInterval: DateInterval,
-        calendar: Calendar
-    ) -> ClosedRange<Int> {
-        let clippedStart = max(weekInterval.start, monthInterval.start)
-        let clippedEnd = min(weekInterval.end, monthInterval.end)
-        let finalDay = calendar.date(byAdding: .day, value: -1, to: clippedEnd) ?? clippedStart
-        return calendar.component(.day, from: clippedStart)...calendar.component(.day, from: finalDay)
+func menuUsageTrendDates(now: Date, calendar: Calendar) -> [Date] {
+    let today = calendar.startOfDay(for: now)
+    return (-30...7).compactMap { offset in
+        calendar.date(byAdding: .day, value: offset, to: today)
     }
 }
 
@@ -375,7 +361,6 @@ private struct MenuUsageDay: Identifiable {
     let period: PeriodMetric?
 
     var id: Date { date }
-    var day: Int { Calendar.current.component(.day, from: date) }
 }
 
 private struct MenuUsageSummary {
@@ -396,8 +381,8 @@ private struct MenuUsageTrendView: View {
     @Binding var metric: MenuUsageTrendMetric
     @State private var hoveredDay: Date?
     let days: [MenuUsageDay]
-    let currentWeekDays: ClosedRange<Int>
-    let todayDay: Int
+    let currentWeek: DateInterval
+    let todayDate: Date
     let today: MenuUsageSummary
     let week: MenuUsageSummary
     let month: MenuUsageSummary
@@ -465,9 +450,9 @@ private struct MenuUsageTrendView: View {
         return HStack(alignment: .bottom, spacing: barSpacing) {
             ForEach(days) { day in
                 let height = barHeight(for: day)
-                let isToday = day.day == todayDay
-                let isFuture = day.day > todayDay
-                let isThisWeek = currentWeekDays.contains(day.day)
+                let isToday = day.date == todayDate
+                let isFuture = day.date > todayDate
+                let isThisWeek = currentWeek.contains(day.date)
 
                 RoundedRectangle(cornerRadius: 1.5, style: .continuous)
                     .fill(isFuture ? Color.clear : barColor(isToday: isToday, isThisWeek: isThisWeek))
@@ -503,25 +488,24 @@ private struct MenuUsageTrendView: View {
     }
 
     private var monthAxis: some View {
-        HStack(spacing: 0) {
-            Text(monthAnchorLabel(day: 1))
-            Spacer()
-            Text(monthAnchorLabel(day: 8))
-            Spacer()
-            Text(monthAnchorLabel(day: 15))
-            Spacer()
-            Text("TODAY \(todayDay)").foregroundStyle(.cyan)
-            Spacer()
-            Text(monthAnchorLabel(day: days.count))
+        ZStack {
+            ForEach(axisDates.filter { $0 != todayDate }, id: \.self) { date in
+                Text(axisLabel(for: date))
+                    .position(x: axisLabelX(for: date, halfWidth: 16), y: 5)
+            }
+
+            Text("TODAY \(todayDate.formatted(.dateTime.day()))")
+                .foregroundStyle(.cyan)
+                .position(x: axisLabelX(for: todayDate, halfWidth: 24), y: 5)
         }
+        .frame(width: contentWidth, height: 10)
         .font(.system(size: 8, weight: .medium).monospacedDigit())
         .foregroundStyle(.tertiary)
     }
 
     private var weekSpanMarker: some View {
-        let count = max(1, days.count)
-        let startIndex = max(0, currentWeekDays.lowerBound - 1)
-        let endIndex = min(count - 1, currentWeekDays.upperBound - 1)
+        let startIndex = days.firstIndex { currentWeek.contains($0.date) } ?? 0
+        let endIndex = days.lastIndex { currentWeek.contains($0.date) } ?? startIndex
         let startX = CGFloat(startIndex) * (resolvedBarWidth + barSpacing)
         let spanWidth = CGFloat(endIndex - startIndex + 1) * resolvedBarWidth
             + CGFloat(max(0, endIndex - startIndex)) * barSpacing
@@ -601,6 +585,18 @@ private struct MenuUsageTrendView: View {
         return max(1, (contentWidth - barSpacing * (count - 1)) / count)
     }
 
+    private var axisDates: [Date] {
+        [0, 7, 14, 21, days.count - 1].compactMap { index in
+            days.indices.contains(index) ? days[index].date : nil
+        }
+    }
+
+    private func axisLabelX(for date: Date, halfWidth: CGFloat) -> CGFloat {
+        let index = CGFloat(days.firstIndex { $0.date == date } ?? 0)
+        let barCenter = index * (resolvedBarWidth + barSpacing) + resolvedBarWidth / 2
+        return min(max(barCenter, halfWidth), contentWidth - halfWidth)
+    }
+
     private func summaryValue(_ summary: MenuUsageSummary) -> Double {
         return switch metric {
         case .cost: NSDecimalNumber(decimal: summary.cost).doubleValue
@@ -609,8 +605,8 @@ private struct MenuUsageTrendView: View {
     }
 
     private func barHeight(for day: MenuUsageDay) -> CGFloat {
-        guard day.day <= todayDay else { return 5 }
-        let maximum = max(1, days.lazy.filter { $0.day <= todayDay }.map(barValue).max() ?? 0)
+        guard day.date <= todayDate else { return 5 }
+        let maximum = max(1, days.lazy.filter { $0.date <= todayDate }.map(barValue).max() ?? 0)
         let fraction = min(1, max(0, barValue(day) / maximum))
         // Daily usage is naturally spiky. A square-root scale keeps outliers
         // dominant without flattening the rest of the month's trend into noise.
@@ -635,7 +631,7 @@ private struct MenuUsageTrendView: View {
     }
 
     private var insightLabel: String {
-        let completedDays = max(1, min(todayDay, days.count))
+        let completedDays = max(1, Calendar.current.component(.day, from: todayDate))
         let average = summaryValue(month) / Double(completedDays)
         guard average > 0 else { return "No usage recorded this month" }
         let ratio = summaryValue(today) / average
@@ -649,10 +645,8 @@ private struct MenuUsageTrendView: View {
         return "\(date): \(dayValueLabel(day))"
     }
 
-    private func monthAnchorLabel(day: Int) -> String {
-        guard let firstDate = days.first?.date else { return "—" }
-        let month = firstDate.formatted(.dateTime.month(.abbreviated)).uppercased()
-        return "\(month) \(day)"
+    private func axisLabel(for date: Date) -> String {
+        date.formatted(.dateTime.month(.abbreviated).day()).uppercased()
     }
 
     private func dayValueLabel(_ day: MenuUsageDay) -> String {
