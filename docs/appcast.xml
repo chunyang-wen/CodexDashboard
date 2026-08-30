@@ -3,6 +3,21 @@
     <channel>
         <title>CodexDashboard</title>
         <item>
+            <title>0.2.1</title>
+            <description sparkle:format="html"><![CDATA[
+                <h3>What's new in v0.2.1</h3>
+                <ul>
+                    <li>Updated the menu-bar usage chart to show a rolling 30-day history with seven upcoming day slots.</li>
+                    <li>Corrected Today and This Week placement across month boundaries, including clearer date labels and unclipped week markers.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Mon, 31 Aug 2026 06:35:32 +0800</pubDate>
+            <sparkle:version>20260831063251</sparkle:version>
+            <sparkle:shortVersionString>0.2.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.2.1/CodexDashboard-0.2.1.zip" length="12286260" type="application/octet-stream" sparkle:edSignature="6Rg5H5n5IF5mTYbxvJCsBK9jwOwU7V6rVl1ZuloYMS7Aid8dwRm98L6e03XbODGYa+kvf/7EYCAqLgu955H7Cg=="/>
+        </item>
+        <item>
             <title>0.2.0</title>
             <description sparkle:format="html"><![CDATA[
                 <h3>What's new in v0.2.0</h3>
@@ -26,23 +41,6 @@
             <sparkle:shortVersionString>0.1.15</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.15/CodexDashboard-0.1.15.zip" length="11793684" type="application/octet-stream" sparkle:edSignature="CklQbRiMHIt7duheOYWddgzAdMEnaPbRCoSGPkKsHnUYlBAafovFiRsAwgmJb8hZTfHdRxK/h8qA+kbkPo2BDg=="/>
-        </item>
-        <item>
-            <title>0.1.14</title>
-            <description sparkle:format="html"><![CDATA[
-                <h3>What's new in 0.1.14</h3>
-                <ul>
-                    <li>Reduced memory use when opening the dashboard and switching tabs by using bounded SQL projections and aggregated timing metrics.</li>
-                    <li>Added pagination for model and project session data, and limited Overview to the information it displays.</li>
-                    <li>Improved menu-bar refresh behavior, provider quota handling, and persisted metrics updates.</li>
-                    <li>Refined dashboard charts, project views, and pricing display.</li>
-                </ul>
-            ]]></description>
-            <pubDate>Thu, 27 Aug 2026 12:12:40 +0800</pubDate>
-            <sparkle:version>20260827121003</sparkle:version>
-            <sparkle:shortVersionString>0.1.14</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.1.14/CodexDashboard-0.1.14.zip" length="11779979" type="application/octet-stream" sparkle:edSignature="gv87r95HoQs8L5W33K5eZbOIfyDMtXSWwGHUmwvkqWi6nHDgHDg1riVM166n5ewVUQUYt7YMn5ekuvakunxeDQ=="/>
         </item>
     </channel>
 </rss>
