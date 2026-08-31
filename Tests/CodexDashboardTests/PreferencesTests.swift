@@ -4,6 +4,11 @@ import Foundation
 import XCTest
 
 final class PreferencesTests: XCTestCase {
+    func testProviderCredentialsAcceptOnlyPrintableASCII() {
+        XCTAssertEqual(printableASCIICredential("Abc123!@#-_"), "Abc123!@#-_")
+        XCTAssertEqual(printableASCIICredential("pass中文word\n\t"), "password")
+    }
+
     @MainActor
     func testSubscriptionProviderDefaultsToDefaultAndPersistsSelection() {
         let suiteName = "PreferencesTests.SubscriptionProvider.\(UUID().uuidString)"

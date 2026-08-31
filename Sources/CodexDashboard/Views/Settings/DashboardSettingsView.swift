@@ -11,6 +11,10 @@ private enum SubscriptionProviderValidationState: Equatable {
     case invalid(String)
 }
 
+func printableASCIICredential(_ value: String) -> String {
+    String(value.unicodeScalars.filter { (0x20...0x7E).contains($0.value) })
+}
+
 struct DashboardSettingsView: View {
     @EnvironmentObject private var store: MenuBarStore
     @AppStorage(DashboardPreferences.showMenuBarIconKey, store: DashboardPreferences.sharedDefaults()) private var showMenuBarIcon = true
@@ -53,7 +57,7 @@ struct DashboardSettingsView: View {
                     TextField("Endpoint", text: $cliProxyAPIEndpoint)
                         .textContentType(.URL)
 
-                    SecureField("Management key", text: $cliProxyAPIManagementKey)
+                    SecureField("Management key", text: printableASCIIBinding($cliProxyAPIManagementKey))
 
                     HStack {
                         Button {
@@ -93,7 +97,7 @@ struct DashboardSettingsView: View {
                     TextField("Admin email", text: $sub2APIAdminEmail)
                         .textContentType(.username)
 
-                    SecureField("Admin password", text: $sub2APIAdminPassword)
+                    SecureField("Admin password", text: printableASCIIBinding($sub2APIAdminPassword))
                         .textContentType(.password)
 
                     if sub2APIAccounts.isEmpty {
@@ -103,7 +107,7 @@ struct DashboardSettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
-                        Picker("Upstream account", selection: $sub2APIAccountID) {
+                        Picker("Upstream account", selection: sub2APIAccountSelection) {
                             ForEach(sub2APIAccounts) { account in
                                 Text("\(account.name) (\(account.id))")
                                     .tag(String(account.id))
@@ -304,6 +308,24 @@ struct DashboardSettingsView: View {
             && (Int64(sub2APIAccountID.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0) > 0
     }
 
+    private var sub2APIAccountSelection: Binding<String> {
+        Binding(
+            get: { sub2APIAccountID },
+            set: { accountID in
+                guard accountID != sub2APIAccountID else { return }
+                sub2APIAccountID = accountID
+                activateSub2APIConfiguration()
+            }
+        )
+    }
+
+    private func printableASCIIBinding(_ binding: Binding<String>) -> Binding<String> {
+        Binding(
+            get: { binding.wrappedValue },
+            set: { binding.wrappedValue = printableASCIICredential($0) }
+        )
+    }
+
     private var codexDataDescription: String {
         switch selectedSubscriptionProvider {
         case .default:
@@ -445,7 +467,11 @@ struct DashboardSettingsView: View {
             let configuration: Sub2APIConfiguration
             if DashboardKeychain.readSub2APIAdminToken() == adminToken,
                let refreshed = await DashboardPreferences.refreshedSub2APIConfiguration() {
-                configuration = refreshed
+                configuration = Sub2APIConfiguration(
+                    baseURL: url,
+                    adminToken: refreshed.adminToken,
+                    accountID: accountID
+                )
                 sub2APIAdminToken = refreshed.adminToken
                 sub2APIRefreshToken = DashboardKeychain.readSub2APIRefreshToken() ?? ""
             } else {
@@ -453,6 +479,7 @@ struct DashboardSettingsView: View {
             }
             let result = await Sub2APIReader.validate(using: configuration)
             guard selectedSubscriptionProvider == .sub2API else { return }
+            guard sub2APIAccountID.trimmingCharacters(in: .whitespacesAndNewlines) == String(accountID) else { return }
             guard result.isValid else {
                 sub2APIValidationState = .invalid(result.message)
                 return
