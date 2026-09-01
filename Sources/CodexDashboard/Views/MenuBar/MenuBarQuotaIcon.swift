@@ -205,8 +205,8 @@ enum MenuBarQuotaIconRenderer {
         iconInk: NSColor
     ) {
         if let primaryWindow, let secondaryWindow {
-            drawTwoRowsValue(for: primaryWindow, centerY: 13.5, alertRemainingPercent: alertMarkers.primary, iconInk: iconInk)
-            drawTwoRowsValue(for: secondaryWindow, centerY: 4.5, alertRemainingPercent: alertMarkers.secondary, iconInk: iconInk)
+            drawTwoRowsValue(for: primaryWindow, centerY: 14, alertRemainingPercent: alertMarkers.primary, iconInk: iconInk)
+            drawTwoRowsValue(for: secondaryWindow, centerY: 4, alertRemainingPercent: alertMarkers.secondary, iconInk: iconInk)
         } else if let window = primaryWindow ?? secondaryWindow {
             drawTwoRowsValue(
                 for: window,
