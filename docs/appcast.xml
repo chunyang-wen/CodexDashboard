@@ -4,6 +4,14 @@
         <title>CodexDashboard</title>
         <item>
             <title>0.2.2</title>
+            <description sparkle:format="html"><![CDATA[
+                <h3>What's new in v0.2.2</h3>
+                <ul>
+                    <li>Switching Sub2API upstream accounts now applies the selected account immediately and prevents an earlier refresh from overriding it.</li>
+                    <li>Provider credential fields now remove unsupported non-ASCII and control characters as you type.</li>
+                    <li>Improved the vertical alignment of values in the two-row menu-bar quota icon.</li>
+                </ul>
+            ]]></description>
             <pubDate>Tue, 01 Sep 2026 20:00:01 +0800</pubDate>
             <sparkle:version>20260901195307</sparkle:version>
             <sparkle:shortVersionString>0.2.2</sparkle:shortVersionString>
