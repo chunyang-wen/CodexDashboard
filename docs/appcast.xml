@@ -4,6 +4,14 @@
         <title>CodexDashboard</title>
         <item>
             <title>0.2.3</title>
+            <description sparkle:format="html"><![CDATA[
+                <h3>What's new in v0.2.3</h3>
+                <ul>
+                    <li>Replaced calendar week and month usage totals with rolling 7-day and 30-day totals.</li>
+                    <li>Added a separate current-week cost marker and made 30-day comparisons consistent across month boundaries.</li>
+                    <li>Improved the menu-bar metrics layout so large costs and 100% values remain readable at a consistent type size.</li>
+                </ul>
+            ]]></description>
             <pubDate>Wed, 02 Sep 2026 19:59:13 +0800</pubDate>
             <sparkle:version>20260902195612</sparkle:version>
             <sparkle:shortVersionString>0.2.3</sparkle:shortVersionString>
