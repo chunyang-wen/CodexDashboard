@@ -78,6 +78,20 @@ final class PreferencesTests: XCTestCase {
         XCTAssertEqual(calendar.dateComponents([.year, .month, .day], from: dates.last!), DateComponents(year: 2026, month: 9, day: 7))
     }
 
+    func testMenuUsageRollingIntervalsIncludeToday() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let september2 = calendar.date(from: DateComponents(year: 2026, month: 9, day: 2, hour: 12))!
+
+        let last7Days = menuUsageRollingInterval(days: 7, now: september2, calendar: calendar)
+        let last30Days = menuUsageRollingInterval(days: 30, now: september2, calendar: calendar)
+
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day], from: last7Days.start), DateComponents(year: 2026, month: 8, day: 27))
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day], from: last30Days.start), DateComponents(year: 2026, month: 8, day: 4))
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day], from: last7Days.end), DateComponents(year: 2026, month: 9, day: 2))
+        XCTAssertEqual(last7Days.end, last30Days.end)
+    }
+
     @MainActor
     func testPeriodBucketsKeepDistinctSessionsAndMondayWeekBoundaries() {
         var calendar = Calendar(identifier: .gregorian)

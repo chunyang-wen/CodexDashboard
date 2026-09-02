@@ -66,7 +66,7 @@ struct MenuBarDashboardView: View {
             .frame(height: 44)
             .background(Color.primary.opacity(0.025))
         }
-        .frame(width: 390)
+        .frame(width: 410)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -316,10 +316,10 @@ struct MenuBarDashboardView: View {
         let todayInterval = calendar.dateInterval(of: .day, for: now)
             ?? DateInterval(start: calendar.startOfDay(for: now), duration: 86_400)
         let weekInterval = calendar.dateInterval(of: .weekOfYear, for: now) ?? todayInterval
-        let monthInterval = calendar.dateInterval(of: .month, for: now) ?? todayInterval
         let today = store.menuBarAggregate(in: todayInterval)
         let week = store.menuBarAggregate(in: weekInterval)
-        let month = store.menuBarAggregate(in: monthInterval)
+        let last7Days = store.menuBarAggregate(in: menuUsageRollingInterval(days: 7, now: now, calendar: calendar))
+        let last30Days = store.menuBarAggregate(in: menuUsageRollingInterval(days: 30, now: now, calendar: calendar))
         let trendDates = menuUsageTrendDates(now: now, calendar: calendar)
 
         return MenuUsageTrendView(
@@ -328,8 +328,9 @@ struct MenuBarDashboardView: View {
             currentWeek: weekInterval,
             todayDate: calendar.startOfDay(for: now),
             today: MenuUsageSummary(aggregate: today),
-            week: MenuUsageSummary(aggregate: week),
-            month: MenuUsageSummary(aggregate: month)
+            weekCost: week.estimatedCost,
+            last7Days: MenuUsageSummary(aggregate: last7Days),
+            last30Days: MenuUsageSummary(aggregate: last30Days)
         )
     }
 
@@ -340,6 +341,13 @@ struct MenuBarDashboardView: View {
             return MenuUsageDay(date: start, period: dailyByStart[start])
         }
     }
+}
+
+func menuUsageRollingInterval(days: Int, now: Date, calendar: Calendar) -> DateInterval {
+    let today = calendar.dateInterval(of: .day, for: now)
+        ?? DateInterval(start: calendar.startOfDay(for: now), duration: 86_400)
+    let start = calendar.date(byAdding: .day, value: -(days - 1), to: today.start) ?? today.start
+    return DateInterval(start: start, end: today.end.addingTimeInterval(-1))
 }
 
 func menuUsageTrendDates(now: Date, calendar: Calendar) -> [Date] {
@@ -384,15 +392,16 @@ private struct MenuUsageTrendView: View {
     let currentWeek: DateInterval
     let todayDate: Date
     let today: MenuUsageSummary
-    let week: MenuUsageSummary
-    let month: MenuUsageSummary
+    let weekCost: Decimal
+    let last7Days: MenuUsageSummary
+    let last30Days: MenuUsageSummary
 
     // MenuBarExtra measures its content before the popover has a stable window
     // width. Keep this view's layout finite during that first measurement pass.
-    private let contentWidth: CGFloat = 342
+    private let contentWidth: CGFloat = 362
     private let barSpacing: CGFloat = 3
-    private let comparisonTrailingWidth: CGFloat = 85
-    private let comparisonBarWidth: CGFloat = 47
+    private let comparisonTrailingWidth: CGFloat = 71
+    private let comparisonBarWidth: CGFloat = 33
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -430,8 +439,8 @@ private struct MenuUsageTrendView: View {
             VStack(spacing: 8) {
                 comparisonHeader
                 comparisonRow("TODAY", summary: today, tint: .cyan)
-                comparisonRow("WEEK", summary: week, tint: .teal)
-                comparisonRow("MONTH", summary: month, tint: .secondary)
+                comparisonRow("LAST 7D", summary: last7Days, tint: .teal)
+                comparisonRow("LAST 30D", summary: last30Days, tint: .secondary)
             }
         }
         .frame(width: contentWidth)
@@ -512,22 +521,22 @@ private struct MenuUsageTrendView: View {
 
         return HStack(spacing: 0) {
             Color.clear.frame(width: startX)
-            CompactWeekMarker()
-                .frame(width: spanWidth, height: 14)
+            CompactWeekMarker(cost: weekCost)
+                .frame(width: spanWidth, height: 24)
             Spacer(minLength: 0)
         }
-        .frame(width: contentWidth, height: 14)
+        .frame(width: contentWidth, height: 24)
         .accessibilityHidden(true)
     }
 
     private var comparisonHeader: some View {
         HStack(spacing: 5) {
-            Text("").frame(width: 56)
-            Text("COST").frame(width: 60, alignment: .trailing)
-            Text("TOKENS").frame(width: 46, alignment: .trailing)
-            Text("TOOLS").frame(width: 34, alignment: .trailing)
-            Text("SKILLS").frame(width: 36, alignment: .trailing)
-            Text("MONTH %").frame(width: comparisonTrailingWidth, alignment: .trailing)
+            Text("").frame(width: 66)
+            Text("COST").frame(width: 90, alignment: .trailing)
+            Text("TOKENS").frame(width: 44, alignment: .trailing)
+            Text("TOOLS").frame(width: 32, alignment: .trailing)
+            Text("SKILLS").frame(width: 34, alignment: .trailing)
+            Text("30D %").frame(width: comparisonTrailingWidth, alignment: .trailing)
         }
         .font(.system(size: 7.5, weight: .bold))
         .tracking(0.25)
@@ -543,20 +552,23 @@ private struct MenuUsageTrendView: View {
                 Text(title)
             }
             .font(.caption2.weight(.bold))
-            .foregroundStyle(title == "MONTH" ? .secondary : tint)
-            .frame(width: 56, alignment: .leading)
+            .foregroundStyle(title == "LAST 30D" ? .secondary : tint)
+            .frame(width: 66, alignment: .leading)
 
             Text(MetricFormatters.currency(summary.cost))
-                .frame(width: 60, alignment: .trailing)
+                .lineLimit(1)
+                .frame(width: 90, alignment: .trailing)
             Text(MetricFormatters.compactNumber(summary.tokens))
-                .frame(width: 46, alignment: .trailing)
+                .frame(width: 44, alignment: .trailing)
             Text(summary.tools.formatted(.number.notation(.compactName)))
-                .frame(width: 34, alignment: .trailing)
+                .frame(width: 32, alignment: .trailing)
             Text(summary.skills.formatted(.number.notation(.compactName)))
-                .frame(width: 36, alignment: .trailing)
+                .frame(width: 34, alignment: .trailing)
 
             HStack(spacing: 4) {
                 Text(shareLabel)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                     .frame(width: 34, alignment: .trailing)
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.primary.opacity(0.08))
@@ -569,7 +581,7 @@ private struct MenuUsageTrendView: View {
         }
         .font(.system(size: 11, weight: .medium).monospacedDigit())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title), \(MetricFormatters.currency(summary.cost)), \(MetricFormatters.compactNumber(summary.tokens)) tokens, \(summary.tools) tools, \(summary.skills) skills, \(shareLabel) of the month")
+        .accessibilityLabel("\(title), \(MetricFormatters.currency(summary.cost)), \(MetricFormatters.compactNumber(summary.tokens)) tokens, \(summary.tools) tools, \(summary.skills) skills, \(shareLabel) of the last 30 days")
     }
 
     private func barValue(_ day: MenuUsageDay) -> Double {
@@ -620,7 +632,7 @@ private struct MenuUsageTrendView: View {
     }
 
     private func monthShare(for summary: MenuUsageSummary) -> Double {
-        let denominator = summaryValue(month)
+        let denominator = summaryValue(last30Days)
         guard denominator > 0 else { return 0 }
         return min(1, max(0, summaryValue(summary) / denominator))
     }
@@ -631,9 +643,8 @@ private struct MenuUsageTrendView: View {
     }
 
     private var insightLabel: String {
-        let completedDays = max(1, Calendar.current.component(.day, from: todayDate))
-        let average = summaryValue(month) / Double(completedDays)
-        guard average > 0 else { return "No usage recorded this month" }
+        let average = summaryValue(last30Days) / 30
+        guard average > 0 else { return "No usage recorded in the last 30 days" }
         let ratio = summaryValue(today) / average
         return "Today is \(ratio.formatted(.number.precision(.fractionLength(1))))× daily avg"
     }
@@ -658,24 +669,31 @@ private struct MenuUsageTrendView: View {
 }
 
 private struct CompactWeekMarker: View {
+    let cost: Decimal
+
     var body: some View {
-        HStack(spacing: 4) {
-            Rectangle().frame(height: 0.5)
-            Text("THIS WEEK")
-                .font(.system(size: 7, weight: .bold))
-                .tracking(0.35)
-                .fixedSize()
-            Rectangle().frame(height: 0.5)
-        }
-        .foregroundStyle(.cyan)
-        .overlay {
-            HStack {
-                Rectangle().frame(width: 0.5, height: 7)
-                Spacer(minLength: 0)
-                Rectangle().frame(width: 0.5, height: 7)
+        VStack(spacing: 1) {
+            HStack(spacing: 4) {
+                Rectangle().frame(height: 0.5)
+                Text("THIS WEEK")
+                    .tracking(0.35)
+                    .fixedSize()
+                Rectangle().frame(height: 0.5)
             }
-            .foregroundStyle(.cyan)
+            .overlay {
+                HStack {
+                    Rectangle().frame(width: 0.5, height: 7)
+                    Spacer(minLength: 0)
+                    Rectangle().frame(width: 0.5, height: 7)
+                }
+            }
+
+            Text(MetricFormatters.currency(cost))
+                .monospacedDigit()
+                .fixedSize()
         }
+        .font(.system(size: 7, weight: .bold))
+        .foregroundStyle(.cyan)
     }
 }
 
