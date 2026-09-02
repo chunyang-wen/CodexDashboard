@@ -3,6 +3,22 @@
     <channel>
         <title>CodexDashboard</title>
         <item>
+            <title>0.2.3</title>
+            <description sparkle:format="html"><![CDATA[
+                <h3>What's new in v0.2.3</h3>
+                <ul>
+                    <li>Replaced calendar week and month usage totals with rolling 7-day and 30-day totals.</li>
+                    <li>Added a separate current-week cost marker and made 30-day comparisons consistent across month boundaries.</li>
+                    <li>Improved the menu-bar metrics layout so large costs and 100% values remain readable at a consistent type size.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Wed, 02 Sep 2026 19:59:13 +0800</pubDate>
+            <sparkle:version>20260902195612</sparkle:version>
+            <sparkle:shortVersionString>0.2.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.2.3/CodexDashboard-0.2.3.zip" length="12296116" type="application/octet-stream" sparkle:edSignature="yLDhGMPYJdqvktk476Gv4lk1CsLcK45zrvQYDqP1hytajAgpP2p19cIgIOcIoIyn1xFuK6jn5qCiKfkXUc58BQ=="/>
+        </item>
+        <item>
             <title>0.2.2</title>
             <description sparkle:format="html"><![CDATA[
                 <h3>What's new in v0.2.2</h3>
@@ -32,23 +48,6 @@
             <sparkle:shortVersionString>0.2.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.2.1/CodexDashboard-0.2.1.zip" length="12286260" type="application/octet-stream" sparkle:edSignature="6Rg5H5n5IF5mTYbxvJCsBK9jwOwU7V6rVl1ZuloYMS7Aid8dwRm98L6e03XbODGYa+kvf/7EYCAqLgu955H7Cg=="/>
-        </item>
-        <item>
-            <title>0.2.0</title>
-            <description sparkle:format="html"><![CDATA[
-                <h3>What's new in v0.2.0</h3>
-                <ul>
-                    <li>Reorganized the dashboard into focused Overview, Projects, Models, and Usage &amp; Billing views with clearer navigation and controls.</li>
-                    <li>Added project session graphs and structured workflow inspection for exploring how sessions and related activity connect.</li>
-                    <li>Added richer daily usage details and paginated billing history, with smoother chart interactions and lower rendering overhead.</li>
-                    <li>Improved menu-bar quota presentation and subscription-provider reliability, including refreshed Sub2API sessions and preserved validated credentials.</li>
-                </ul>
-            ]]></description>
-            <pubDate>Sun, 30 Aug 2026 19:36:23 +0800</pubDate>
-            <sparkle:version>20260830193306</sparkle:version>
-            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.2.0/CodexDashboard-0.2.0.zip" length="12283287" type="application/octet-stream" sparkle:edSignature="kcZ1vYPr1+xJtCZvf76tyS+0Wi+sbuOU9EPo7fCMCBh6jaZfuYqqvu/7nv21krx0YVdV25SJCb5fKajBpmgxAA=="/>
         </item>
     </channel>
 </rss>
