@@ -4,6 +4,13 @@
         <title>CodexDashboard</title>
         <item>
             <title>0.2.4</title>
+            <description sparkle:format="html"><![CDATA[
+                <h3>What's new in v0.2.4</h3>
+                <ul>
+                    <li>Added a fallback for reading banked reset credits from the usage endpoint when the dedicated reset-credit endpoint is unavailable or rate-limited.</li>
+                    <li>Added coverage for both snake_case usage payloads and camelCase app-server payloads.</li>
+                </ul>
+            ]]></description>
             <pubDate>Fri, 04 Sep 2026 11:37:40 +0800</pubDate>
             <sparkle:version>20260904113431</sparkle:version>
             <sparkle:shortVersionString>0.2.4</sparkle:shortVersionString>
