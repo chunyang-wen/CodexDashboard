@@ -1055,15 +1055,43 @@ public struct BankedResetSnapshot: Codable, Hashable, Sendable {
 }
 
 public enum BankedResetReader {
+    private static let bankedResetURL = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!
+    private static let usageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+
     /// Fetches the OpenAI reset bank as read-only account metadata. This uses
     /// the same account credentials Codex already stores locally, but never
     /// writes or logs the token and never attempts to redeem a reset.
     public static func latest(from codexHome: URL) async -> BankedResetSnapshot? {
-        guard let credentials = credentials(from: codexHome),
-              let url = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits") else {
-            return nil
-        }
+        guard let credentials = credentials(from: codexHome) else { return nil }
 
+        do {
+            return try await fetch(from: bankedResetURL, credentials: credentials)
+        } catch {
+            // Codex also falls back to the usage response when the dedicated
+            // reset-credit endpoint is unavailable or rate-limited.
+            return try? await fetch(from: usageURL, credentials: credentials)
+        }
+    }
+
+    static func snapshot(from object: [String: Any], observedAt: Date = .now) -> BankedResetSnapshot? {
+        let summary = object["rate_limit_reset_credits"] as? [String: Any]
+            ?? object["rateLimitResetCredits"] as? [String: Any]
+            ?? object
+        let availableCount = integer(summary["available_count"] ?? summary["availableCount"])
+        let rawCredits = summary["credits"] as? [[String: Any]]
+        let credits = rawCredits?.compactMap { credit(from: $0) }
+        guard let availableCount, availableCount >= 0 else { return nil }
+        return BankedResetSnapshot(
+            availableCount: availableCount,
+            credits: rawCredits == nil ? nil : credits,
+            observedAt: observedAt
+        )
+    }
+
+    private static func fetch(
+        from url: URL,
+        credentials: (accessToken: String, accountID: String?)
+    ) async throws -> BankedResetSnapshot {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 10
@@ -1074,31 +1102,14 @@ public enum BankedResetReader {
             request.setValue(accountID, forHTTPHeaderField: "ChatGPT-Account-ID")
         }
 
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  (200..<300).contains(httpResponse.statusCode),
-                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return nil
-            }
-            return snapshot(from: object)
-        } catch {
-            // The menu bar should remain useful when the account endpoint is
-            // unavailable, rate-limited, or the user is using an API provider.
-            return nil
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let snapshot = snapshot(from: object) else {
+            throw URLError(.cannotParseResponse)
         }
-    }
-
-    static func snapshot(from object: [String: Any], observedAt: Date = .now) -> BankedResetSnapshot? {
-        let availableCount = integer(object["available_count"] ?? object["availableCount"])
-        let rawCredits = object["credits"] as? [[String: Any]]
-        let credits = rawCredits?.compactMap { credit(from: $0) }
-        guard let availableCount, availableCount >= 0 else { return nil }
-        return BankedResetSnapshot(
-            availableCount: availableCount,
-            credits: rawCredits == nil ? nil : credits,
-            observedAt: observedAt
-        )
+        return snapshot
     }
 
     private static func credentials(from codexHome: URL) -> (accessToken: String, accountID: String?)? {

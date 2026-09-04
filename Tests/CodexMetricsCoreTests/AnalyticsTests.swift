@@ -1643,6 +1643,44 @@ final class AnalyticsTests: XCTestCase {
         )
     }
 
+    func testBankedResetReaderParsesUsageFallbackPayload() throws {
+        let snapshot = BankedResetReader.snapshot(
+            from: [
+                "rate_limit_reset_credits": [
+                    "available_count": 1,
+                    "credits": NSNull()
+                ]
+            ],
+            observedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        XCTAssertEqual(snapshot?.availableCount, 1)
+        XCTAssertNil(snapshot?.credits)
+    }
+
+    func testBankedResetReaderParsesAppServerPayload() throws {
+        let snapshot = BankedResetReader.snapshot(
+            from: [
+                "rateLimitResetCredits": [
+                    "availableCount": 1,
+                    "credits": [
+                        [
+                            "id": "reset-1",
+                            "status": "available",
+                            "grantedAt": 1_800_000_000,
+                            "expiresAt": 1_800_086_400
+                        ]
+                    ]
+                ]
+            ],
+            observedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        XCTAssertEqual(snapshot?.availableCount, 1)
+        XCTAssertEqual(snapshot?.credits?.first?.id, "reset-1")
+        XCTAssertEqual(snapshot?.credits?.first?.expiresAt, Date(timeIntervalSince1970: 1_800_086_400))
+    }
+
     func testRolloutParserPersistsQuotaSnapshotWithEnrichment() throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: file) }
