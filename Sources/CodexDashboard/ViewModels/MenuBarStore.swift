@@ -61,6 +61,9 @@ final class MenuBarStore: ObservableObject {
     @Published private(set) var account: CodexAccountSnapshot?
     @Published private(set) var historySessionCount = 0
     @Published private(set) var historyMessage: String?
+    @Published private(set) var isRebuildingHistory = false
+    @Published private(set) var rebuildProgress: Double? = nil
+    @Published private(set) var rebuildMessage: String? = nil
     @Published private(set) var isLoading = false
     @Published private(set) var menuBarDataIsResident = false
 
@@ -87,6 +90,7 @@ final class MenuBarStore: ObservableObject {
     private var sourceRefreshInFlight = false
     private var dashboardIsOpen = false
     private var menuBarAnalytics = MenuBarAnalytics.empty
+    private var rebuildTask: Task<Void, Never>?
 
     init(userHome: URL = FileManager.default.homeDirectoryForCurrentUser, defaults: UserDefaults = .standard) {
         self.userHome = userHome
@@ -109,7 +113,7 @@ final class MenuBarStore: ObservableObject {
         return calendar
     }
 
-    var isBusy: Bool { isLoading }
+    var isBusy: Bool { isLoading || isRebuildingHistory }
 
     var menuBarDaily: [PeriodMetric] { menuBarAnalytics.periods }
 
@@ -209,6 +213,11 @@ final class MenuBarStore: ObservableObject {
         }.value
         if provider != .default {
             account = liveData?.account
+        }
+        if let usageCosts = liveData?.usageCosts, !usageCosts.isEmpty,
+           (try? await historicalStore.recordProviderUsageCosts(usageCosts, calendar: analyticsCalendar)) != nil {
+            await reloadCompactSnapshot(includeSessionCount: false)
+            metricsDidChange?()
         }
         guard !Task.isCancelled,
               requestID.map({ $0 == self.loadID }) ?? true,
@@ -686,6 +695,85 @@ final class MenuBarStore: ObservableObject {
             .max(by: { $0.observedAt < $1.observedAt }) {
             try await historicalStore.recordSubscription(latestSubscription)
             receiveParsedSubscription(latestSubscription)
+        }
+    }
+
+    func cancelRebuildHistoryIndex() {
+        guard isRebuildingHistory else { return }
+        rebuildTask?.cancel()
+        rebuildTask = nil
+        isRebuildingHistory = false
+        rebuildProgress = nil
+        rebuildMessage = "History index rebuild cancelled."
+    }
+
+    func rebuildHistoryIndex() {
+        guard !isRebuildingHistory else { return }
+        isRebuildingHistory = true
+        rebuildProgress = nil
+        rebuildMessage = "Rebuilding the history index…"
+
+        let provider = subscriptionProvider
+        let defaults = defaults
+        let calendar = analyticsCalendar
+
+        rebuildTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.isRebuildingHistory = false
+                self.rebuildProgress = nil
+                self.rebuildTask = nil
+            }
+            do {
+                if provider == .sub2API,
+                   let configuration = await DashboardPreferences.refreshedSub2APIConfiguration(defaults: defaults) {
+                    if Task.isCancelled { return }
+                    self.rebuildMessage = "Fetching provider usage history…"
+                    self.rebuildProgress = 0.05
+                    let earliest = (try? await self.historicalStore.earliestSessionDate())
+                        ?? calendar.date(byAdding: .day, value: -90, to: .now)
+                        ?? .now
+                    if let historicalCosts = try? await Sub2APIReader.historicalUsageCosts(
+                        using: configuration,
+                        since: earliest,
+                        before: .now,
+                        calendar: calendar
+                    ), !historicalCosts.isEmpty {
+                        if Task.isCancelled { return }
+                        _ = try? await self.historicalStore.recordProviderUsageCosts(
+                            historicalCosts,
+                            calendar: calendar
+                        )
+                    }
+                }
+                if Task.isCancelled { return }
+                self.rebuildMessage = "Rebuilding the history index…"
+                self.rebuildProgress = 0.2
+                let pricing = try await self.historicalStore.storedPricingHistory()
+                let rebuilt = try await self.historicalStore.rebuildMetricsIndex(
+                    pricing: pricing,
+                    calendar: calendar,
+                    progress: { [weak self] progress, message in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.isRebuildingHistory else { return }
+                            self.rebuildProgress = 0.2 + 0.8 * progress
+                            self.rebuildMessage = message
+                        }
+                    }
+                )
+                if Task.isCancelled { return }
+                await self.reloadCompactSnapshot(includeSessionCount: true)
+                self.metricsDidChange?()
+                self.rebuildMessage = "History index rebuilt for \(rebuilt.sessions.count.formatted()) sessions."
+            } catch is CancellationError {
+                self.rebuildMessage = "History index rebuild cancelled."
+            } catch {
+                guard !Task.isCancelled else {
+                    self.rebuildMessage = "History index rebuild cancelled."
+                    return
+                }
+                self.rebuildMessage = "History index rebuild failed: \(error.localizedDescription)"
+            }
         }
     }
 }

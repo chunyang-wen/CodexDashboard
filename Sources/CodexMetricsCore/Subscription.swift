@@ -341,10 +341,16 @@ public struct CLIProxyAPIConfiguration: Equatable, Sendable {
 public struct ProviderLiveSnapshot: Sendable {
     public let subscription: SubscriptionSnapshot?
     public let account: CodexAccountSnapshot?
+    public let usageCosts: [Sub2APIUsageCost]
 
-    public init(subscription: SubscriptionSnapshot?, account: CodexAccountSnapshot?) {
+    public init(
+        subscription: SubscriptionSnapshot?,
+        account: CodexAccountSnapshot?,
+        usageCosts: [Sub2APIUsageCost] = []
+    ) {
         self.subscription = subscription
         self.account = account
+        self.usageCosts = usageCosts
     }
 }
 
@@ -586,6 +592,31 @@ public struct Sub2APISessionTokens: Equatable, Sendable {
     }
 }
 
+public struct Sub2APIUsageCost: Equatable, Sendable {
+    public let id: Int64
+    public let sessionID: String
+    public let createdAt: Date
+    public let totalCost: Decimal
+    public let serviceTier: String?
+    public let reasoningEffort: String?
+
+    public init(
+        id: Int64,
+        sessionID: String,
+        createdAt: Date,
+        totalCost: Decimal,
+        serviceTier: String?,
+        reasoningEffort: String?
+    ) {
+        self.id = id
+        self.sessionID = sessionID
+        self.createdAt = createdAt
+        self.totalCost = totalCost
+        self.serviceTier = serviceTier
+        self.reasoningEffort = reasoningEffort
+    }
+}
+
 public enum Sub2APIReader {
     public static func live(using configuration: Sub2APIConfiguration) async -> SubscriptionSnapshot? {
         await liveData(using: configuration)?.subscription
@@ -593,8 +624,12 @@ public enum Sub2APIReader {
 
     public static func liveData(using configuration: Sub2APIConfiguration) async -> ProviderLiveSnapshot? {
         guard !configuration.adminToken.isEmpty, configuration.accountID > 0 else { return nil }
-        let quota = try? await quota(using: configuration)
-        let usage = try? await usage(using: configuration)
+        async let quotaRequest = try? quota(using: configuration)
+        async let usageRequest = try? usage(using: configuration)
+        async let usageCostsRequest = try? usageCosts(using: configuration, on: .now)
+        let quota = await quotaRequest
+        let usage = await usageRequest
+        let usageCosts = await usageCostsRequest ?? []
         let observedAt = Date.now
         let subscription = usage.flatMap {
             snapshot(fromAdminUsage: $0, planType: quota?["plan_type"] as? String, observedAt: observedAt)
@@ -602,7 +637,8 @@ public enum Sub2APIReader {
         guard subscription != nil || quota != nil else { return nil }
         return ProviderLiveSnapshot(
             subscription: subscription,
-            account: quota.flatMap { account(from: $0) }
+            account: quota.flatMap { account(from: $0) },
+            usageCosts: usageCosts
         )
     }
 
@@ -830,6 +866,27 @@ public enum Sub2APIReader {
         )
     }
 
+    static func usageCosts(from value: [String: Any]) -> [Sub2APIUsageCost] {
+        let items = value["items"] as? [[String: Any]] ?? []
+        return items.compactMap { item in
+            guard let idValue = number(item["id"]), idValue > 0,
+                  let sessionID = (item["session_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !sessionID.isEmpty,
+                  let createdAt = date(item["created_at"]),
+                  let costValue = number(item["total_cost"]), costValue >= 0 else { return nil }
+            let effectiveEffort = (item["upstream_reasoning_effort"] as? String)
+                ?? (item["reasoning_effort"] as? String)
+            return Sub2APIUsageCost(
+                id: Int64(idValue),
+                sessionID: sessionID,
+                createdAt: createdAt,
+                totalCost: Decimal(costValue),
+                serviceTier: item["service_tier"] as? String,
+                reasoningEffort: effectiveEffort
+            )
+        }
+    }
+
     private static func quota(using configuration: Sub2APIConfiguration) async throws -> [String: Any] {
         var request = URLRequest(url: quotaURL(for: configuration.baseURL, accountID: configuration.accountID))
         request.httpMethod = "GET"
@@ -862,6 +919,89 @@ public enum Sub2APIReader {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Codex Dashboard", forHTTPHeaderField: "User-Agent")
         return try await responseObject(for: request)
+    }
+
+    public static func historicalUsageCosts(
+        using configuration: Sub2APIConfiguration,
+        since startDate: Date,
+        before endDate: Date = .now,
+        calendar: Calendar = .current
+    ) async throws -> [Sub2APIUsageCost] {
+        try await usageCosts(
+            using: configuration,
+            since: startDate,
+            before: endDate,
+            calendar: calendar,
+            maximumPages: 100
+        )
+    }
+
+    static func usageCosts(
+        using configuration: Sub2APIConfiguration,
+        on day: Date,
+        calendar: Calendar = .current
+    ) async throws -> [Sub2APIUsageCost] {
+        try await usageCosts(
+            using: configuration,
+            since: day,
+            before: day,
+            calendar: calendar,
+            maximumPages: 10
+        )
+    }
+
+    private static func usageCosts(
+        using configuration: Sub2APIConfiguration,
+        since startDate: Date,
+        before endDate: Date,
+        calendar: Calendar = .current,
+        maximumPages: Int = 10
+    ) async throws -> [Sub2APIUsageCost] {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        let start = formatter.string(from: min(startDate, endDate))
+        let end = formatter.string(from: max(startDate, endDate))
+        let pageSize = 1_000
+        var records: [Sub2APIUsageCost] = []
+        var receivedItems = 0
+
+        for page in 1...maximumPages {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            var components = URLComponents(
+                url: apiURL(for: configuration.baseURL, path: ["admin", "usage"]),
+                resolvingAgainstBaseURL: false
+            )!
+            components.queryItems = [
+                URLQueryItem(name: "account_id", value: String(configuration.accountID)),
+                URLQueryItem(name: "start_date", value: start),
+                URLQueryItem(name: "end_date", value: end),
+                URLQueryItem(name: "timezone", value: calendar.timeZone.identifier),
+                URLQueryItem(name: "page", value: String(page)),
+                URLQueryItem(name: "page_size", value: String(pageSize)),
+                URLQueryItem(name: "exact_total", value: "true")
+            ]
+            var request = URLRequest(url: components.url!)
+            request.httpMethod = "GET"
+            request.timeoutInterval = 15
+            request.setValue("Bearer \(configuration.adminToken)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("Codex Dashboard", forHTTPHeaderField: "User-Agent")
+            let object = try await responseObject(for: request)
+            let pageRecords = usageCosts(from: object)
+            records.append(contentsOf: pageRecords)
+            let itemCount = (object["items"] as? [[String: Any]])?.count ?? 0
+            receivedItems += itemCount
+            let total = Int(number(object["total"]) ?? Double(receivedItems))
+            if receivedItems >= total { return records }
+            if itemCount == 0 { return records }
+        }
+        // A partial fetch would understate cost, so leave local estimates untouched.
+        return []
     }
 
     private static func login(email: String, password: String, baseURL: URL) async throws -> [String: Any] {

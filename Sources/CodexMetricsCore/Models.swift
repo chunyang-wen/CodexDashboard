@@ -258,6 +258,21 @@ public struct SessionMetric: Identifiable, Codable, Hashable, Sendable {
     }
 
     public var summary: SessionSummary { SessionSummary(session: self) }
+
+    func applyingProviderSettings(serviceTier: String?, reasoningEffort: String?) -> SessionMetric {
+        SessionMetric(
+            id: id, rolloutPath: rolloutPath, projectPath: projectPath, title: title,
+            source: source, originator: originator, provider: provider,
+            createdAt: createdAt, updatedAt: updatedAt, model: model,
+            reasoningEffort: reasoningEffort ?? self.reasoningEffort,
+            serviceTier: serviceTier ?? self.serviceTier,
+            gitBranch: gitBranch, cliVersion: cliVersion, archived: archived,
+            usage: usage, usageEvents: usageEvents, turns: turns, toolCalls: toolCalls,
+            toolCallEvents: toolCallEvents, skillCallEvents: skillCallEvents,
+            userMessages: userMessages, abortedTurns: abortedTurns,
+            subscription: subscription, enrichmentAvailable: enrichmentAvailable
+        )
+    }
 }
 
 public struct SessionSummary: Identifiable, Codable, Hashable, Sendable {
@@ -377,6 +392,22 @@ public struct SessionSummary: Identifiable, Codable, Hashable, Sendable {
     public var displayTitle: String { SessionTitleFormatter.displayTitle(title) }
     public var displaySource: String { originator ?? source }
     public var sessionSpan: TimeInterval { max(0, updatedAt.timeIntervalSince(createdAt)) }
+
+    func applyingProviderSettings(serviceTier: String?, reasoningEffort: String?) -> SessionSummary {
+        SessionSummary(
+            id: id, rolloutPath: rolloutPath, projectPath: projectPath, title: title,
+            source: source, originator: originator, provider: provider,
+            createdAt: createdAt, updatedAt: updatedAt, model: model,
+            reasoningEffort: reasoningEffort ?? self.reasoningEffort,
+            serviceTier: serviceTier ?? self.serviceTier,
+            gitBranch: gitBranch, cliVersion: cliVersion, archived: archived,
+            usage: usage, toolCalls: toolCalls, skillCalls: skillCalls,
+            userMessages: userMessages, completedTurns: completedTurns,
+            abortedTurns: abortedTurns, activeRuntime: activeRuntime,
+            averageTTFT: averageTTFT, subscription: subscription,
+            enrichmentAvailable: enrichmentAvailable
+        )
+    }
 }
 
 public struct ProjectMetric: Identifiable, Hashable, Sendable {

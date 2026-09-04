@@ -103,6 +103,16 @@ final class MetricsDatabase: @unchecked Sendable {
             )
             """)
         try execute("""
+            CREATE TABLE IF NOT EXISTS provider_daily_cost (
+                session_id       TEXT NOT NULL,
+                day              REAL NOT NULL,
+                cost             REAL NOT NULL,
+                service_tier     TEXT,
+                reasoning_effort TEXT,
+                PRIMARY KEY(session_id, day)
+            )
+            """)
+        try execute("""
             CREATE TABLE IF NOT EXISTS daily_contribution (
                 session_id      TEXT NOT NULL,
                 day             REAL NOT NULL,
@@ -457,6 +467,154 @@ final class MetricsDatabase: @unchecked Sendable {
                 guard sqlite3_step(insertSkill) == SQLITE_DONE else { throw databaseError() }
             }
         }
+        try applyProviderCostOverride(sessionID: sessionID, day: dayKey)
+    }
+
+    func recordProviderUsageCosts(_ records: [Sub2APIUsageCost], calendar: Calendar) throws -> Int {
+        guard !records.isEmpty else { return 0 }
+        struct Key: Hashable { let sessionID: String; let day: Date }
+        struct Value {
+            var cost = Decimal.zero
+            var tier: String?
+            var effort: String?
+            var latestAt = Date.distantPast
+        }
+        var grouped: [Key: Value] = [:]
+        for record in records {
+            let key = Key(sessionID: record.sessionID, day: calendar.startOfDay(for: record.createdAt))
+            var value = grouped[key, default: Value()]
+            value.cost += record.totalCost
+            if record.createdAt >= value.latestAt {
+                value.tier = record.serviceTier ?? value.tier
+                value.effort = record.reasoningEffort ?? value.effort
+                value.latestAt = record.createdAt
+            }
+            grouped[key] = value
+        }
+
+        try transaction {
+            guard let upsert = prepare("""
+                INSERT INTO provider_daily_cost(session_id, day, cost, service_tier, reasoning_effort)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(session_id, day) DO UPDATE SET
+                    cost=excluded.cost,
+                    service_tier=excluded.service_tier,
+                    reasoning_effort=excluded.reasoning_effort
+                """) else { throw databaseError() }
+            defer { sqlite3_finalize(upsert) }
+            for (key, value) in grouped {
+                sqlite3_reset(upsert)
+                sqlite3_clear_bindings(upsert)
+                bind(key.sessionID, to: upsert, at: 1)
+                sqlite3_bind_double(upsert, 2, key.day.timeIntervalSince1970)
+                sqlite3_bind_double(upsert, 3, NSDecimalNumber(decimal: value.cost).doubleValue)
+                if let tier = value.tier { bind(tier, to: upsert, at: 4) } else { sqlite3_bind_null(upsert, 4) }
+                if let effort = value.effort { bind(effort, to: upsert, at: 5) } else { sqlite3_bind_null(upsert, 5) }
+                guard sqlite3_step(upsert) == SQLITE_DONE else { throw databaseError() }
+                try applyProviderCostOverride(sessionID: key.sessionID, day: key.day.timeIntervalSince1970)
+                try applyProviderSettings(
+                    sessionID: key.sessionID,
+                    serviceTier: value.tier,
+                    reasoningEffort: value.effort
+                )
+            }
+        }
+        return grouped.count
+    }
+
+    private func applyProviderCostOverride(sessionID: String, day: Double) throws {
+        guard let targetStatement = prepare("SELECT cost FROM provider_daily_cost WHERE session_id = ? AND day = ?") else {
+            throw databaseError()
+        }
+        defer { sqlite3_finalize(targetStatement) }
+        bind(sessionID, to: targetStatement, at: 1)
+        sqlite3_bind_double(targetStatement, 2, day)
+        guard sqlite3_step(targetStatement) == SQLITE_ROW else { return }
+        let target = sqlite3_column_double(targetStatement, 0)
+
+        guard let currentStatement = prepare("SELECT cost FROM daily_contribution WHERE session_id = ? AND day = ?") else {
+            throw databaseError()
+        }
+        defer { sqlite3_finalize(currentStatement) }
+        bind(sessionID, to: currentStatement, at: 1)
+        sqlite3_bind_double(currentStatement, 2, day)
+        guard sqlite3_step(currentStatement) == SQLITE_ROW else { return }
+        let current = sqlite3_column_double(currentStatement, 0)
+
+        guard let update = prepare("UPDATE daily_contribution SET cost = ? WHERE session_id = ? AND day = ?") else {
+            throw databaseError()
+        }
+        defer { sqlite3_finalize(update) }
+        sqlite3_bind_double(update, 1, target)
+        bind(sessionID, to: update, at: 2)
+        sqlite3_bind_double(update, 3, day)
+        guard sqlite3_step(update) == SQLITE_DONE else { throw databaseError() }
+
+        if current > 0 {
+            let scale = target / current
+            for table in ["daily_model", "tool_daily", "skill_daily"] {
+                guard let childUpdate = prepare("UPDATE \(table) SET cost = cost * ? WHERE session_id = ? AND day = ?") else {
+                    throw databaseError()
+                }
+                sqlite3_bind_double(childUpdate, 1, scale)
+                bind(sessionID, to: childUpdate, at: 2)
+                sqlite3_bind_double(childUpdate, 3, day)
+                let result = sqlite3_step(childUpdate)
+                sqlite3_finalize(childUpdate)
+                guard result == SQLITE_DONE else { throw databaseError() }
+            }
+        } else if target > 0 {
+            guard let modelUpdate = prepare("""
+                UPDATE daily_model SET cost = ?
+                WHERE rowid = (
+                    SELECT rowid FROM daily_model
+                    WHERE session_id = ? AND day = ?
+                    ORDER BY total_tokens DESC LIMIT 1
+                )
+                """) else { throw databaseError() }
+            defer { sqlite3_finalize(modelUpdate) }
+            sqlite3_bind_double(modelUpdate, 1, target)
+            bind(sessionID, to: modelUpdate, at: 2)
+            sqlite3_bind_double(modelUpdate, 3, day)
+            guard sqlite3_step(modelUpdate) == SQLITE_DONE else { throw databaseError() }
+        }
+    }
+
+    private func applyProviderSettings(
+        sessionID: String,
+        serviceTier: String?,
+        reasoningEffort: String?
+    ) throws {
+        guard serviceTier != nil || reasoningEffort != nil,
+              let select = prepare("SELECT metric, summary FROM historical_session WHERE id = ?") else { return }
+        defer { sqlite3_finalize(select) }
+        bind(sessionID, to: select, at: 1)
+        guard sqlite3_step(select) == SQLITE_ROW else { return }
+        let decoder = Self.decoder()
+        let encoder = Self.encoder()
+        let metric = data(select, 0).flatMap { try? decoder.decode(SessionMetric.self, from: $0) }
+        let summary = data(select, 1).flatMap { try? decoder.decode(SessionSummary.self, from: $0) }
+
+        if let metric,
+           let update = prepare("UPDATE historical_session SET metric = ? WHERE id = ?") {
+            defer { sqlite3_finalize(update) }
+            bind(try encoder.encode(metric.applyingProviderSettings(
+                serviceTier: serviceTier,
+                reasoningEffort: reasoningEffort
+            )), to: update, at: 1)
+            bind(sessionID, to: update, at: 2)
+            guard sqlite3_step(update) == SQLITE_DONE else { throw databaseError() }
+        }
+        if let summary,
+           let update = prepare("UPDATE historical_session SET summary = ? WHERE id = ?") {
+            defer { sqlite3_finalize(update) }
+            bind(try encoder.encode(summary.applyingProviderSettings(
+                serviceTier: serviceTier,
+                reasoningEffort: reasoningEffort
+            )), to: update, at: 1)
+            bind(sessionID, to: update, at: 2)
+            guard sqlite3_step(update) == SQLITE_DONE else { throw databaseError() }
+        }
     }
 
     // MARK: - Typed daily queries
@@ -517,6 +675,28 @@ final class MetricsDatabase: @unchecked Sendable {
             guard sqlite3_step(statement) == SQLITE_ROW,
                   sqlite3_column_type(statement, 0) != SQLITE_NULL else { return nil }
             return Date(timeIntervalSince1970: sqlite3_column_double(statement, 0))
+        }
+    }
+
+    func earliestSessionDate() throws -> Date? {
+        try lockedThrowing {
+            guard let statement = prepare("SELECT MIN(day) FROM daily_contribution") else {
+                throw databaseError()
+            }
+            defer { sqlite3_finalize(statement) }
+            if sqlite3_step(statement) == SQLITE_ROW,
+               sqlite3_column_type(statement, 0) != SQLITE_NULL {
+                return Date(timeIntervalSince1970: sqlite3_column_double(statement, 0))
+            }
+            guard let sessionStatement = prepare("SELECT MIN(updated_at) FROM historical_session") else {
+                throw databaseError()
+            }
+            defer { sqlite3_finalize(sessionStatement) }
+            if sqlite3_step(sessionStatement) == SQLITE_ROW,
+               sqlite3_column_type(sessionStatement, 0) != SQLITE_NULL {
+                return Date(timeIntervalSince1970: sqlite3_column_double(sessionStatement, 0))
+            }
+            return nil
         }
     }
 
@@ -2404,6 +2584,26 @@ public actor HistoricalStore {
         return try database.aggregateDaily(projectPath: projectPath, since: startDate, before: endDate)
     }
 
+    public func earliestSessionDate() throws -> Date? {
+        guard let database else { return nil }
+        return try database.earliestSessionDate()
+    }
+
+    @discardableResult
+    public func recordProviderUsageCosts(
+        _ records: [Sub2APIUsageCost],
+        calendar: Calendar = .current
+    ) throws -> Int {
+        guard let database else { return 0 }
+        let changed = try database.recordProviderUsageCosts(records, calendar: calendar)
+        if changed > 0 {
+            archive = nil
+            metricsIndexCache = nil
+            metricsIndexContext = nil
+        }
+        return changed
+    }
+
     /// Returns the start of the oldest bucket in the latest chart window.
     /// The max-day lookup is scalar; it never materializes historical rows.
     public func latestPeriodStart(
@@ -3013,13 +3213,16 @@ public actor HistoricalStore {
     /// can repair rows written by an older schema or indexing implementation.
     public func rebuildMetricsIndex(
         pricing: PricingHistory = .bundled,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        progress: (@Sendable (Double, String) -> Void)? = nil
     ) throws -> MetricsIndexSnapshot {
+        archive = nil
+        progress?(0.0, "Loading sessions...")
         let sessions = try load().sessions
 
         metricsIndexCache = .empty
         metricsIndexContext = nil
-        return try metricsIndex(for: sessions, pricing: pricing, calendar: calendar)
+        return try metricsIndex(for: sessions, pricing: pricing, calendar: calendar, progress: progress)
     }
 
     /// Incrementally replaces only the metric-index contribution for the
@@ -3093,7 +3296,8 @@ public actor HistoricalStore {
     public func metricsIndex(
         for sessions: [SessionMetric],
         pricing: PricingHistory = .bundled,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        progress: (@Sendable (Double, String) -> Void)? = nil
     ) throws -> MetricsIndexSnapshot {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .millisecondsSince1970
@@ -3126,8 +3330,21 @@ public actor HistoricalStore {
         let changedSessions = sessions.filter { session in
             existing[session.id]?.sourceRevision != MetricsIndexBuilder.sourceRevision(for: session)
         }
-        let changedRecords = changedSessions.map {
-            MetricsIndexBuilder.build(session: $0, pricing: pricing, calendar: calendar)
+        let total = changedSessions.count
+        var changedRecords: [(session: IndexedSessionMetrics, days: [IndexedDailyMetrics])] = []
+        changedRecords.reserveCapacity(total)
+        for (index, session) in changedSessions.enumerated() {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            changedRecords.append(MetricsIndexBuilder.build(session: session, pricing: pricing, calendar: calendar))
+            if let progress, total > 0, (index + 1) % max(10, total / 100) == 0 || index + 1 == total {
+                let fraction = Double(index + 1) / Double(total)
+                progress(fraction * 0.9, "Rebuilding metrics index (\((index + 1).formatted())/\(total.formatted()))...")
+            }
+        }
+        if total == 0 {
+            progress?(0.9, "Rebuilding metrics index...")
         }
         let changedIDs = Set(changedRecords.map { $0.session.sessionID })
         let staleIDs = Set(current.sessions.map(\.sessionID)).subtracting(validIDs)
@@ -3141,6 +3358,10 @@ public actor HistoricalStore {
         let snapshot = MetricsIndexSnapshot(sessions: summaries, days: daily)
 
         if let database, reset || !changedRecords.isEmpty || !staleIDs.isEmpty {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            progress?(0.95, "Saving metrics index to database...")
             try database.updateMetricIndex(
                 changedRecords.map { ($0.session, $0.days) },
                 context: context,
@@ -3150,6 +3371,7 @@ public actor HistoricalStore {
         }
         metricsIndexContext = context
         metricsIndexCache = snapshot
+        progress?(1.0, "Rebuild complete")
         return snapshot
     }
 

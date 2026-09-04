@@ -46,6 +46,7 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var modelCount = 0
     @Published private(set) var modelPageCount = 1
     @Published private(set) var isRebuildingHistory = false
+    @Published private(set) var rebuildProgress: Double? = nil
     @Published private(set) var historySessionCount = 0
     @Published private(set) var historyMessage: String?
     @Published private(set) var errorMessage: String?
@@ -58,6 +59,7 @@ final class DashboardStore: ObservableObject {
     private let defaults: UserDefaults
     private var loadTask: Task<Void, Never>?
     private var sessionHierarchyTask: Task<Void, Never>?
+    private var rebuildTask: Task<Void, Never>?
     private var projectSessionTasks: [String: Task<Void, Never>] = [:]
     private var projectSessionCursors: [String: (rowID: Int64, updatedAt: Int64?)] = [:]
     private var projectSessionHasMore: Set<String> = []
@@ -432,6 +434,10 @@ final class DashboardStore: ObservableObject {
 
             let liveData: ProviderLiveSnapshot? = await liveDataTask.value
             guard !Task.isCancelled, loadID == requestID else { return }
+            if let usageCosts = liveData?.usageCosts, !usageCosts.isEmpty,
+               (try? await historicalStore.recordProviderUsageCosts(usageCosts, calendar: analyticsCalendar)) != nil {
+                scheduleAnalyticsRefresh()
+            }
             if provider != .default {
                 account = liveData?.account
             }
@@ -460,14 +466,20 @@ final class DashboardStore: ObservableObject {
     /// or rollout enrichment while the dashboard is open.
     func refreshPersistedMetrics() {
         guard dashboardDataIsResident else { return }
-        scheduleAnalyticsRefresh()
         Task { [weak self] in
             guard let self else { return }
+            if let refreshedIndex = try? await self.historicalStore.metricsIndex(pricing: self.pricing, calendar: self.analyticsCalendar) {
+                self.metricsIndex = refreshedIndex
+                self.indexedSessionsByID = Dictionary(uniqueKeysWithValues: refreshedIndex.sessions.map { ($0.sessionID, $0) })
+            }
             let snapshot = try? await self.historicalStore.subscriptionSnapshot()
             _ = self.acceptSubscription(snapshot ?? nil)
             guard self.dashboardDataIsResident,
                   let storedPricing = try? await self.historicalStore.storedPricingHistory(),
-                  self.pricing != storedPricing else { return }
+                  self.pricing != storedPricing else {
+                self.scheduleAnalyticsRefresh()
+                return
+            }
             self.pricing = storedPricing
             self.scheduleAnalyticsRefresh()
         }
@@ -1107,25 +1119,77 @@ final class DashboardStore: ObservableObject {
         startEnrichmentForAvailableHistory()
     }
 
+    func cancelRebuildHistoryIndex() {
+        guard isRebuildingHistory else { return }
+        rebuildTask?.cancel()
+        rebuildTask = nil
+        isRebuildingHistory = false
+        rebuildProgress = nil
+        historyMessage = "History index rebuild cancelled."
+    }
+
     func rebuildHistoryIndex() {
         guard !isRebuildingHistory else { return }
         isRebuildingHistory = true
+        rebuildProgress = nil
         historyMessage = "Rebuilding the history index…"
-        Task { [weak self] in
+        rebuildTask = Task { [weak self] in
             guard let self else { return }
-            defer { isRebuildingHistory = false }
+            defer {
+                self.isRebuildingHistory = false
+                self.rebuildProgress = nil
+                self.rebuildTask = nil
+            }
             do {
-                let rebuilt = try await historicalStore.rebuildMetricsIndex(
-                    pricing: pricing,
-                    calendar: analyticsCalendar
+                if self.subscriptionProvider == .sub2API,
+                   let configuration = await DashboardPreferences.refreshedSub2APIConfiguration(defaults: self.defaults) {
+                    if Task.isCancelled { return }
+                    self.historyMessage = "Fetching provider usage history…"
+                    self.rebuildProgress = 0.05
+                    let earliest = (try? await self.historicalStore.earliestSessionDate())
+                        ?? self.analyticsCalendar.date(byAdding: .day, value: -90, to: .now)
+                        ?? .now
+                    if let historicalCosts = try? await Sub2APIReader.historicalUsageCosts(
+                        using: configuration,
+                        since: earliest,
+                        before: .now,
+                        calendar: self.analyticsCalendar
+                    ), !historicalCosts.isEmpty {
+                        if Task.isCancelled { return }
+                        _ = try? await self.historicalStore.recordProviderUsageCosts(
+                            historicalCosts,
+                            calendar: self.analyticsCalendar
+                        )
+                    }
+                }
+                if Task.isCancelled { return }
+                self.historyMessage = "Rebuilding the history index…"
+                self.rebuildProgress = 0.2
+                let rebuilt = try await self.historicalStore.rebuildMetricsIndex(
+                    pricing: self.pricing,
+                    calendar: self.analyticsCalendar,
+                    progress: { [weak self] progress, message in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.isRebuildingHistory else { return }
+                            self.rebuildProgress = 0.2 + 0.8 * progress
+                            self.historyMessage = message
+                        }
+                    }
                 )
-                guard dashboardDataIsResident else { return }
-                metricsIndex = rebuilt
-                indexedSessionsByID = Dictionary(uniqueKeysWithValues: rebuilt.sessions.map { ($0.sessionID, $0) })
-                scheduleAnalyticsRefresh()
-                historyMessage = "History index rebuilt for \(rebuilt.sessions.count.formatted()) sessions."
+                if Task.isCancelled { return }
+                guard self.dashboardDataIsResident else { return }
+                self.metricsIndex = rebuilt
+                self.indexedSessionsByID = Dictionary(uniqueKeysWithValues: rebuilt.sessions.map { ($0.sessionID, $0) })
+                self.scheduleAnalyticsRefresh()
+                self.historyMessage = "History index rebuilt for \(rebuilt.sessions.count.formatted()) sessions."
+            } catch is CancellationError {
+                self.historyMessage = "History index rebuild cancelled."
             } catch {
-                historyMessage = "History index rebuild failed: \(error.localizedDescription)"
+                guard !Task.isCancelled else {
+                    self.historyMessage = "History index rebuild cancelled."
+                    return
+                }
+                self.historyMessage = "History index rebuild failed: \(error.localizedDescription)"
             }
         }
     }

@@ -901,6 +901,313 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(restored.aggregate(projectPath: "/tmp/b").usage, originalB.usage)
     }
 
+    func testSub2APIBilledCostOverridesLocalSessionDayCost() async throws {
+        let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: userHome) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let date = Date(timeIntervalSince1970: 1_788_537_600)
+        let usage = TokenUsage(input: 1_000, output: 100)
+        let session = SessionMetric(
+            id: "provider-cost", rolloutPath: "/tmp/provider-cost.jsonl", projectPath: "/tmp/project",
+            title: "", source: "app", provider: "sub2api", createdAt: date,
+            updatedAt: date, model: "gpt-5.6-luna", reasoningEffort: "high",
+            gitBranch: nil, cliVersion: nil, archived: false, usage: usage,
+            usageEvents: [UsageEvent(date: date, usage: usage, model: "gpt-5.6-luna")],
+            enrichmentAvailable: true
+        )
+        let store = HistoricalStore(userHome: userHome)
+        _ = try await store.record([session])
+        _ = try await store.metricsIndex(for: [session], calendar: calendar)
+
+        _ = try await store.recordProviderUsageCosts([
+            Sub2APIUsageCost(
+                id: 1,
+                sessionID: session.id,
+                createdAt: date,
+                totalCost: Decimal(string: "0.02")!,
+                serviceTier: "priority",
+                reasoningEffort: "high"
+            )
+        ], calendar: calendar)
+
+        let aggregate = try await store.aggregateDaily()
+        let models = try await store.modelMetrics()
+        let storedSession = try await store.session(withID: session.id)
+        XCTAssertEqual(aggregate.estimatedCost, 0.02, accuracy: 1e-12)
+        XCTAssertEqual(models.first?.estimatedCost, Decimal(string: "0.02")!)
+        XCTAssertEqual(storedSession?.serviceTier, "priority")
+        XCTAssertEqual(storedSession?.reasoningEffort, "high")
+
+        // Re-indexing the same rollout must retain the provider-authoritative cost.
+        _ = try await store.updateMetricsIndex(for: [session], calendar: calendar)
+        let reindexed = try await store.aggregateDaily()
+        XCTAssertEqual(reindexed.estimatedCost, 0.02, accuracy: 1e-12)
+
+        // Earliest session date should match the start of the session day
+        let earliest = try await store.earliestSessionDate()
+        XCTAssertEqual(earliest?.timeIntervalSince1970, calendar.startOfDay(for: date).timeIntervalSince1970)
+
+        // Full rebuildMetricsIndex must also retain the provider-authoritative cost and session settings.
+        _ = try await store.rebuildMetricsIndex(pricing: .bundled, calendar: calendar)
+        let rebuiltAggregate = try await store.aggregateDaily()
+        let rebuiltModels = try await store.modelMetrics()
+        let rebuiltSession = try await store.session(withID: session.id)
+        XCTAssertEqual(rebuiltAggregate.estimatedCost, 0.02, accuracy: 1e-12)
+        XCTAssertEqual(rebuiltModels.first?.estimatedCost, Decimal(string: "0.02")!)
+        XCTAssertEqual(rebuiltSession?.serviceTier, "priority")
+        XCTAssertEqual(rebuiltSession?.reasoningEffort, "high")
+    }
+
+    func testRebuildMetricsIndexReconcilesHistoricalDaysAndUnpricedModel() async throws {
+        let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: userHome) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        let day1 = Date(timeIntervalSince1970: 1_788_400_000)
+        let day2 = Date(timeIntervalSince1970: 1_788_500_000)
+        let usage = TokenUsage(input: 1_000, output: 100)
+
+        // Session 1 has an unpriced model (local pricing estimate = 0)
+        let session1 = SessionMetric(
+            id: "hist-session-1", rolloutPath: "/tmp/hist-1.jsonl", projectPath: "/tmp/project",
+            title: "", source: "app", provider: "sub2api", createdAt: day1,
+            updatedAt: day1, model: "custom-unpriced-model", reasoningEffort: "medium",
+            gitBranch: nil, cliVersion: nil, archived: false, usage: usage,
+            usageEvents: [UsageEvent(date: day1, usage: usage, model: "custom-unpriced-model")],
+            enrichmentAvailable: true
+        )
+        let session2 = SessionMetric(
+            id: "hist-session-2", rolloutPath: "/tmp/hist-2.jsonl", projectPath: "/tmp/project",
+            title: "", source: "app", provider: "sub2api", createdAt: day2,
+            updatedAt: day2, model: "gpt-5.6-luna", reasoningEffort: "low",
+            gitBranch: nil, cliVersion: nil, archived: false, usage: usage,
+            usageEvents: [UsageEvent(date: day2, usage: usage, model: "gpt-5.6-luna")],
+            enrichmentAvailable: true
+        )
+
+        let store = HistoricalStore(userHome: userHome)
+        _ = try await store.record([session1, session2])
+        _ = try await store.metricsIndex(for: [session1, session2], calendar: calendar)
+
+        // Record provider costs across the two historical days
+        _ = try await store.recordProviderUsageCosts([
+            Sub2APIUsageCost(
+                id: 101,
+                sessionID: session1.id,
+                createdAt: day1,
+                totalCost: Decimal(string: "0.05")!,
+                serviceTier: "priority",
+                reasoningEffort: "high"
+            ),
+            Sub2APIUsageCost(
+                id: 102,
+                sessionID: session2.id,
+                createdAt: day2,
+                totalCost: Decimal(string: "0.03")!,
+                serviceTier: "priority",
+                reasoningEffort: "high"
+            )
+        ], calendar: calendar)
+
+        let earliest = try await store.earliestSessionDate()
+        XCTAssertEqual(earliest?.timeIntervalSince1970, calendar.startOfDay(for: day1).timeIntervalSince1970)
+
+        // Execute rebuild
+        _ = try await store.rebuildMetricsIndex(pricing: .bundled, calendar: calendar)
+
+        let aggregate = try await store.aggregateDaily()
+        XCTAssertEqual(aggregate.estimatedCost, 0.08, accuracy: 1e-12)
+
+        let models = try await store.modelMetrics()
+        let unpricedModel = models.first(where: { $0.model == "custom-unpriced-model" })
+        XCTAssertNotNil(unpricedModel)
+        XCTAssertEqual(unpricedModel?.estimatedCost, Decimal(string: "0.05")!)
+
+        let s1 = try await store.session(withID: session1.id)
+        XCTAssertEqual(s1?.serviceTier, "priority")
+        XCTAssertEqual(s1?.reasoningEffort, "high")
+    }
+
+    func testRebuildMetricsIndexReportsProgressAndSupportsCancellation() async throws {
+        let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: userHome) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        let baseDate = Date(timeIntervalSince1970: 1_788_400_000)
+        let usage = TokenUsage(input: 100, output: 20)
+
+        let sessions = (0..<25).map { index in
+            let date = baseDate.addingTimeInterval(Double(index * 3600))
+            return SessionMetric(
+                id: "progress-session-\(index)",
+                rolloutPath: "/tmp/progress-\(index).jsonl",
+                projectPath: "/tmp/project",
+                title: "",
+                source: "app",
+                provider: "openai",
+                createdAt: date,
+                updatedAt: date,
+                model: "gpt-5.6-luna",
+                reasoningEffort: nil,
+                gitBranch: nil,
+                cliVersion: nil,
+                archived: false,
+                usage: usage,
+                usageEvents: [UsageEvent(date: date, usage: usage, model: "gpt-5.6-luna")],
+                enrichmentAvailable: true
+            )
+        }
+
+        let store = HistoricalStore(userHome: userHome)
+        _ = try await store.record(sessions)
+
+        final class ProgressCollector: @unchecked Sendable {
+            var reports: [(Double, String)] = []
+            let lock = NSLock()
+            func add(_ fraction: Double, _ message: String) {
+                lock.lock()
+                defer { lock.unlock() }
+                reports.append((fraction, message))
+            }
+            var all: [(Double, String)] {
+                lock.lock()
+                defer { lock.unlock() }
+                return reports
+            }
+        }
+        let collector = ProgressCollector()
+        _ = try await store.rebuildMetricsIndex(
+            pricing: .bundled,
+            calendar: calendar,
+            progress: { fraction, message in
+                collector.add(fraction, message)
+            }
+        )
+
+        let reports = collector.all
+        XCTAssertFalse(reports.isEmpty)
+        XCTAssertEqual(reports.first?.0, 0.0)
+        XCTAssertEqual(reports.first?.1, "Loading sessions...")
+        XCTAssertEqual(reports.last?.0, 1.0)
+        XCTAssertEqual(reports.last?.1, "Rebuild complete")
+
+        let cancelTask = Task {
+            try await store.rebuildMetricsIndex(
+                pricing: .bundled,
+                calendar: calendar
+            )
+        }
+        cancelTask.cancel()
+        do {
+            _ = try await cancelTask.value
+            XCTFail("Expected CancellationError when task is cancelled")
+        } catch is CancellationError {
+            // Expected
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+    }
+
+    func testRebuildMetricsIndexPreservesMixedDefaultAndSub2APISessions() async throws {
+        let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: userHome) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        let day1 = Date(timeIntervalSince1970: 1_788_400_000)
+        let day2 = Date(timeIntervalSince1970: 1_788_500_000)
+        let usage = TokenUsage(input: 1_000, output: 100)
+
+        // Session 1: Default session using bundled model pricing
+        let defaultSession = SessionMetric(
+            id: "default-session",
+            rolloutPath: "/tmp/default.jsonl",
+            projectPath: "/tmp/project-default",
+            title: "",
+            source: "app",
+            provider: "default",
+            createdAt: day1,
+            updatedAt: day1,
+            model: "gpt-5.6",
+            reasoningEffort: nil,
+            gitBranch: nil,
+            cliVersion: nil,
+            archived: false,
+            usage: usage,
+            usageEvents: [UsageEvent(date: day1, usage: usage, model: "gpt-5.6")],
+            enrichmentAvailable: true
+        )
+
+        // Session 2: Sub2API session with server-side tier and override cost
+        let sub2APISession = SessionMetric(
+            id: "sub2api-session",
+            rolloutPath: "/tmp/sub2api.jsonl",
+            projectPath: "/tmp/project-sub2api",
+            title: "",
+            source: "app",
+            provider: "sub2api",
+            createdAt: day2,
+            updatedAt: day2,
+            model: "gpt-5.6",
+            reasoningEffort: nil,
+            gitBranch: nil,
+            cliVersion: nil,
+            archived: false,
+            usage: usage,
+            usageEvents: [UsageEvent(date: day2, usage: usage, model: "gpt-5.6")],
+            enrichmentAvailable: true
+        )
+
+        let store = HistoricalStore(userHome: userHome)
+        _ = try await store.record([defaultSession, sub2APISession])
+
+        // Record Sub2API cost only for sub2APISession
+        _ = try await store.recordProviderUsageCosts([
+            Sub2APIUsageCost(
+                id: 999,
+                sessionID: sub2APISession.id,
+                createdAt: day2,
+                totalCost: Decimal(string: "0.123")!,
+                serviceTier: "priority",
+                reasoningEffort: "high"
+            )
+        ], calendar: calendar)
+
+        // Rebuild metrics index
+        let snapshot = try await store.rebuildMetricsIndex(pricing: .bundled, calendar: calendar)
+
+        // 1. Verify NO sessions are skipped
+        XCTAssertEqual(snapshot.sessions.count, 2)
+        let sessionIDs = Set(snapshot.sessions.map(\.sessionID))
+        XCTAssertTrue(sessionIDs.contains(defaultSession.id))
+        XCTAssertTrue(sessionIDs.contains(sub2APISession.id))
+
+        // 2. Verify default session uses catalog pricing
+        let expectedDefaultCost = PricingHistory.bundled.estimate(
+            usage: usage,
+            model: "gpt-5.6",
+            on: day1
+        ) ?? 0
+        let defaultDaily = try await store.aggregateDaily(projectPath: "/tmp/project-default")
+        XCTAssertEqual(defaultDaily.estimatedCost, NSDecimalNumber(decimal: expectedDefaultCost).doubleValue, accuracy: 1e-6)
+
+        // 3. Verify sub2api session uses provider cost override
+        let sub2Daily = try await store.aggregateDaily(projectPath: "/tmp/project-sub2api")
+        XCTAssertEqual(sub2Daily.estimatedCost, 0.123, accuracy: 1e-6)
+
+        // 4. Verify total aggregate sums both without skipping
+        let totalAggregate = try await store.aggregateDaily()
+        let expectedTotal = NSDecimalNumber(decimal: expectedDefaultCost).doubleValue + 0.123
+        XCTAssertEqual(totalAggregate.estimatedCost, expectedTotal, accuracy: 1e-6)
+
+        // 5. Verify session count in store
+        let storedCount = try await store.storedSessionCount()
+        XCTAssertEqual(storedCount, 2)
+    }
+
     func testDailyModelRowsPreserveTokenBreakdownCostAndRuntime() async throws {
         let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: userHome) }
@@ -1492,6 +1799,27 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(snapshot?.windows.map(\.windowMinutes), [300])
         XCTAssertEqual(snapshot?.windows.first?.usedPercent, 25)
         XCTAssertEqual(snapshot?.windows.first?.resetsAt, ISO8601DateFormatter().date(from: "2026-08-26T12:00:00Z"))
+    }
+
+    func testSub2APIReaderParsesEffectiveTierEffortAndBilledCost() throws {
+        let costs = Sub2APIReader.usageCosts(from: [
+            "items": [[
+                "id": 42,
+                "session_id": "01a-session",
+                "created_at": "2026-09-04T01:02:03Z",
+                "total_cost": 0.118827,
+                "service_tier": "priority",
+                "reasoning_effort": "medium",
+                "upstream_reasoning_effort": "high"
+            ]]
+        ])
+
+        let cost = try XCTUnwrap(costs.first)
+        XCTAssertEqual(cost.id, 42)
+        XCTAssertEqual(cost.sessionID, "01a-session")
+        XCTAssertEqual(cost.totalCost, Decimal(0.118827))
+        XCTAssertEqual(cost.serviceTier, "priority")
+        XCTAssertEqual(cost.reasoningEffort, "high")
     }
 
     func testSub2APIReaderParsesUpstreamQuotaResponse() {

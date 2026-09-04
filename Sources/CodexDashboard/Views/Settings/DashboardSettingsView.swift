@@ -240,15 +240,41 @@ struct DashboardSettingsView: View {
 
             Section("Maintenance") {
                 LabeledContent("History index") {
-                    Button {
-                        AppDelegate.shared?.dashboardCoordinator.rebuildHistoryIndex()
-                    } label: {
-                        Text("Rebuild")
+                    if store.isRebuildingHistory {
+                        Button("Cancel") {
+                            store.cancelRebuildHistoryIndex()
+                        }
+                    } else {
+                        Button("Rebuild") {
+                            store.rebuildHistoryIndex()
+                        }
                     }
                 }
-                Text("Rebuilds the stored token, cost, runtime, and model breakdowns from all saved sessions. This may take a while for large histories.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if store.isRebuildingHistory {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let progress = store.rebuildProgress {
+                            ProgressView(value: progress, total: 1.0)
+                                .progressViewStyle(.linear)
+                        } else {
+                            ProgressView()
+                                .progressViewStyle(.linear)
+                        }
+                        if let message = store.rebuildMessage {
+                            Text(message)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    if let message = store.rebuildMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("Rebuilds the stored token, cost, runtime, and model breakdowns from all saved sessions. This may take a while for large histories.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("Updates") {
