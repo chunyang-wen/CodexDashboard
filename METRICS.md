@@ -47,17 +47,18 @@ Period boundaries use the Mac's current calendar and time zone.
 The local estimate is applied to each token delta using the model active when that delta was recorded:
 
 ```text
-(uncached input / 1M × input rate)
+((uncached input / 1M × input rate)
 + (cached input / 1M × cached rate)
 + (cache-write input / 1M × input rate × write multiplier)
-+ (output / 1M × output rate)
++ (output / 1M × output rate))
+× service-tier multiplier (2 for Fast/Priority, otherwise 1)
 ```
 
-Reasoning tokens are not added separately because they are included in output. Rate cards are versioned by effective date, and every token delta is priced with the schedule in effect on its event date. Historical schedules are stored with the durable metric archive, so adding a future price does not rewrite prior estimates.
+Reasoning tokens are not added separately because they are included in output. The rollout records reasoning effort, but effort does not change the per-token rate; it affects cost through the number of output/reasoning tokens generated. Service tier is tracked per token delta so switching Fast mode during a session does not reprice earlier Standard work. Rate cards are versioned by effective date, and every token delta is priced with the schedule in effect on its event date. Historical schedules are stored with the durable metric archive, so adding a future price does not rewrite prior estimates.
 
 The app checks models.dev at most once every 24 hours and caches the response with HTTP validators. A validated price change creates a new schedule effective at the successful fetch time; it never mutates an earlier schedule. Invalid, unavailable, or unexpectedly large responses are ignored in favor of the last valid cached catalog or bundled local schedules. The UI always identifies whether pricing came from models.dev, its cache, or the bundled fallback. OpenAI's Models API supplies model identity and availability but does not currently expose token prices, so models.dev is explicitly treated as a third-party metadata source rather than an invoice authority.
 
-The estimate does not include hosted-tool call charges, regional-processing uplifts, long-context multipliers, Batch/Flex discounts, negotiated rates, credits, taxes, or ChatGPT subscription terms. **It is not an invoice.** Actual API spend should come from the OpenAI Organization Costs endpoint and may only be attributable to OpenAI API project IDs, not local filesystem projects.
+The estimate does not include hosted-tool call charges, regional-processing uplifts, long-context multipliers, Batch/Flex discounts, negotiated rates, credits, taxes, or ChatGPT subscription terms. Fast/Priority pricing is included only when the rollout reports that service tier. **It is not an invoice.** Actual API spend should come from the OpenAI Organization Costs endpoint and may only be attributable to OpenAI API project IDs, not local filesystem projects.
 
 For tool-level analysis, every token delta is attributed to tool calls since the previous token event. When multiple calls precede one event, the token categories are divided evenly without changing the total. This is an estimate of the model-token work associated with each tool, not the tool vendor's own fee. Calls without a later token event remain visible in frequency totals with zero attributed cost.
 

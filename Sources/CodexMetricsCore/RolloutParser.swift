@@ -14,6 +14,7 @@ struct RolloutEnrichment: Codable, Sendable {
     var turns: [TurnMetric] = []
     var model: String?
     var reasoningEffort: String?
+    var serviceTier: String?
     var originator: String?
     var toolCalls = 0
     var toolCallEvents: [ToolCallEvent] = []
@@ -24,9 +25,8 @@ struct RolloutEnrichment: Codable, Sendable {
 }
 
 struct CachedRollout: Codable, Sendable {
-    // v10 rejects provider quota envelopes whose fields are all null, notably
-    // the placeholder emitted by OpenRouter.
-    static let currentParserVersion = 10
+    // v11 records the active service tier on token and attribution events.
+    static let currentParserVersion = 11
 
     let fileSize: Int64
     let modifiedAt: Date
@@ -198,6 +198,7 @@ enum RolloutParser {
     private static let taskCompleteMarker = Data(#""type":"task_complete""#.utf8)
     private static let turnAbortedMarker = Data(#""type":"turn_aborted""#.utf8)
     private static let userMessageMarker = Data(#""type":"user_message""#.utf8)
+    private static let threadSettingsMarker = Data(#""type":"thread_settings_applied""#.utf8)
     private static let functionCallMarker = Data(#""type":"function_call""#.utf8)
     private static let customToolCallMarker = Data(#""type":"custom_tool_call""#.utf8)
 
@@ -345,10 +346,10 @@ enum RolloutParser {
                 let outerName = extractedString(named: "name", from: header) ?? "Unknown tool"
                 let input = toolInput(from: data)
                 let name = displayToolName(outerName: outerName, input: input)
-                result.toolCallEvents.append(.init(date: timestamp, name: name, model: result.model))
+                result.toolCallEvents.append(.init(date: timestamp, name: name, model: result.model, serviceTier: result.serviceTier))
                 pendingToolIndices.append(result.toolCallEvents.index(before: result.toolCallEvents.endIndex))
                 for skill in skillNames(outerName: outerName, input: input) {
-                    result.skillCallEvents.append(.init(date: timestamp, name: skill, model: result.model))
+                    result.skillCallEvents.append(.init(date: timestamp, name: skill, model: result.model, serviceTier: result.serviceTier))
                     pendingSkillIndices.append(result.skillCallEvents.index(before: result.skillCallEvents.endIndex))
                 }
             }
@@ -363,7 +364,8 @@ enum RolloutParser {
             }
             guard header.range(of: tokenCountMarker) != nil
                     || header.range(of: taskCompleteMarker) != nil
-                    || header.range(of: turnAbortedMarker) != nil else { return }
+                    || header.range(of: turnAbortedMarker) != nil
+                    || header.range(of: threadSettingsMarker) != nil else { return }
         }
 
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -376,10 +378,16 @@ enum RolloutParser {
         if type == "turn_context" {
             result.model = payload["model"] as? String ?? result.model
             result.reasoningEffort = payload["effort"] as? String ?? result.reasoningEffort
+            result.serviceTier = payload["service_tier"] as? String ?? result.serviceTier
             return
         }
         guard type == "event_msg", let event = payload["type"] as? String else { return }
         switch event {
+        case "thread_settings_applied":
+            guard let settings = payload["thread_settings"] as? [String: Any] else { return }
+            result.model = string(settings["model"]) ?? result.model
+            result.reasoningEffort = string(settings["reasoning_effort"]) ?? result.reasoningEffort
+            result.serviceTier = string(settings["service_tier"]) ?? result.serviceTier
         case "token_count":
             if let limits = payload["rate_limits"] as? [String: Any] {
                 if let candidate = SubscriptionReader.snapshot(from: limits, observedAt: timestamp),
@@ -397,9 +405,9 @@ enum RolloutParser {
                 ?? string(payload["model_name"])
                 ?? result.model
             if delta.total > 0 {
-                result.usageEvents.append(.init(date: timestamp, usage: delta, model: model))
-                attribute(delta, to: pendingToolIndices, model: model, events: &result.toolCallEvents)
-                attributeSkills(delta, to: pendingSkillIndices, model: model, events: &result.skillCallEvents)
+                result.usageEvents.append(.init(date: timestamp, usage: delta, model: model, serviceTier: result.serviceTier))
+                attribute(delta, to: pendingToolIndices, model: model, serviceTier: result.serviceTier, events: &result.toolCallEvents)
+                attributeSkills(delta, to: pendingSkillIndices, model: model, serviceTier: result.serviceTier, events: &result.skillCallEvents)
                 pendingToolIndices.removeAll(keepingCapacity: true)
                 pendingSkillIndices.removeAll(keepingCapacity: true)
             }
@@ -640,6 +648,7 @@ enum RolloutParser {
         _ usage: TokenUsage,
         to indices: [Int],
         model: String?,
+        serviceTier: String?,
         events: inout [ToolCallEvent]
     ) {
         guard !indices.isEmpty else { return }
@@ -648,6 +657,7 @@ enum RolloutParser {
                 date: events[index].date,
                 name: events[index].name,
                 model: events[index].model ?? model,
+                serviceTier: events[index].serviceTier ?? serviceTier,
                 attributedUsage: split(usage, count: indices.count, index: position)
             )
         }
@@ -657,6 +667,7 @@ enum RolloutParser {
         _ usage: TokenUsage,
         to indices: [Int],
         model: String?,
+        serviceTier: String?,
         events: inout [SkillCallEvent]
     ) {
         guard !indices.isEmpty else { return }
@@ -665,6 +676,7 @@ enum RolloutParser {
                 date: events[index].date,
                 name: events[index].name,
                 model: events[index].model ?? model,
+                serviceTier: events[index].serviceTier ?? serviceTier,
                 attributedUsage: split(usage, count: indices.count, index: position)
             )
         }

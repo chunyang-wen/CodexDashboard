@@ -2607,6 +2607,7 @@ public actor HistoricalStore {
         let updatedAt = max(historical.updatedAt, indexed.updatedAt)
         let model = enriched.model ?? indexed.model
         let reasoningEffort = enriched.reasoningEffort ?? indexed.reasoningEffort
+        let serviceTier = enriched.serviceTier ?? indexed.serviceTier
         let gitBranch = indexed.gitBranch ?? historical.gitBranch
         let cliVersion = indexed.cliVersion ?? historical.cliVersion
         let usage = enriched.usage.total > 0 ? enriched.usage : indexed.usage
@@ -2623,6 +2624,7 @@ public actor HistoricalStore {
             updatedAt: updatedAt,
             model: model,
             reasoningEffort: reasoningEffort,
+            serviceTier: serviceTier,
             gitBranch: gitBranch,
             cliVersion: cliVersion,
             archived: indexed.archived,
@@ -2972,7 +2974,7 @@ public actor HistoricalStore {
         encoder.dateEncodingStrategy = .millisecondsSince1970
         encoder.outputFormatting = [.sortedKeys]
         let contextValue = MetricsIndexContext(
-            schemaVersion: 3,
+            schemaVersion: 4,
             timeZone: calendar.timeZone.identifier,
             pricing: pricing
         )
@@ -3038,7 +3040,7 @@ public actor HistoricalStore {
         encoder.dateEncodingStrategy = .millisecondsSince1970
         encoder.outputFormatting = [.sortedKeys]
         let context = try encoder.encode(Context(
-            schemaVersion: 3,
+            schemaVersion: 4,
             timeZone: calendar.timeZone.identifier,
             pricing: pricing
         ))
@@ -3097,7 +3099,7 @@ public actor HistoricalStore {
         encoder.dateEncodingStrategy = .millisecondsSince1970
         encoder.outputFormatting = [.sortedKeys]
         let contextValue = MetricsIndexContext(
-            schemaVersion: 3,
+            schemaVersion: 4,
             timeZone: calendar.timeZone.identifier,
             pricing: pricing
         )
@@ -3298,6 +3300,7 @@ public actor HistoricalStore {
             updatedAt: max(older.updatedAt, newer.updatedAt),
             model: preferred.model ?? fallback.model,
             reasoningEffort: preferred.reasoningEffort ?? fallback.reasoningEffort,
+            serviceTier: preferred.serviceTier ?? fallback.serviceTier,
             gitBranch: preferred.gitBranch ?? fallback.gitBranch,
             cliVersion: preferred.cliVersion ?? fallback.cliVersion,
             archived: preferred.archived,

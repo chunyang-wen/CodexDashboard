@@ -268,6 +268,39 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(cost, Decimal(string: "0.176"))
     }
 
+    func testFastAndPriorityServiceTiersDoubleTokenCost() throws {
+        let usage = TokenUsage(input: 1_000, cachedInput: 500, output: 100)
+        let standard = try XCTUnwrap(PricingRegistry.current.estimate(usage: usage, model: "gpt-5.6-luna"))
+
+        XCTAssertEqual(
+            PricingRegistry.current.estimate(usage: usage, model: "gpt-5.6-luna", serviceTier: "fast"),
+            standard * 2
+        )
+        XCTAssertEqual(
+            PricingHistory.bundled.estimate(usage: usage, model: "gpt-5.6-luna", serviceTier: "priority", on: .now),
+            PricingHistory.bundled.estimate(usage: usage, model: "gpt-5.6-luna", on: .now)! * 2
+        )
+    }
+
+    func testAnalyticsPricesServiceTierPerUsageEvent() throws {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let usage = TokenUsage(input: 1_000, output: 100)
+        let session = SessionMetric(
+            id: "mixed-tier", rolloutPath: "/tmp/mixed-tier.jsonl", projectPath: "/tmp",
+            title: "Mixed tier", source: "test", provider: "openai", createdAt: date,
+            updatedAt: date, model: "gpt-5.6-luna", reasoningEffort: "high",
+            gitBranch: nil, cliVersion: nil, archived: false, usage: usage + usage,
+            usageEvents: [
+                UsageEvent(date: date, usage: usage, model: "gpt-5.6-luna", serviceTier: "default"),
+                UsageEvent(date: date.addingTimeInterval(1), usage: usage, model: "gpt-5.6-luna", serviceTier: "fast")
+            ], enrichmentAvailable: true
+        )
+        let standard = try XCTUnwrap(PricingHistory.bundled.estimate(usage: usage, model: "gpt-5.6-luna", on: date))
+
+        XCTAssertEqual(Analytics.totalEstimatedCost([session]), standard * 3)
+        XCTAssertEqual(MetricsIndexBuilder.build(session: session).session.estimatedCost, standard * 3)
+    }
+
     func testExactQuotaWindowTotalsExcludeResetBoundary() {
         let start = Date(timeIntervalSince1970: 1_700_000_000)
         let end = start.addingTimeInterval(7 * 24 * 60 * 60)
@@ -328,6 +361,7 @@ final class AnalyticsTests: XCTestCase {
         let file = directory.appendingPathComponent("rollout.jsonl")
         let lines = [
             #"{"timestamp":"2026-08-01T10:00:00.125Z","type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"high"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:00.500Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"model":"gpt-5.6-luna","reasoning_effort":"high","service_tier":"priority"}}}"#,
             #"{"timestamp":"2026-08-01T10:00:01.250Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":800,"output_tokens":100,"reasoning_output_tokens":20,"total_tokens":1100}}}}"#,
             #"{"timestamp":"2026-08-01T10:00:02.250Z","type":"event_msg","payload":{"type":"user_message","message":"hello"}}"#,
             #"{"timestamp":"2026-08-01T10:00:03.250Z","type":"response_item","payload":{"type":"function_call","name":"test"}}"#,
@@ -337,9 +371,11 @@ final class AnalyticsTests: XCTestCase {
         let result = RolloutParser.parse(path: file.path)
         XCTAssertEqual(result.model, "gpt-5.6-luna")
         XCTAssertEqual(result.reasoningEffort, "high")
+        XCTAssertEqual(result.serviceTier, "priority")
         XCTAssertEqual(result.usage.total, 1100)
         XCTAssertEqual(result.usage.cachedInput, 800)
         XCTAssertEqual(result.usageEvents.first?.model, "gpt-5.6-luna")
+        XCTAssertEqual(result.usageEvents.first?.serviceTier, "priority")
         XCTAssertEqual(result.usageEvents.first!.date.timeIntervalSince1970, 1_785_578_401.25, accuracy: 0.001)
         XCTAssertEqual(result.turns.first?.duration, 4)
         XCTAssertEqual(result.turns.first?.timeToFirstToken, 0.5)
@@ -570,6 +606,49 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(reduced, Decimal(string: "0.2"))
     }
 
+    func testBundledAstraPricingBeginsAtRelease() throws {
+        let beforeRelease = Date(timeIntervalSince1970: 1_788_393_599) // 2026-09-02 23:59:59 UTC
+        let release = Date(timeIntervalSince1970: 1_788_393_600) // 2026-09-03 00:00:00 UTC
+
+        XCTAssertNil(PricingHistory.bundled.price(for: "gpt-6-astra", on: beforeRelease))
+
+        let price = try XCTUnwrap(PricingHistory.bundled.price(for: "gpt-6-astra", on: release))
+        XCTAssertEqual(price.inputPerMillion, 10)
+        XCTAssertEqual(price.cachedInputPerMillion, 1)
+        XCTAssertEqual(price.cacheWriteMultiplier, Decimal(string: "1.25"))
+        XCTAssertEqual(price.outputPerMillion, 50)
+        XCTAssertEqual(
+            PricingHistory.bundled.estimate(
+                usage: TokenUsage(input: 1_000_000, cachedInput: 500_000, cacheWriteInput: 100_000, output: 100_000),
+                model: "gpt-6-astra",
+                on: release
+            ),
+            Decimal(string: "10.75")
+        )
+    }
+
+    func testLaterCatalogCanOmitThenOverrideBundledAstraPricing() throws {
+        let afterRelease = Date(timeIntervalSince1970: 1_788_480_000) // 2026-09-04 UTC
+        let omitted = PricingSchedule(
+            effectiveAt: afterRelease,
+            prices: ["gpt-test": .init(input: 1, cachedInput: 0.1, output: 2)],
+            source: "models.dev"
+        )
+        let fallbackHistory = PricingHistory.bundled.merging(.init(schedules: [omitted]))
+
+        XCTAssertEqual(fallbackHistory.price(for: "gpt-6-astra", on: afterRelease)?.inputPerMillion, 10)
+
+        let modelsDevPrice = ModelPrice(input: 11, cachedInput: 1.1, cacheWriteMultiplier: 1.25, output: 55)
+        let override = PricingSchedule(
+            effectiveAt: afterRelease.addingTimeInterval(1),
+            prices: ["gpt-6-astra": modelsDevPrice],
+            source: "models.dev"
+        )
+        let overriddenHistory = fallbackHistory.merging(.init(schedules: [override]))
+
+        XCTAssertEqual(overriddenHistory.price(for: "gpt-6-astra", on: override.effectiveAt), modelsDevPrice)
+    }
+
     func testDynamicPricingCatalogParsesAndValidatesTokenRates() throws {
         let data = Data(#"{"openai":{"models":{"gpt-test":{"id":"gpt-test","cost":{"input":2,"output":12,"cache_read":0.2,"cache_write":2.5}},"bad":{"id":"bad","cost":{"input":-1,"output":12}}}}}"#.utf8)
         let snapshot = try DynamicPricingLoader.parse(data)
@@ -708,7 +787,7 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(imported, 1)
         XCTAssertEqual(restored.map(\.id), ["preserved"])
         XCTAssertEqual(restored.first?.usageEvents, [event])
-        XCTAssertEqual(restoredPricing.schedules.count, 2)
+        XCTAssertEqual(restoredPricing.schedules.count, 3)
     }
 
     func testRangeUsesEventDatesInsteadOfWholeSessionTotal() {

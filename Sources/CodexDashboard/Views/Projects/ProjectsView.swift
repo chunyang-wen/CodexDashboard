@@ -236,7 +236,7 @@ private struct ProjectDetailLoaderView: View {
 
     private var summaryAggregate: SQLProjectAggregate {
         let estimatedCost = project.sessions.reduce(Decimal.zero) { total, session in
-            total + (pricing.estimate(usage: session.usage, model: session.model, on: session.updatedAt) ?? 0)
+            total + (pricing.estimate(usage: session.usage, model: session.model, serviceTier: session.serviceTier, on: session.updatedAt) ?? 0)
         }
         return SQLProjectAggregate(
             usage: project.usage,
@@ -343,6 +343,7 @@ struct SessionDetailLoaderView: View {
             updatedAt: fallback.updatedAt,
             model: fallback.model,
             reasoningEffort: fallback.reasoningEffort,
+            serviceTier: fallback.serviceTier,
             gitBranch: fallback.gitBranch,
             cliVersion: fallback.cliVersion,
             archived: fallback.archived,
@@ -487,7 +488,7 @@ private struct ProjectDetailView: View {
                                     Text(session.usage.cacheHitRate.formatted(.percent.precision(.fractionLength(1))) + " cache hit")
                                         .font(.caption).foregroundStyle(.teal).monospacedDigit()
                                     let sessionCost = sessionIndexes[session.id]?.estimatedCost
-                                        ?? (pricing.estimate(usage: session.usage, model: session.model, on: session.updatedAt) ?? 0)
+                                        ?? (pricing.estimate(usage: session.usage, model: session.model, serviceTier: session.serviceTier, on: session.updatedAt) ?? 0)
                                     let sessionCoverage = sessionIndexes[session.id].map { indexed in
                                         indexed.totalTokens > 0 ? Double(indexed.coveredTokens) / Double(indexed.totalTokens) : 0
                                     } ?? (pricing.price(for: session.model, on: session.updatedAt) != nil ? 1.0 : 0.0)
@@ -567,6 +568,7 @@ struct SessionDetailView: View {
                 Grid(alignment: .leading, horizontalSpacing: 22, verticalSpacing: 11) {
                     metadata("Model", session.model ?? "Unknown")
                     metadata("Reasoning effort", session.reasoningEffort ?? "Unknown")
+                    metadata("Service tier", session.serviceTier ?? "Default")
                     metadata("Source", session.displaySource)
                     metadata("Git branch", session.gitBranch ?? "—")
                     metadata("Aborted turns", session.abortedTurns.formatted())
@@ -820,4 +822,3 @@ private struct TokenCompositionLegend: View {
         .accessibilityElement(children: .combine)
     }
 }
-

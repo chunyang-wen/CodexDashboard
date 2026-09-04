@@ -25,6 +25,7 @@ public struct PricingRegistry: Sendable {
 
     /// API-equivalent list prices. Local ChatGPT/Codex subscription sessions are not token-billed invoices.
     public static let current = PricingRegistry(prices: [
+        "gpt-6-astra": .init(input: 10, cachedInput: 1, cacheWriteMultiplier: 1.25, output: 50),
         "gpt-5.6": .init(input: 5, cachedInput: 0.5, cacheWriteMultiplier: 1.25, output: 30),
         "gpt-5.6-sol": .init(input: 5, cachedInput: 0.5, cacheWriteMultiplier: 1.25, output: 30),
         "gpt-5.6-terra": .init(input: 2, cachedInput: 0.2, cacheWriteMultiplier: 1.25, output: 12),
@@ -41,7 +42,7 @@ public struct PricingRegistry: Sendable {
         "gpt-5.1-codex-max": .init(input: 1.25, cachedInput: 0.125, output: 10),
         "gpt-5.1-codex-mini": .init(input: 0.25, cachedInput: 0.025, output: 2),
         "gpt-5-codex": .init(input: 1.25, cachedInput: 0.125, output: 10)
-    ], effectiveDate: "2026-07-30")
+    ], effectiveDate: "2026-09-03")
 
     public func price(for model: String?) -> ModelPrice? {
         guard let model else { return nil }
@@ -49,14 +50,14 @@ public struct PricingRegistry: Sendable {
         return prices.first { model.hasPrefix($0.key + "-") }?.value
     }
 
-    public func estimate(usage: TokenUsage, model: String?) -> Decimal? {
+    public func estimate(usage: TokenUsage, model: String?, serviceTier: String? = nil) -> Decimal? {
         guard let price = price(for: model), usage.input > 0 || usage.output > 0 else { return nil }
         let million = Decimal(1_000_000)
         let unscaled = Decimal(usage.uncachedInput) * price.inputPerMillion
             + Decimal(usage.cachedInput) * price.cachedInputPerMillion
             + Decimal(usage.cacheWriteInput) * price.inputPerMillion * price.cacheWriteMultiplier
             + Decimal(usage.output) * price.outputPerMillion
-        return unscaled / million
+        return unscaled / million * serviceTierMultiplier(serviceTier)
     }
 }
 
@@ -84,12 +85,15 @@ public struct PricingHistory: Codable, Hashable, Sendable {
     }
 
     public static let bundled: PricingHistory = {
-        var launchPrices = PricingRegistry.current.prices
+        var currentBeforeAstra = PricingRegistry.current.prices
+        currentBeforeAstra.removeValue(forKey: "gpt-6-astra")
+        var launchPrices = currentBeforeAstra
         launchPrices["gpt-5.6-terra"] = .init(input: 2.5, cachedInput: 0.25, cacheWriteMultiplier: 1.25, output: 15)
         launchPrices["gpt-5.6-luna"] = .init(input: 1, cachedInput: 0.1, cacheWriteMultiplier: 1.25, output: 6)
         return PricingHistory(schedules: [
             .init(effectiveAt: utcDate(2026, 7, 9), prices: launchPrices, source: "Bundled"),
-            .init(effectiveAt: utcDate(2026, 7, 30), prices: PricingRegistry.current.prices, source: "Bundled")
+            .init(effectiveAt: utcDate(2026, 7, 30), prices: currentBeforeAstra, source: "Bundled"),
+            .init(effectiveAt: utcDate(2026, 9, 3), prices: PricingRegistry.current.prices, source: "Bundled")
         ])
     }()
 
@@ -98,19 +102,24 @@ public struct PricingHistory: Codable, Hashable, Sendable {
     }
 
     public func price(for model: String?, on date: Date) -> ModelPrice? {
-        let schedule = schedules.last(where: { $0.effectiveAt <= date }) ?? schedules.first
-        guard let schedule else { return nil }
-        return PricingRegistry(prices: schedule.prices, effectiveDate: "").price(for: model)
+        let eligibleSchedules = schedules.lazy.reversed().filter { $0.effectiveAt <= date }
+        for schedule in eligibleSchedules {
+            if let price = PricingRegistry(prices: schedule.prices, effectiveDate: "").price(for: model) {
+                return price
+            }
+        }
+        guard eligibleSchedules.isEmpty, let first = schedules.first else { return nil }
+        return PricingRegistry(prices: first.prices, effectiveDate: "").price(for: model)
     }
 
-    public func estimate(usage: TokenUsage, model: String?, on date: Date) -> Decimal? {
+    public func estimate(usage: TokenUsage, model: String?, serviceTier: String? = nil, on date: Date) -> Decimal? {
         guard let price = price(for: model, on: date), usage.input > 0 || usage.output > 0 else { return nil }
         let million = Decimal(1_000_000)
         let unscaled = Decimal(usage.uncachedInput) * price.inputPerMillion
             + Decimal(usage.cachedInput) * price.cachedInputPerMillion
             + Decimal(usage.cacheWriteInput) * price.inputPerMillion * price.cacheWriteMultiplier
             + Decimal(usage.output) * price.outputPerMillion
-        return unscaled / million
+        return unscaled / million * serviceTierMultiplier(serviceTier)
     }
 
     public var latestEffectiveDate: Date? { schedules.last?.effectiveAt }
@@ -120,4 +129,11 @@ private func utcDate(_ year: Int, _ month: Int, _ day: Int) -> Date {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(secondsFromGMT: 0)!
     return calendar.date(from: DateComponents(year: year, month: month, day: day))!
+}
+
+private func serviceTierMultiplier(_ serviceTier: String?) -> Decimal {
+    switch serviceTier?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "fast", "priority": 2
+    default: 1
+    }
 }

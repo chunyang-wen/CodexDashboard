@@ -101,11 +101,13 @@ public struct UsageEvent: Codable, Hashable, Sendable {
     public let date: Date
     public let usage: TokenUsage
     public let model: String?
+    public let serviceTier: String?
 
-    public init(date: Date, usage: TokenUsage, model: String? = nil) {
+    public init(date: Date, usage: TokenUsage, model: String? = nil, serviceTier: String? = nil) {
         self.date = date
         self.usage = usage
         self.model = model
+        self.serviceTier = serviceTier
     }
 }
 
@@ -127,12 +129,14 @@ public struct ToolCallEvent: Codable, Hashable, Sendable {
     public let date: Date
     public let name: String
     public let model: String?
+    public let serviceTier: String?
     public let attributedUsage: TokenUsage
 
-    public init(date: Date, name: String, model: String?, attributedUsage: TokenUsage = .zero) {
+    public init(date: Date, name: String, model: String?, serviceTier: String? = nil, attributedUsage: TokenUsage = .zero) {
         self.date = date
         self.name = name
         self.model = model
+        self.serviceTier = serviceTier
         self.attributedUsage = attributedUsage
     }
 }
@@ -141,12 +145,14 @@ public struct SkillCallEvent: Codable, Hashable, Sendable {
     public let date: Date
     public let name: String
     public let model: String?
+    public let serviceTier: String?
     public let attributedUsage: TokenUsage
 
-    public init(date: Date, name: String, model: String?, attributedUsage: TokenUsage = .zero) {
+    public init(date: Date, name: String, model: String?, serviceTier: String? = nil, attributedUsage: TokenUsage = .zero) {
         self.date = date
         self.name = name
         self.model = model
+        self.serviceTier = serviceTier
         self.attributedUsage = attributedUsage
     }
 }
@@ -165,6 +171,7 @@ public struct SessionMetric: Identifiable, Codable, Hashable, Sendable {
     public let updatedAt: Date
     public let model: String?
     public let reasoningEffort: String?
+    public let serviceTier: String?
     public let gitBranch: String?
     public let cliVersion: String?
     public let archived: Bool
@@ -195,6 +202,7 @@ public struct SessionMetric: Identifiable, Codable, Hashable, Sendable {
         updatedAt: Date,
         model: String?,
         reasoningEffort: String?,
+        serviceTier: String? = nil,
         gitBranch: String?,
         cliVersion: String?,
         archived: Bool,
@@ -220,6 +228,7 @@ public struct SessionMetric: Identifiable, Codable, Hashable, Sendable {
         self.updatedAt = updatedAt
         self.model = model
         self.reasoningEffort = reasoningEffort
+        self.serviceTier = serviceTier
         self.gitBranch = gitBranch
         self.cliVersion = cliVersion
         self.archived = archived
@@ -263,6 +272,7 @@ public struct SessionSummary: Identifiable, Codable, Hashable, Sendable {
     public let updatedAt: Date
     public let model: String?
     public let reasoningEffort: String?
+    public let serviceTier: String?
     public let gitBranch: String?
     public let cliVersion: String?
     public let archived: Bool
@@ -289,6 +299,7 @@ public struct SessionSummary: Identifiable, Codable, Hashable, Sendable {
         updatedAt: Date,
         model: String?,
         reasoningEffort: String? = nil,
+        serviceTier: String? = nil,
         gitBranch: String? = nil,
         cliVersion: String? = nil,
         archived: Bool = false,
@@ -314,6 +325,7 @@ public struct SessionSummary: Identifiable, Codable, Hashable, Sendable {
         self.updatedAt = updatedAt
         self.model = model
         self.reasoningEffort = reasoningEffort
+        self.serviceTier = serviceTier
         self.gitBranch = gitBranch
         self.cliVersion = cliVersion
         self.archived = archived
@@ -342,6 +354,7 @@ public struct SessionSummary: Identifiable, Codable, Hashable, Sendable {
             updatedAt: session.updatedAt,
             model: session.model,
             reasoningEffort: session.reasoningEffort,
+            serviceTier: session.serviceTier,
             gitBranch: session.gitBranch,
             cliVersion: session.cliVersion,
             archived: session.archived,

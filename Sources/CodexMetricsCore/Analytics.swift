@@ -61,11 +61,11 @@ public enum Analytics {
                 return total + session.usageEvents.lazy
                     .filter { event in startDate.map { event.date >= $0 } ?? true }
                     .reduce(Decimal.zero) { subtotal, event in
-                        subtotal + (pricing.estimate(usage: event.usage, model: event.model ?? session.model, on: event.date) ?? 0)
+                        subtotal + (pricing.estimate(usage: event.usage, model: event.model ?? session.model, serviceTier: event.serviceTier ?? session.serviceTier, on: event.date) ?? 0)
                     }
             }
             guard startDate.map({ session.updatedAt >= $0 }) ?? true else { return total }
-            return total + (pricing.estimate(usage: session.usage, model: session.model, on: session.updatedAt) ?? 0)
+            return total + (pricing.estimate(usage: session.usage, model: session.model, serviceTier: session.serviceTier, on: session.updatedAt) ?? 0)
         }
     }
 
@@ -83,6 +83,7 @@ public enum Analytics {
                         subtotal + (pricing.estimate(
                             usage: event.usage,
                             model: event.model ?? session.model,
+                            serviceTier: event.serviceTier ?? session.serviceTier,
                             on: event.date
                         ) ?? 0)
                     }
@@ -91,6 +92,7 @@ public enum Analytics {
             return total + (pricing.estimate(
                 usage: session.usage,
                 model: session.model,
+                serviceTier: session.serviceTier,
                 on: session.updatedAt
             ) ?? 0)
         }
@@ -144,7 +146,7 @@ public enum Analytics {
                 var bucket = buckets[start, default: Bucket()]
                 bucket.usage = bucket.usage + event.usage
                 bucket.sessionIDs.insert(session.id)
-                bucket.cost += pricing.estimate(usage: event.usage, model: event.model ?? session.model, on: event.date) ?? 0
+                bucket.cost += pricing.estimate(usage: event.usage, model: event.model ?? session.model, serviceTier: event.serviceTier ?? session.serviceTier, on: event.date) ?? 0
                 buckets[start] = bucket
             }
             for turn in session.turns where turn.completed {
@@ -188,6 +190,7 @@ public enum Analytics {
                 let cost = pricing.estimate(
                     usage: event.usage,
                     model: event.model ?? session.model,
+                    serviceTier: event.serviceTier ?? session.serviceTier,
                     on: event.date
                 ) ?? 0
                 for granularity in PeriodGranularity.allCases {
@@ -249,13 +252,13 @@ public enum Analytics {
                     let model = event.model ?? session.model ?? "Unknown"
                     buckets[model, default: Bucket()].usage = buckets[model, default: Bucket()].usage + event.usage
                     buckets[model, default: Bucket()].sessionIDs.insert(session.id)
-                    buckets[model, default: Bucket()].cost += pricing.estimate(usage: event.usage, model: model, on: event.date) ?? 0
+                    buckets[model, default: Bucket()].cost += pricing.estimate(usage: event.usage, model: model, serviceTier: event.serviceTier ?? session.serviceTier, on: event.date) ?? 0
                 }
             } else if startDate.map({ session.updatedAt >= $0 }) ?? true {
                 let model = session.model ?? "Unknown"
                 buckets[model, default: Bucket()].usage = buckets[model, default: Bucket()].usage + session.usage
                 buckets[model, default: Bucket()].sessionIDs.insert(session.id)
-                buckets[model, default: Bucket()].cost += pricing.estimate(usage: session.usage, model: model, on: session.updatedAt) ?? 0
+                buckets[model, default: Bucket()].cost += pricing.estimate(usage: session.usage, model: model, serviceTier: session.serviceTier, on: session.updatedAt) ?? 0
             }
             let runtimeModel = session.model ?? "Unknown"
             for turn in session.turns where turn.completed && (startDate.map({ turn.completedAt >= $0 }) ?? true) {
@@ -298,6 +301,7 @@ public enum Analytics {
                     bucket.cost += pricing.estimate(
                         usage: event.attributedUsage,
                         model: event.model ?? session.model,
+                        serviceTier: event.serviceTier ?? session.serviceTier,
                         on: event.date
                     ) ?? 0
                 }
@@ -344,6 +348,7 @@ public enum Analytics {
                     bucket.cost += pricing.estimate(
                         usage: event.attributedUsage,
                         model: event.model ?? session.model,
+                        serviceTier: event.serviceTier ?? session.serviceTier,
                         on: event.date
                     ) ?? 0
                 }

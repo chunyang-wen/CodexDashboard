@@ -365,7 +365,7 @@ public enum MetricsIndexBuilder {
         for event in session.usageEvents {
             let key = day(event.date)
             let model = event.model ?? session.model ?? "Unknown"
-            let cost = pricing.estimate(usage: event.usage, model: model, on: event.date) ?? 0
+            let cost = pricing.estimate(usage: event.usage, model: model, serviceTier: event.serviceTier ?? session.serviceTier, on: event.date) ?? 0
             var bucket = buckets[key, default: DailyBuilder()]
             bucket.usage = bucket.usage + event.usage
             bucket.cost += cost
@@ -388,7 +388,7 @@ public enum MetricsIndexBuilder {
         if session.usageEvents.isEmpty, session.usage.total > 0 {
             let key = day(session.updatedAt)
             let model = session.model ?? "Unknown"
-            let cost = pricing.estimate(usage: session.usage, model: model, on: session.updatedAt) ?? 0
+            let cost = pricing.estimate(usage: session.usage, model: model, serviceTier: session.serviceTier, on: session.updatedAt) ?? 0
             var bucket = buckets[key, default: DailyBuilder()]
             bucket.usage = bucket.usage + session.usage
             bucket.cost += cost
@@ -425,7 +425,7 @@ public enum MetricsIndexBuilder {
             value.2 = value.2 + event.attributedUsage
             if event.attributedUsage.total > 0 {
                 value.1 += 1
-                value.3 += pricing.estimate(usage: event.attributedUsage, model: event.model ?? session.model, on: event.date) ?? 0
+                value.3 += pricing.estimate(usage: event.attributedUsage, model: event.model ?? session.model, serviceTier: event.serviceTier ?? session.serviceTier, on: event.date) ?? 0
             }
             bucket.tools[event.name] = value
             buckets[key] = bucket
@@ -443,7 +443,7 @@ public enum MetricsIndexBuilder {
             value.2 = value.2 + event.attributedUsage
             if event.attributedUsage.total > 0 {
                 value.1 += 1
-                value.3 += pricing.estimate(usage: event.attributedUsage, model: event.model ?? session.model, on: event.date) ?? 0
+                value.3 += pricing.estimate(usage: event.attributedUsage, model: event.model ?? session.model, serviceTier: event.serviceTier ?? session.serviceTier, on: event.date) ?? 0
             }
             bucket.skills[event.name] = value
             buckets[key] = bucket
@@ -482,7 +482,7 @@ public enum MetricsIndexBuilder {
             models = dailyAggregate.models
         } else {
             usage = session.usage
-            cost = pricing.estimate(usage: usage, model: session.model, on: session.updatedAt) ?? 0
+            cost = pricing.estimate(usage: usage, model: session.model, serviceTier: session.serviceTier, on: session.updatedAt) ?? 0
             coveredTokens = pricing.price(for: session.model, on: session.updatedAt) != nil && usage.input > 0 ? usage.total : 0
             models = [ModelMetric(model: session.model ?? "Unknown", sessions: 1, usage: usage, activeRuntime: session.activeRuntime, estimatedCost: cost)]
         }
@@ -519,6 +519,7 @@ public enum MetricsIndexBuilder {
             String(session.skillCallEvents?.count ?? -1),
             session.projectPath,
             session.model ?? "",
+            session.serviceTier ?? "",
             (session.toolCallEvents ?? []).map(\.name).joined(separator: ","),
             (session.skillCallEvents ?? []).map(\.name).joined(separator: ",")
         ].joined(separator: ":")
