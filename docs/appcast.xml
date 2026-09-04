@@ -3,6 +3,22 @@
     <channel>
         <title>CodexDashboard</title>
         <item>
+            <title>0.2.5</title>
+            <description sparkle:format="html"><![CDATA[
+                <h3>What's new in v0.2.5</h3>
+                <ul>
+                    <li>Added service-tier-aware cost estimates, applying the Fast/Priority multiplier when the rollout reports it.</li>
+                    <li>Added bundled pricing for gpt-6-astra effective September 3, 2026, with improved historical pricing fallback.</li>
+                    <li>Preserved service-tier data through usage history and indexes, and displayed it in session details so mixed-tier sessions are priced correctly.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Fri, 04 Sep 2026 18:54:19 +0800</pubDate>
+            <sparkle:version>20260904185146</sparkle:version>
+            <sparkle:shortVersionString>0.2.5</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.2.5/CodexDashboard-0.2.5.zip" length="12315163" type="application/octet-stream" sparkle:edSignature="gewc8FCESU0hzTLknlXj6MnXFIc6x8KjTMtl5RkTIVIL7a3+5i5X/QycVvecGpWAkMfCDQnP1U8+ZUitb4DMAg=="/>
+        </item>
+        <item>
             <title>0.2.4</title>
             <description sparkle:format="html"><![CDATA[
                 <h3>What's new in v0.2.4</h3>
@@ -32,22 +48,6 @@
             <sparkle:shortVersionString>0.2.3</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.2.3/CodexDashboard-0.2.3.zip" length="12296116" type="application/octet-stream" sparkle:edSignature="yLDhGMPYJdqvktk476Gv4lk1CsLcK45zrvQYDqP1hytajAgpP2p19cIgIOcIoIyn1xFuK6jn5qCiKfkXUc58BQ=="/>
-        </item>
-        <item>
-            <title>0.2.2</title>
-            <description sparkle:format="html"><![CDATA[
-                <h3>What's new in v0.2.2</h3>
-                <ul>
-                    <li>Switching Sub2API upstream accounts now applies the selected account immediately and prevents an earlier refresh from overriding it.</li>
-                    <li>Provider credential fields now remove unsupported non-ASCII and control characters as you type.</li>
-                    <li>Improved the vertical alignment of values in the two-row menu-bar quota icon.</li>
-                </ul>
-            ]]></description>
-            <pubDate>Tue, 01 Sep 2026 20:00:01 +0800</pubDate>
-            <sparkle:version>20260901195307</sparkle:version>
-            <sparkle:shortVersionString>0.2.2</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.2.2/CodexDashboard-0.2.2.zip" length="12291280" type="application/octet-stream" sparkle:edSignature="EzYI2IBy3cFDCaNRnFcbluPwzcEmHcAtV4MesiU0lrJ7AB/0lRSTDj+GpSymmYEBlAsFTJ8WY7zDribN3sqvDQ=="/>
         </item>
     </channel>
 </rss>
