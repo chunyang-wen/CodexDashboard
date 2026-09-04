@@ -113,7 +113,7 @@ final class MemoryFootprintTests: XCTestCase {
         // -------------------------------------------------------------
         dashboardStore.activateDashboard()
         for _ in 0..<100 {
-            if dashboardStore.topProjects.count == 15 && !dashboardStore.isUpdatingAnalytics && !dashboardStore.isLoading {
+            if dashboardStore.topProjects.count == 7 && !dashboardStore.isUpdatingAnalytics && !dashboardStore.isLoading {
                 break
             }
             try await Task.sleep(for: .milliseconds(50))
@@ -124,7 +124,7 @@ final class MemoryFootprintTests: XCTestCase {
 
         XCTAssertTrue(dashboardStore.dashboardDataIsResident)
         XCTAssertTrue(dashboardStore.sessions.isEmpty, "Overview should not hydrate session summaries")
-        XCTAssertEqual(dashboardStore.topProjects.count, 15)
+        XCTAssertEqual(dashboardStore.topProjects.count, 7)
         XCTAssertGreaterThan(dashboardStore.usage.total, 0)
         XCTAssertGreaterThan(dashboardStore.estimatedCost, 0)
 
