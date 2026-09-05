@@ -6,6 +6,46 @@ import XCTest
 
 @MainActor
 final class DashboardStoreLifecycleTests: XCTestCase {
+    func testRebuildTimingFreezesFinishedStagesAndTotal() {
+        let start = ContinuousClock.now
+        var timing = RebuildTiming(now: start)
+        timing.begin("Fetching provider history", at: start.advanced(by: .seconds(2)))
+        timing.begin("Building index", at: start.advanced(by: .seconds(5)))
+        XCTAssertEqual(timing.stages[0].elapsed(at: start.advanced(by: .seconds(9))), .seconds(2))
+        XCTAssertEqual(timing.stages[1].elapsed(at: start.advanced(by: .seconds(9))), .seconds(3))
+        XCTAssertEqual(timing.stages[2].elapsed(at: start.advanced(by: .seconds(9))), .seconds(4))
+        XCTAssertEqual(timing.elapsed(at: start.advanced(by: .seconds(9))), .seconds(9))
+
+        timing.finish(at: start.advanced(by: .seconds(10)))
+        timing.finish(at: start.advanced(by: .seconds(20)))
+        XCTAssertEqual(timing.stages[2].elapsed(at: start.advanced(by: .seconds(30))), .seconds(5))
+        XCTAssertEqual(timing.elapsed(at: start.advanced(by: .seconds(30))), .seconds(10))
+    }
+
+    func testRebuildRetainsTimingsAndResetsAfterCancellation() async throws {
+        let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suiteName = "DashboardStoreLifecycleTests.Rebuild.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: userHome)
+        }
+        let store = MenuBarStore(userHome: userHome, defaults: defaults)
+        store.rebuildHistoryIndex()
+        let cancelledID = store.rebuildTiming?.id
+        store.cancelRebuildHistoryIndex()
+        XCTAssertNotNil(store.rebuildTiming?.endedAt)
+        XCTAssertEqual(store.rebuildMessage, "History index rebuild cancelled.")
+        store.rebuildHistoryIndex()
+        XCTAssertNotEqual(store.rebuildTiming?.id, cancelledID)
+        XCTAssertNil(store.rebuildTiming?.endedAt)
+        try await waitUntil { !store.isRebuildingHistory }
+        XCTAssertEqual(store.rebuildMessage, "History index rebuilt for 0 sessions.")
+        XCTAssertNotNil(store.rebuildTiming?.endedAt)
+        XCTAssertEqual(store.rebuildTiming?.stages.map(\.name), ["Preparing", "Building index", "Refreshing totals"])
+        XCTAssertTrue(store.rebuildTiming!.stages.allSatisfy { $0.endedAt != nil })
+    }
+
     func testProjectGraphSwitchingPublishesLatestAndLeavingProjectsReleasesIt() async throws {
         let userHome = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

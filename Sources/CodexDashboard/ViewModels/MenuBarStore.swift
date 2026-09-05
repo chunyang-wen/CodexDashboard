@@ -52,6 +52,45 @@ struct MenuBarAnalytics: Sendable {
     }
 }
 
+/// Monotonic timestamps keep elapsed time independent of system clock changes.
+struct RebuildTiming {
+    struct Stage {
+        let name: String
+        let startedAt: ContinuousClock.Instant
+        var endedAt: ContinuousClock.Instant?
+
+        func elapsed(at now: ContinuousClock.Instant) -> Duration {
+            startedAt.duration(to: endedAt ?? now)
+        }
+    }
+
+    let id = UUID()
+    let startedAt: ContinuousClock.Instant
+    private(set) var endedAt: ContinuousClock.Instant?
+    private(set) var stages: [Stage]
+
+    init(now: ContinuousClock.Instant = .now) {
+        startedAt = now
+        stages = [Stage(name: "Preparing", startedAt: now)]
+    }
+
+    mutating func begin(_ name: String, at now: ContinuousClock.Instant = .now) {
+        guard endedAt == nil else { return }
+        stages[stages.count - 1].endedAt = now
+        stages.append(Stage(name: name, startedAt: now))
+    }
+
+    mutating func finish(at now: ContinuousClock.Instant = .now) {
+        guard endedAt == nil else { return }
+        stages[stages.count - 1].endedAt = now
+        endedAt = now
+    }
+
+    func elapsed(at now: ContinuousClock.Instant) -> Duration {
+        startedAt.duration(to: endedAt ?? now)
+    }
+}
+
 /// The menu-bar residency boundary. This store contains only compact persisted
 /// projections and display preferences. Dashboard data is owned by the helper.
 @MainActor
@@ -64,6 +103,7 @@ final class MenuBarStore: ObservableObject {
     @Published private(set) var isRebuildingHistory = false
     @Published private(set) var rebuildProgress: Double? = nil
     @Published private(set) var rebuildMessage: String? = nil
+    @Published private(set) var rebuildTiming: RebuildTiming?
     @Published private(set) var isLoading = false
     @Published private(set) var menuBarDataIsResident = false
 
@@ -700,6 +740,7 @@ final class MenuBarStore: ObservableObject {
 
     func cancelRebuildHistoryIndex() {
         guard isRebuildingHistory else { return }
+        rebuildTiming?.finish()
         rebuildTask?.cancel()
         rebuildTask = nil
         isRebuildingHistory = false
@@ -710,6 +751,8 @@ final class MenuBarStore: ObservableObject {
     func rebuildHistoryIndex() {
         guard !isRebuildingHistory else { return }
         isRebuildingHistory = true
+        let timing = RebuildTiming()
+        rebuildTiming = timing
         rebuildProgress = nil
         rebuildMessage = "Rebuilding the history index…"
 
@@ -720,14 +763,18 @@ final class MenuBarStore: ObservableObject {
         rebuildTask = Task { [weak self] in
             guard let self else { return }
             defer {
-                self.isRebuildingHistory = false
-                self.rebuildProgress = nil
-                self.rebuildTask = nil
+                if self.rebuildTiming?.id == timing.id {
+                    self.rebuildTiming?.finish()
+                    self.isRebuildingHistory = false
+                    self.rebuildProgress = nil
+                    self.rebuildTask = nil
+                }
             }
             do {
                 if provider == .sub2API,
                    let configuration = await DashboardPreferences.refreshedSub2APIConfiguration(defaults: defaults) {
                     if Task.isCancelled { return }
+                    self.rebuildTiming?.begin("Fetching provider history")
                     self.rebuildMessage = "Fetching provider usage history…"
                     self.rebuildProgress = 0.05
                     let earliest = (try? await self.historicalStore.earliestSessionDate())
@@ -740,6 +787,7 @@ final class MenuBarStore: ObservableObject {
                         calendar: calendar
                     ), !historicalCosts.isEmpty {
                         if Task.isCancelled { return }
+                        self.rebuildTiming?.begin("Saving provider history")
                         _ = try? await self.historicalStore.recordProviderUsageCosts(
                             historicalCosts,
                             calendar: calendar
@@ -747,6 +795,7 @@ final class MenuBarStore: ObservableObject {
                     }
                 }
                 if Task.isCancelled { return }
+                self.rebuildTiming?.begin("Building index")
                 self.rebuildMessage = "Rebuilding the history index…"
                 self.rebuildProgress = 0.2
                 let pricing = try await self.historicalStore.storedPricingHistory()
@@ -755,19 +804,24 @@ final class MenuBarStore: ObservableObject {
                     calendar: calendar,
                     progress: { [weak self] progress, message in
                         Task { @MainActor [weak self] in
-                            guard let self, self.isRebuildingHistory else { return }
+                            guard let self, self.isRebuildingHistory, self.rebuildTiming?.id == timing.id,
+                                  self.rebuildTiming?.stages.last?.name == "Building index" else { return }
                             self.rebuildProgress = 0.2 + 0.8 * progress
                             self.rebuildMessage = message
                         }
                     }
                 )
                 if Task.isCancelled { return }
+                self.rebuildTiming?.begin("Refreshing totals")
                 await self.reloadCompactSnapshot(includeSessionCount: true)
+                if Task.isCancelled { return }
                 self.metricsDidChange?()
                 self.rebuildMessage = "History index rebuilt for \(rebuilt.sessions.count.formatted()) sessions."
             } catch is CancellationError {
+                guard self.rebuildTiming?.id == timing.id else { return }
                 self.rebuildMessage = "History index rebuild cancelled."
             } catch {
+                guard self.rebuildTiming?.id == timing.id else { return }
                 guard !Task.isCancelled else {
                     self.rebuildMessage = "History index rebuild cancelled."
                     return

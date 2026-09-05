@@ -38,6 +38,110 @@ struct DashboardSettingsView: View {
     private let settingsControlWidth: CGFloat = 190
 
     var body: some View {
+        TabView {
+            generalSettings
+                .tabItem { Label("General", systemImage: "gearshape") }
+            subscriptionSettings
+                .tabItem { Label("Subscription", systemImage: "person.crop.circle") }
+            dataSettings
+                .tabItem { Label("Data & Maintenance", systemImage: "externaldrive") }
+            updateSettings
+                .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
+        }
+        .onAppear {
+            selectedSubscriptionProviderRaw = subscriptionProviderRaw
+            cliProxyAPIEndpoint = DashboardPreferences.sharedDefaults().string(
+                forKey: DashboardPreferences.cliProxyAPIEndpointKey
+            ) ?? cliProxyAPIEndpoint
+            sub2APIEndpoint = DashboardPreferences.sharedDefaults().string(
+                forKey: DashboardPreferences.sub2APIEndpointKey
+            ) ?? sub2APIEndpoint
+            switch selectedSubscriptionProvider {
+            case .default:
+                break
+            case .cliProxyAPI:
+                cliProxyAPIManagementKey = DashboardKeychain.readManagementKey() ?? ""
+            case .sub2API:
+                sub2APIAdminToken = DashboardKeychain.readSub2APIAdminToken() ?? ""
+                sub2APIRefreshToken = DashboardKeychain.readSub2APIRefreshToken() ?? ""
+            }
+            sub2APIAccountID = DashboardPreferences.sharedDefaults().string(
+                forKey: DashboardPreferences.sub2APIAccountIDKey
+            ) ?? ""
+            reloadSub2APIAccounts()
+        }
+    }
+
+    private var generalSettings: some View {
+        Form {
+            Section("General") {
+                Toggle("Launch at login", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { _, isEnabled in
+                        updateLaunchAtLogin(isEnabled)
+                    }
+                if let launchAtLoginError {
+                    Text(launchAtLoginError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                Toggle("Show menu bar icon", isOn: $showMenuBarIcon)
+                HStack {
+                    Text("Quota icon")
+                    Spacer()
+                    Picker("Quota icon", selection: $menuBarQuotaIconStyle) {
+                        ForEach(MenuBarQuotaIconStyle.allCases) { style in
+                            HStack(spacing: 8) {
+                                MenuBarQuotaIcon(
+                                    windows: quotaIconPreviewWindows,
+                                    style: style
+                                )
+                                    .accessibilityHidden(true)
+                                Text(style.label)
+                            }
+                            .tag(style.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: settingsControlWidth, alignment: .trailing)
+                }
+                .disabled(!showMenuBarIcon)
+                .frame(maxWidth: .infinity)
+                HStack {
+                    Text("Refresh metrics")
+                    Spacer()
+                    Picker("Refresh metrics", selection: refreshBinding) {
+                        Text("Manually").tag(TimeInterval(0))
+                        Text("Every 15 seconds").tag(TimeInterval(15))
+                        Text("Every minute").tag(TimeInterval(60))
+                        Text("Every 5 minutes").tag(TimeInterval(300))
+                    }
+                    .labelsHidden()
+                    .frame(width: settingsControlWidth, alignment: .trailing)
+                }
+                .frame(maxWidth: .infinity)
+                HStack {
+                    Text("First day of week")
+                    Spacer()
+                    Picker("First day of week", selection: $weekStartsMonday) {
+                        Text("Monday").tag(true)
+                        Text("Sunday").tag(false)
+                    }
+                    .onChange(of: weekStartsMonday) { _, _ in
+                        store.updateWeekStartsMonday(weekStartsMonday)
+                    }
+                    .labelsHidden()
+                    .frame(width: settingsControlWidth, alignment: .trailing)
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .formStyle(.grouped)
+        .padding(4)
+        .frame(width: 560)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var subscriptionSettings: some View {
         Form {
             Section("Subscription source") {
                 Picker("Provider", selection: $selectedSubscriptionProviderRaw) {
@@ -155,68 +259,15 @@ struct DashboardSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+        }
+        .formStyle(.grouped)
+        .padding(4)
+        .frame(width: 560)
+        .fixedSize(horizontal: false, vertical: true)
+    }
 
-            Section("General") {
-                Toggle("Launch at login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, isEnabled in
-                        updateLaunchAtLogin(isEnabled)
-                    }
-                if let launchAtLoginError {
-                    Text(launchAtLoginError)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-                Toggle("Show menu bar icon", isOn: $showMenuBarIcon)
-                HStack {
-                    Text("Quota icon")
-                    Spacer()
-                    Picker("Quota icon", selection: $menuBarQuotaIconStyle) {
-                        ForEach(MenuBarQuotaIconStyle.allCases) { style in
-                            HStack(spacing: 8) {
-                                MenuBarQuotaIcon(
-                                    windows: quotaIconPreviewWindows,
-                                    style: style
-                                )
-                                    .accessibilityHidden(true)
-                                Text(style.label)
-                            }
-                            .tag(style.rawValue)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: settingsControlWidth, alignment: .trailing)
-                }
-                .disabled(!showMenuBarIcon)
-                .frame(maxWidth: .infinity)
-                HStack {
-                    Text("Refresh metrics")
-                    Spacer()
-                    Picker("Refresh metrics", selection: refreshBinding) {
-                        Text("Manually").tag(TimeInterval(0))
-                        Text("Every 15 seconds").tag(TimeInterval(15))
-                        Text("Every minute").tag(TimeInterval(60))
-                        Text("Every 5 minutes").tag(TimeInterval(300))
-                    }
-                    .labelsHidden()
-                    .frame(width: settingsControlWidth, alignment: .trailing)
-                }
-                .frame(maxWidth: .infinity)
-                HStack {
-                    Text("First day of week")
-                    Spacer()
-                    Picker("First day of week", selection: $weekStartsMonday) {
-                        Text("Monday").tag(true)
-                        Text("Sunday").tag(false)
-                    }
-                    .onChange(of: weekStartsMonday) { _, _ in
-                        store.updateWeekStartsMonday(weekStartsMonday)
-                    }
-                    .labelsHidden()
-                    .frame(width: settingsControlWidth, alignment: .trailing)
-                }
-                .frame(maxWidth: .infinity)
-            }
-
+    private var dataSettings: some View {
+        Form {
             Section("Codex data") {
                 LabeledContent("Location") {
                     Text(store.codexHome.path(percentEncoded: false))
@@ -275,8 +326,25 @@ struct DashboardSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if let timing = store.rebuildTiming {
+                    if store.isRebuildingHistory {
+                        TimelineView(.periodic(from: .now, by: 1)) { _ in
+                            rebuildTimingSummary(timing)
+                        }
+                    } else {
+                        rebuildTimingSummary(timing)
+                    }
+                }
             }
+        }
+        .formStyle(.grouped)
+        .padding(4)
+        .frame(width: 560)
+        .fixedSize(horizontal: false, vertical: true)
+    }
 
+    private var updateSettings: some View {
+        Form {
             Section("Updates") {
                 LabeledContent("Software Update") {
                     Button("Check for Updates…") {
@@ -291,28 +359,8 @@ struct DashboardSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(4)
-        .onAppear {
-            selectedSubscriptionProviderRaw = subscriptionProviderRaw
-            cliProxyAPIEndpoint = DashboardPreferences.sharedDefaults().string(
-                forKey: DashboardPreferences.cliProxyAPIEndpointKey
-            ) ?? cliProxyAPIEndpoint
-            sub2APIEndpoint = DashboardPreferences.sharedDefaults().string(
-                forKey: DashboardPreferences.sub2APIEndpointKey
-            ) ?? sub2APIEndpoint
-            switch selectedSubscriptionProvider {
-            case .default:
-                break
-            case .cliProxyAPI:
-                cliProxyAPIManagementKey = DashboardKeychain.readManagementKey() ?? ""
-            case .sub2API:
-                sub2APIAdminToken = DashboardKeychain.readSub2APIAdminToken() ?? ""
-                sub2APIRefreshToken = DashboardKeychain.readSub2APIRefreshToken() ?? ""
-            }
-            sub2APIAccountID = DashboardPreferences.sharedDefaults().string(
-                forKey: DashboardPreferences.sub2APIAccountIDKey
-            ) ?? ""
-            reloadSub2APIAccounts()
-        }
+        .frame(width: 560)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var appVersionDescription: String {
@@ -571,6 +619,23 @@ struct DashboardSettingsView: View {
             sub2APIAdminPassword = ""
             sub2APIValidationState = .valid(result.message)
         }
+    }
+
+    private func rebuildTimingSummary(_ timing: RebuildTiming) -> some View {
+        let now = ContinuousClock.now
+        return VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(timing.stages.enumerated()), id: \.offset) { _, stage in
+                LabeledContent(stage.name) {
+                    Text(stage.elapsed(at: now).formatted(.time(pattern: .minuteSecond(padMinuteToLength: 2, fractionalSecondsLength: 1))))
+                }
+            }
+            LabeledContent("Total time") {
+                Text(timing.elapsed(at: now).formatted(.time(pattern: .minuteSecond(padMinuteToLength: 2, fractionalSecondsLength: 1))))
+            }
+            .fontWeight(.medium)
+        }
+        .font(.caption.monospacedDigit())
+        .foregroundStyle(.secondary)
     }
 
     private func updateLaunchAtLogin(_ isEnabled: Bool) {

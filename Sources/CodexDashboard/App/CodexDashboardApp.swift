@@ -430,7 +430,7 @@ private struct CodexDashboardApplication: App {
                 .environmentObject(appDelegate.menuStore)
                 .background(AppWindowIdentifier(identifier: .settings))
         }
-        .defaultSize(width: 520, height: 420)
+        .windowResizability(.contentSize)
         .commands {
             CommandGroup(replacing: .appSettings) {
                 SettingsLink()

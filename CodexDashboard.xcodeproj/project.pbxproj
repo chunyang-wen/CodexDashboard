@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		642E3CED304BDAFC0039C705 /* Settings in Frameworks */ = {isa = PBXBuildFile; productRef = 642E3CEC304BDAFC0039C705 /* Settings */; };
 		64486C0E3039979500BD3175 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 64486C0D3039979500BD3175 /* Sparkle */; };
 		A10000000000000000000001 /* Analytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* Analytics.swift */; };
 		A10000000000000000000002 /* CodexStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* CodexStore.swift */; };
@@ -44,20 +45,20 @@
 		A70000000000000000000001 /* HelperMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000001 /* HelperMain.swift */; };
 		A70000000000000000000002 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000004 /* Assets.xcassets */; };
 		A70000000000000000000003 /* CodexDashboardUI.app in Embed Helpers */ = {isa = PBXBuildFile; fileRef = B70000000000000000000003 /* CodexDashboardUI.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
-		A70000000000000000000004 /* MetricComponents.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* MetricComponents.swift */; };
-		A70000000000000000000005 /* ContentView.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* ContentView.swift */; };
-		A70000000000000000000006 /* DashboardStore.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* DashboardStore.swift */; };
-		A70000000000000000000007 /* ConversationInspectorView.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* ConversationInspectorView.swift */; };
+		A70000000000000000000004 /* MetricComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* MetricComponents.swift */; };
+		A70000000000000000000005 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* ContentView.swift */; };
+		A70000000000000000000006 /* DashboardStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* DashboardStore.swift */; };
+		A70000000000000000000007 /* ConversationInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* ConversationInspectorView.swift */; };
 		A7000000000000000000000A /* DashboardHelperView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000004 /* DashboardHelperView.swift */; };
 		A7000000000000000000000B /* DashboardPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* DashboardPreferences.swift */; };
 		A7000000000000000000000C /* ProjectStructuredView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* ProjectStructuredView.swift */; };
 		A7000000000000000000000D /* SessionGraphCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000B /* SessionGraphCanvas.swift */; };
-		A70000000000000000000010 /* DashboardAnalytics.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000001 /* DashboardAnalytics.swift */; };
-		A70000000000000000000011 /* OverviewView.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000002 /* OverviewView.swift */; };
-		A70000000000000000000012 /* ProjectsView.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000003 /* ProjectsView.swift */; };
-		A70000000000000000000013 /* ModelsView.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000004 /* ModelsView.swift */; };
-		A70000000000000000000014 /* ModelPricingView.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000005 /* ModelPricingView.swift */; };
-		A70000000000000000000015 /* BillingView.swift in Helper Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000006 /* BillingView.swift */; };
+		A70000000000000000000010 /* DashboardAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000001 /* DashboardAnalytics.swift */; };
+		A70000000000000000000011 /* OverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000002 /* OverviewView.swift */; };
+		A70000000000000000000012 /* ProjectsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000003 /* ProjectsView.swift */; };
+		A70000000000000000000013 /* ModelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000004 /* ModelsView.swift */; };
+		A70000000000000000000014 /* ModelPricingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000005 /* ModelPricingView.swift */; };
+		A70000000000000000000015 /* BillingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000006 /* BillingView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -190,6 +191,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				642E3CED304BDAFC0039C705 /* Settings in Frameworks */,
 				A50000000000000000000001 /* CodexMetricsCore.framework in Frameworks */,
 				64486C0E3039979500BD3175 /* Sparkle in Frameworks */,
 			);
@@ -278,6 +280,54 @@
 				B60000000000000000000004 /* Assets.xcassets */,
 			);
 			path = CodexDashboard;
+			sourceTree = "<group>";
+		};
+		F10000000000000000000005 /* CodexMetricsCLI */ = {
+			isa = PBXGroup;
+			children = (
+				B30000000000000000000001 /* main.swift */,
+			);
+			path = CodexMetricsCLI;
+			sourceTree = "<group>";
+		};
+		F10000000000000000000006 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				F10000000000000000000008 /* CodexMetricsCoreTests */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		F10000000000000000000007 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B50000000000000000000001 /* CodexMetricsCore.framework */,
+				B50000000000000000000002 /* CodexDashboard.app */,
+				B70000000000000000000003 /* CodexDashboardUI.app */,
+				B50000000000000000000003 /* codex-metrics */,
+				B50000000000000000000004 /* CodexMetricsCoreTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		F10000000000000000000008 /* CodexMetricsCoreTests */ = {
+			isa = PBXGroup;
+			children = (
+				B40000000000000000000001 /* AnalyticsTests.swift */,
+				B40000000000000000000002 /* SessionGraphTests.swift */,
+				B40000000000000000000003 /* SessionGraphLayoutTests.swift */,
+			);
+			path = CodexMetricsCoreTests;
+			sourceTree = "<group>";
+		};
+		F10000000000000000000009 /* CodexDashboardUI */ = {
+			isa = PBXGroup;
+			children = (
+				B70000000000000000000004 /* DashboardHelperView.swift */,
+				B70000000000000000000001 /* HelperMain.swift */,
+				B70000000000000000000002 /* Info.plist */,
+			);
+			path = CodexDashboardUI;
 			sourceTree = "<group>";
 		};
 		F20000000000000000000001 /* App */ = {
@@ -406,54 +456,6 @@
 				B90000000000000000000008 /* DashboardSettingsView.swift */,
 			);
 			path = Settings;
-			sourceTree = "<group>";
-		};
-		F10000000000000000000005 /* CodexMetricsCLI */ = {
-			isa = PBXGroup;
-			children = (
-				B30000000000000000000001 /* main.swift */,
-			);
-			path = CodexMetricsCLI;
-			sourceTree = "<group>";
-		};
-		F10000000000000000000006 /* Tests */ = {
-			isa = PBXGroup;
-			children = (
-				F10000000000000000000008 /* CodexMetricsCoreTests */,
-			);
-			path = Tests;
-			sourceTree = "<group>";
-		};
-		F10000000000000000000007 /* Products */ = {
-			isa = PBXGroup;
-			children = (
-				B50000000000000000000001 /* CodexMetricsCore.framework */,
-				B50000000000000000000002 /* CodexDashboard.app */,
-				B70000000000000000000003 /* CodexDashboardUI.app */,
-				B50000000000000000000003 /* codex-metrics */,
-				B50000000000000000000004 /* CodexMetricsCoreTests.xctest */,
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
-		F10000000000000000000008 /* CodexMetricsCoreTests */ = {
-			isa = PBXGroup;
-			children = (
-				B40000000000000000000001 /* AnalyticsTests.swift */,
-				B40000000000000000000002 /* SessionGraphTests.swift */,
-				B40000000000000000000003 /* SessionGraphLayoutTests.swift */,
-			);
-			path = CodexMetricsCoreTests;
-			sourceTree = "<group>";
-		};
-		F10000000000000000000009 /* CodexDashboardUI */ = {
-			isa = PBXGroup;
-			children = (
-				B70000000000000000000004 /* DashboardHelperView.swift */,
-				B70000000000000000000001 /* HelperMain.swift */,
-				B70000000000000000000002 /* Info.plist */,
-			);
-			path = CodexDashboardUI;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -587,6 +589,7 @@
 			mainGroup = F10000000000000000000001;
 			packageReferences = (
 				64486C0C3039979500BD3175 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				642E3CEB304BDAFC0039C705 /* XCRemoteSwiftPackageReference "Settings" */,
 			);
 			productRefGroup = F10000000000000000000007 /* Products */;
 			projectDirPath = "";
@@ -681,20 +684,20 @@
 			buildActionMask = 2147483647;
 			files = (
 				A70000000000000000000001 /* HelperMain.swift in Sources */,
-				A70000000000000000000004 /* MetricComponents.swift in Helper Sources */,
-				A70000000000000000000005 /* ContentView.swift in Helper Sources */,
-				A70000000000000000000006 /* DashboardStore.swift in Helper Sources */,
-				A70000000000000000000007 /* ConversationInspectorView.swift in Helper Sources */,
+				A70000000000000000000004 /* MetricComponents.swift in Sources */,
+				A70000000000000000000005 /* ContentView.swift in Sources */,
+				A70000000000000000000006 /* DashboardStore.swift in Sources */,
+				A70000000000000000000007 /* ConversationInspectorView.swift in Sources */,
 				A7000000000000000000000A /* DashboardHelperView.swift in Sources */,
 				A7000000000000000000000B /* DashboardPreferences.swift in Sources */,
 				A7000000000000000000000C /* ProjectStructuredView.swift in Sources */,
 				A7000000000000000000000D /* SessionGraphCanvas.swift in Sources */,
-				A70000000000000000000010 /* DashboardAnalytics.swift in Helper Sources */,
-				A70000000000000000000011 /* OverviewView.swift in Helper Sources */,
-				A70000000000000000000012 /* ProjectsView.swift in Helper Sources */,
-				A70000000000000000000013 /* ModelsView.swift in Helper Sources */,
-				A70000000000000000000014 /* ModelPricingView.swift in Helper Sources */,
-				A70000000000000000000015 /* BillingView.swift in Helper Sources */,
+				A70000000000000000000010 /* DashboardAnalytics.swift in Sources */,
+				A70000000000000000000011 /* OverviewView.swift in Sources */,
+				A70000000000000000000012 /* ProjectsView.swift in Sources */,
+				A70000000000000000000013 /* ModelsView.swift in Sources */,
+				A70000000000000000000014 /* ModelPricingView.swift in Sources */,
+				A70000000000000000000015 /* BillingView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1032,6 +1035,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		642E3CEB304BDAFC0039C705 /* XCRemoteSwiftPackageReference "Settings" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sindresorhus/Settings";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.1.2;
+			};
+		};
 		64486C0C3039979500BD3175 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/sparkle-project/Sparkle";
@@ -1043,6 +1054,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		642E3CEC304BDAFC0039C705 /* Settings */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 642E3CEB304BDAFC0039C705 /* XCRemoteSwiftPackageReference "Settings" */;
+			productName = Settings;
+		};
 		64486C0D3039979500BD3175 /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 64486C0C3039979500BD3175 /* XCRemoteSwiftPackageReference "Sparkle" */;
