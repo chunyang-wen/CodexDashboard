@@ -3,6 +3,14 @@
     <channel>
         <title>CodexDashboard</title>
         <item>
+            <title>0.2.7</title>
+            <pubDate>Sun, 25 Oct 2026 20:44:18 +0800</pubDate>
+            <sparkle:version>20261025204222</sparkle:version>
+            <sparkle:shortVersionString>0.2.7</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.2.7/CodexDashboard-0.2.7.zip" length="12478238" type="application/octet-stream" sparkle:edSignature="14fkdPTnzAKb4bsPtT4qoQkSkvHB1uN2S2BvAT6Mik/46VYqrUpfVu4o8me99lEYBKod9gZC3jJ4TBpNFfR6BQ=="/>
+        </item>
+        <item>
             <title>0.2.6</title>
             <description sparkle:format="html"><![CDATA[
                 <h3>What's new in v0.2.6</h3>
@@ -33,21 +41,6 @@
             <sparkle:shortVersionString>0.2.5</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.2.5/CodexDashboard-0.2.5.zip" length="12315163" type="application/octet-stream" sparkle:edSignature="gewc8FCESU0hzTLknlXj6MnXFIc6x8KjTMtl5RkTIVIL7a3+5i5X/QycVvecGpWAkMfCDQnP1U8+ZUitb4DMAg=="/>
-        </item>
-        <item>
-            <title>0.2.4</title>
-            <description sparkle:format="html"><![CDATA[
-                <h3>What's new in v0.2.4</h3>
-                <ul>
-                    <li>Added a fallback for reading banked reset credits from the usage endpoint when the dedicated reset-credit endpoint is unavailable or rate-limited.</li>
-                    <li>Added coverage for both snake_case usage payloads and camelCase app-server payloads.</li>
-                </ul>
-            ]]></description>
-            <pubDate>Fri, 04 Sep 2026 11:37:40 +0800</pubDate>
-            <sparkle:version>20260904113431</sparkle:version>
-            <sparkle:shortVersionString>0.2.4</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/chunyang-wen/CodexDashboard/releases/download/v0.2.4/CodexDashboard-0.2.4.zip" length="12299129" type="application/octet-stream" sparkle:edSignature="HDVxEwDkFp7srbsUVW+pvy5/sxW7n1E6EgjbWh+bO95s5sOgL9/Ebv3JXnW6M3ChcMbVy97B760rNdpTGXJeDg=="/>
         </item>
     </channel>
 </rss>
