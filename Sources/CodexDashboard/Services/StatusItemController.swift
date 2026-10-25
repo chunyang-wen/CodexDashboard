@@ -113,12 +113,13 @@ final class StatusItemController: NSObject {
 
     func dismissPopover() {
         removeClickMonitors()
-        panel?.orderOut(nil)
+        panel?.contentViewController = nil
+        panel?.close()
         panel = nil
         store.releasePopover()
     }
 
-    private func showPopover(anchor: NSRect) {
+    func showPopover(anchor: NSRect) {
         store.loadPopover()
         let root = MenuBarDashboardView(
             onCommand: { [weak self] command in

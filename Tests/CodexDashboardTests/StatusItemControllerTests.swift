@@ -1,9 +1,75 @@
 import AppKit
 import CodexMetricsCore
 import XCTest
+import SwiftUI
 @testable import CodexDashboard
 
 final class StatusItemControllerTests: XCTestCase {
+    @MainActor
+    func testSettingsCloseReleasesContentAndReopenRestoresItAcrossTwentyCycles() async throws {
+        _ = NSApplication.shared
+        let tracker = SettingsViewTracker()
+        let host = NSHostingController(rootView: SettingsWindowContent {
+            SettingsTrackedView(tracker: tracker)
+        })
+        let window = NSWindow(contentViewController: host)
+        window.identifier = NSUserInterfaceItemIdentifier("CodexDashboard.settings")
+        window.isReleasedWhenClosed = false
+        defer {
+            window.contentViewController = nil
+            window.close()
+        }
+        host.view.layoutSubtreeIfNeeded()
+        try await waitUntil { tracker.view != nil }
+        let unrelated = NSWindow()
+        unrelated.isReleasedWhenClosed = false
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: unrelated)
+        XCTAssertNotNil(tracker.view, "Closing another window must not unload Settings")
+        for _ in 0..<20 {
+            NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: window)
+            try await waitUntil { tracker.view == nil }
+            NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+            try await waitUntil { tracker.view != nil }
+        }
+        XCTAssertEqual(tracker.createdCount, 21)
+    }
+
+    @MainActor
+    func testPopoverDismissalReleasesHostingControllerAcrossTwentyCycles() async throws {
+        _ = NSApplication.shared
+        let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "StatusItemControllerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(userHome.appendingPathComponent(".codex").path, forKey: DashboardPreferences.codexDataPathKey)
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: userHome)
+        }
+        let store = MenuBarStore(userHome: userHome, defaults: defaults)
+        let controller = StatusItemController(store: store, defaults: defaults, commandHandler: { _ in })
+        defer { controller.dismissPopover() }
+        for _ in 0..<20 {
+            let previousWindows = Set(NSApp.windows.map(ObjectIdentifier.init))
+            controller.showPopover(anchor: NSRect(x: 100, y: 800, width: 24, height: 24))
+            weak var hostingController = NSApp.windows.first {
+                !previousWindows.contains(ObjectIdentifier($0)) && $0 is NSPanel
+            }?.contentViewController
+            XCTAssertNotNil(hostingController)
+            controller.dismissPopover()
+            try await waitUntil { hostingController == nil }
+            XCTAssertFalse(store.menuBarDataIsResident)
+        }
+    }
+
+    @MainActor
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        for _ in 0..<100 {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("UI content was not released or restored within one second")
+    }
+
     private let panelSize = NSSize(width: 390, height: 620)
 
     func testPanelUsesScreenContainingStatusItemOnSecondDisplay() throws {
@@ -202,4 +268,23 @@ final class StatusItemControllerTests: XCTestCase {
         }
         return false
     }
+}
+
+@MainActor
+private final class SettingsViewTracker {
+    weak var view: NSView?
+    var createdCount = 0
+}
+
+private struct SettingsTrackedView: NSViewRepresentable {
+    let tracker: SettingsViewTracker
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
+        tracker.view = view
+        tracker.createdCount += 1
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {}
 }

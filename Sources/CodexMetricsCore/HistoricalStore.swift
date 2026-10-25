@@ -2058,6 +2058,34 @@ final class MetricsDatabase: @unchecked Sendable {
         try storeMetadata(eventID, key: key)
     }
 
+    func metricIndexRevisions(for sessionIDs: [String]) throws -> (context: Data?, revisions: [String: String]) {
+        try lockedThrowing {
+            guard let contextStatement = prepare("SELECT value FROM metadata WHERE key = 'metric_index_context'"),
+                  let revisionStatement = prepare("SELECT source_revision FROM metric_session_index WHERE session_id = ?") else {
+                throw databaseError()
+            }
+            defer {
+                sqlite3_finalize(contextStatement)
+                sqlite3_finalize(revisionStatement)
+            }
+            let contextResult = sqlite3_step(contextStatement)
+            guard contextResult == SQLITE_ROW || contextResult == SQLITE_DONE else { throw databaseError() }
+            let context = contextResult == SQLITE_ROW ? data(contextStatement, 0) : nil
+            var revisions: [String: String] = [:]
+            for id in sessionIDs {
+                sqlite3_reset(revisionStatement)
+                sqlite3_clear_bindings(revisionStatement)
+                bind(id, to: revisionStatement, at: 1)
+                let result = sqlite3_step(revisionStatement)
+                guard result == SQLITE_ROW || result == SQLITE_DONE else { throw databaseError() }
+                if result == SQLITE_ROW, let bytes = sqlite3_column_text(revisionStatement, 0) {
+                    revisions[id] = String(cString: bytes)
+                }
+            }
+            return (context, revisions)
+        }
+    }
+
     func loadMetricIndex() throws -> (context: Data?, sessions: [IndexedSessionMetrics], days: [IndexedDailyMetrics]) {
         try lockedThrowing {
             let decoder = Self.decoder()
@@ -2555,6 +2583,8 @@ public actor HistoricalStore {
     private var subscriptionCache: SubscriptionSnapshot?
     private var didLoadSubscription = false
 
+    var hasResidentMetricsIndex: Bool { metricsIndexCache != nil }
+
     public init(userHome: URL = FileManager.default.homeDirectoryForCurrentUser) {
         let directory = userHome.appendingPathComponent("Library/Application Support/CodexDashboard", isDirectory: true)
         self.url = directory.appendingPathComponent("history-v1.json")
@@ -2918,7 +2948,7 @@ public actor HistoricalStore {
             try database.storePricing(mergedPricing)
         }
         if !changed.isEmpty {
-            _ = try updateMetricsIndex(for: changed, pricing: mergedPricing)
+            try updateStoredMetricsIndex(for: changed, pricing: mergedPricing)
         }
         return try database.historicalSessionCount()
     }
@@ -3223,6 +3253,51 @@ public actor HistoricalStore {
         metricsIndexCache = .empty
         metricsIndexContext = nil
         return try metricsIndex(for: sessions, pricing: pricing, calendar: calendar, progress: progress)
+    }
+
+    /// Updates durable contributions without hydrating the full index in the
+    /// resident menu-bar process. Unchanged sessions cause no write transaction.
+    public func updateStoredMetricsIndex(
+        for sessions: [SessionMetric],
+        pricing: PricingHistory = .bundled,
+        calendar: Calendar = .current
+    ) throws {
+        guard !sessions.isEmpty else { return }
+        defer {
+            archive = nil
+            metricsIndexCache = nil
+            metricsIndexContext = nil
+        }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        encoder.outputFormatting = [.sortedKeys]
+        let context = try encoder.encode(MetricsIndexContext(
+            schemaVersion: 4,
+            timeZone: calendar.timeZone.identifier,
+            pricing: pricing
+        ))
+        guard let database else {
+            _ = try updateMetricsIndex(for: sessions, pricing: pricing, calendar: calendar)
+            return
+        }
+        var stored = try database.metricIndexRevisions(for: sessions.map(\.id))
+        if stored.context != context {
+            // Schema, timezone and pricing changes still use the existing
+            // rebuild rules. Only this exceptional path loads the full index.
+            metricsIndexCache = nil
+            metricsIndexContext = nil
+            _ = try metricsIndex(pricing: pricing, calendar: calendar)
+            stored = try database.metricIndexRevisions(for: sessions.map(\.id))
+        }
+        var records: [(IndexedSessionMetrics, [IndexedDailyMetrics])] = []
+        for session in sessions {
+            try Task.checkCancellation()
+            guard stored.revisions[session.id] != MetricsIndexBuilder.sourceRevision(for: session) else { continue }
+            let built = MetricsIndexBuilder.build(session: session, pricing: pricing, calendar: calendar)
+            records.append((built.session, built.days))
+        }
+        guard !records.isEmpty else { return }
+        try database.updateMetricIndex(records, context: context, reset: false, removing: [])
     }
 
     /// Incrementally replaces only the metric-index contribution for the

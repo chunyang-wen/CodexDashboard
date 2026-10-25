@@ -420,15 +420,44 @@ enum MenuBarQuotaIconStyle: String, CaseIterable, Identifiable {
     }
 }
 
+/// SwiftUI keeps the Settings window cached after closing it. Keep its
+/// observation-heavy form resident only while that window is in use.
+struct SettingsWindowContent<Content: View>: View {
+    let content: () -> Content
+    @State private var isPresented = true
+
+    var body: some View {
+        Group {
+            if isPresented {
+                content()
+            } else {
+                Color.clear
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { notification in
+            guard let window = notification.object as? NSWindow,
+                  window.identifier == .settings else { return }
+            isPresented = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
+            guard let window = notification.object as? NSWindow,
+                  window.identifier == .settings else { return }
+            isPresented = true
+        }
+    }
+}
+
 @main
 private struct CodexDashboardApplication: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
         Settings {
-            DashboardSettingsView()
-                .environmentObject(appDelegate.menuStore)
-                .background(AppWindowIdentifier(identifier: .settings))
+            SettingsWindowContent {
+                DashboardSettingsView()
+                    .environmentObject(appDelegate.menuStore)
+            }
+            .background(AppWindowIdentifier(identifier: .settings))
         }
         .windowResizability(.contentSize)
         .commands {

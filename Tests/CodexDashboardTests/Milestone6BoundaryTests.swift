@@ -153,8 +153,12 @@ final class Milestone6BoundaryTests: XCTestCase {
         }
         XCTAssertTrue(hostSources.contains("CodexSourceWatcher.swift in Sources"))
         XCTAssertFalse(hostSources.contains("Charts"))
-        XCTAssertTrue(project.contains("ContentView.swift in Helper Sources"))
-        XCTAssertTrue(project.contains("DashboardStore.swift in Helper Sources"))
+        let helperBuild = try XCTUnwrap(
+            project.components(separatedBy: "E50000000000000000000001 /* Sources */ = {").dropFirst().first
+        )
+        let helperSources = helperBuild.components(separatedBy: ";\n\t\t};").first ?? ""
+        XCTAssertTrue(helperSources.contains("ContentView.swift in Sources"))
+        XCTAssertTrue(helperSources.contains("DashboardStore.swift in Sources"))
         XCTAssertFalse(project.contains("CodexSourceWatcher.swift in Helper Sources"))
     }
 

@@ -251,6 +251,8 @@ final class MenuBarStore: ObservableObject {
                 return await Sub2APIReader.liveData(using: sub2APIConfiguration)
             }
         }.value
+        guard !Task.isCancelled,
+              requestID.map({ $0 == self.loadID }) ?? true else { return false }
         if provider != .default {
             account = liveData?.account
         }
@@ -317,7 +319,7 @@ final class MenuBarStore: ObservableObject {
         let cliProxyAPIConfiguration = provider == .cliProxyAPI
             ? DashboardPreferences.cliProxyAPIConfiguration(defaults: defaults) : nil
         popoverTask = Task { [weak self] in
-            guard let self else { return }
+            guard let self, !Task.isCancelled, self.menuBarDataIsResident else { return }
             self.isLoading = true
             defer {
                 if self.menuBarDataIsResident { self.isLoading = false }
@@ -351,20 +353,24 @@ final class MenuBarStore: ObservableObject {
     /// Loads local popup data after the fixed-size panel is already visible.
     /// Remote reset-credit data runs independently in `bankedResetTask`.
     func preparePopover() async {
+        guard !Task.isCancelled else { return }
         menuBarDataIsResident = true
         await reloadCompactSnapshot(includeSessionCount: false)
         guard !Task.isCancelled, menuBarDataIsResident else { return }
         let codexHome = codexHome
         if subscriptionProvider == .default {
-            account = await Task.detached(priority: .utility) {
+            let snapshot = await Task.detached(priority: .utility) {
                 CodexAccountReader.read(from: codexHome)
             }.value
+            guard !Task.isCancelled, menuBarDataIsResident else { return }
+            account = snapshot
         }
     }
 
     func releasePopover() {
         CodexMemoryTrace.mark("host.popover.release.begin", details: "days=\(menuBarDaily.count)")
         menuBarDataIsResident = false
+        isLoading = false
         popoverTask?.cancel()
         popoverTask = nil
         bankedResetTask?.cancel()
@@ -725,7 +731,7 @@ final class MenuBarStore: ObservableObject {
 
     private func persistSourceBatch(_ sessions: [SessionMetric], pricing: PricingHistory) async throws {
         _ = try await historicalStore.record(sessions, pricing: pricing)
-        _ = try await historicalStore.updateMetricsIndex(
+        try await historicalStore.updateStoredMetricsIndex(
             for: sessions,
             pricing: pricing,
             calendar: analyticsCalendar

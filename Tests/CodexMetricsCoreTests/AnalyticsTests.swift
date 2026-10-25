@@ -1452,6 +1452,74 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(updated.aggregate().usage, firstUsage + secondUsage)
     }
 
+    func testStoredIndexUpdatesStayNonresidentAndSkipUnchangedWrites() async throws {
+        let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: userHome) }
+        let date = Date(timeIntervalSince1970: 1_788_739_200)
+        func session(_ id: String, tokens: Int64) -> SessionMetric {
+            let usage = TokenUsage(input: tokens, output: 10)
+            return SessionMetric(
+                id: id, rolloutPath: "/tmp/\(id).jsonl", projectPath: "/tmp/project",
+                title: id, source: "app", provider: "openai", createdAt: date,
+                updatedAt: date.addingTimeInterval(Double(tokens)), model: "gpt-5.6-luna",
+                reasoningEffort: nil, gitBranch: nil, cliVersion: nil, archived: false,
+                usage: usage, usageEvents: [UsageEvent(date: date, usage: usage, model: "gpt-5.6-luna")],
+                enrichmentAvailable: true
+            )
+        }
+        let store = HistoricalStore(userHome: userHome)
+        _ = try await store.record([session("unrelated", tokens: 50), session("active", tokens: 100)])
+        let initiallyResident = await store.hasResidentMetricsIndex
+        XCTAssertFalse(initiallyResident)
+        for tokens in 101...120 {
+            try await store.updateStoredMetricsIndex(for: [session("active", tokens: Int64(tokens))])
+            let resident = await store.hasResidentMetricsIndex
+            XCTAssertFalse(resident, "Background refresh must not retain the full index")
+        }
+        let reader = HistoricalStore(userHome: userHome)
+        let index = try await reader.metricsIndex()
+        XCTAssertEqual(index.sessions.count, 2)
+        XCTAssertEqual(index.aggregate().usage, TokenUsage(input: 170, output: 20))
+
+        let databaseURL = userHome.appendingPathComponent("Library/Application Support/CodexDashboard/metrics-v1.sqlite")
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        defer { if let database { sqlite3_close(database) } }
+        XCTAssertEqual(sqlite3_exec(database, """
+            CREATE TRIGGER reject_index_rewrite BEFORE UPDATE ON metric_session_index
+            BEGIN SELECT RAISE(FAIL, 'unchanged index rewritten'); END;
+            CREATE TRIGGER reject_context_rewrite BEFORE UPDATE ON metadata
+            WHEN OLD.key = 'metric_index_context'
+            BEGIN SELECT RAISE(FAIL, 'unchanged context rewritten'); END;
+            """, nil, nil, nil), SQLITE_OK)
+        try await store.updateStoredMetricsIndex(for: [session("active", tokens: 120)])
+    }
+
+    func testStoredIndexContextChangeRebuildsOtherSessionsAndReleasesCache() async throws {
+        let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: userHome) }
+        let date = Date(timeIntervalSince1970: 1_788_739_200)
+        let sessions = ["first", "second"].map { id in
+            SessionMetric(
+                id: id, rolloutPath: "/tmp/\(id).jsonl", projectPath: "/tmp/project",
+                title: id, source: "app", provider: "openai", createdAt: date, updatedAt: date,
+                model: "gpt-5.6-luna", reasoningEffort: nil, gitBranch: nil, cliVersion: nil,
+                archived: false, usage: TokenUsage(input: 100, output: 10),
+                enrichmentAvailable: true
+            )
+        }
+        let store = HistoricalStore(userHome: userHome)
+        _ = try await store.record(sessions)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 12 * 3600)!
+        try await store.updateStoredMetricsIndex(for: [sessions[0]], calendar: calendar)
+        let resident = await store.hasResidentMetricsIndex
+        XCTAssertFalse(resident)
+        let persisted = try await HistoricalStore(userHome: userHome).metricsIndex(calendar: calendar)
+        XCTAssertEqual(Set(persisted.sessions.map(\.sessionID)), Set(["first", "second"]))
+        XCTAssertTrue(persisted.days.allSatisfy { $0.day == calendar.startOfDay(for: date) })
+    }
+
     func testRecordingNewSessionInvalidatesCachedMetricIndex() async throws {
         let userHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: userHome) }
