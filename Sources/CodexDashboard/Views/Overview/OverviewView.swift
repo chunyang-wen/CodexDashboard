@@ -65,7 +65,7 @@ struct OverviewView: View {
         .navigationTitle("Overview")
         .onAppear { selectCurrentPeriod() }
         .onChange(of: store.range) { _, _ in selectCurrentPeriod() }
-        .task(id: "\(store.range.rawValue)-\(effectivePeriodStart.timeIntervalSinceReferenceDate)") {
+        .task(id: "\(store.range.rawValue)-\(effectivePeriodStart.timeIntervalSinceReferenceDate)-\(store.analyticsRevision)") {
             periodDetails = .empty
             let details = await store.periodAggregate(in: periodInterval(containing: effectivePeriodStart))
             guard !Task.isCancelled else { return }

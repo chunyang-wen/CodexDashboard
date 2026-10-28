@@ -27,6 +27,7 @@ final class DashboardStore: ObservableObject {
     @Published private(set) var sessions: [SessionSummary] = []
     @Published private(set) var isLoading = false
     @Published private(set) var hasLoadedAnalytics = false
+    @Published private(set) var analyticsRevision = UUID()
     @Published private(set) var isLoadingSessionHierarchy = false
     @Published private(set) var isLoadingProjectSessionGraph = false
     @Published private(set) var projectSessionGraph: SessionGraph?
@@ -987,6 +988,7 @@ final class DashboardStore: ObservableObject {
                     modelPageCount = max(1, Int(ceil(Double(modelCountResult) / Double(self.modelPageSize))))
                 }
                 hasLoadedAnalytics = true
+                analyticsRevision = UUID()
                 CodexMemoryTrace.mark(
                     "helper.analytics.published",
                     details: "page=\(page) models=\(models.count) modelTrend=\(modelRows.count) sessions=\(sessions.count)"

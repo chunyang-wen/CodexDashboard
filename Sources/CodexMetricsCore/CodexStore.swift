@@ -91,7 +91,7 @@ public final class CodexStore: @unchecked Sendable {
     /// Commits a page's source mirror and checkpoint after its enrichment has
     /// been durably written. Replaying a page after interruption is safe.
     public func commitIndexedSessionBatch(_ batch: IndexedSessionBatch) throws {
-        guard let cache = try? MetricsDatabase(userHome: userHome) else { return }
+        let cache = try MetricsDatabase(userHome: userHome)
         let sourceKey = codexHome.standardizedFileURL.path
         let sourceSessions = batch.sessions.map {
             (metric: $0, sourceUpdatedAt: Int64($0.updatedAt.timeIntervalSince1970))
@@ -125,12 +125,14 @@ public final class CodexStore: @unchecked Sendable {
     }
 
     /// Loads only source-index rows discovered after the durable checkpoint.
-    /// The caller owns the already loaded snapshot and can patch these rows in place.
+    /// Reading does not acknowledge changes; use the batch API to commit them
+    /// after their enriched metrics have been persisted.
     public func loadIndexedSessionChanges() throws -> [SessionMetric] {
-        if let cache = try? MetricsDatabase(userHome: userHome) {
-            return try loadIndexedSessionChanges(using: cache)
-        }
-        return try loadIndexedSessionsWithoutCache()
+        try loadIndexedSessionChangeBatch().sessions
+    }
+
+    public func loadIndexedSessionChangeBatch() throws -> IndexedSessionBatch {
+        try loadIndexedSessionChanges(using: MetricsDatabase(userHome: userHome))
     }
 
     /// Loads compact index rows for the supplied rollout files without scanning
@@ -259,7 +261,7 @@ public final class CodexStore: @unchecked Sendable {
         throw lastFailure?.publicError ?? CodexStoreError.openFailed("Unknown error")
     }
 
-    private func loadIndexedSessionChanges(using cache: MetricsDatabase) throws -> [SessionMetric] {
+    private func loadIndexedSessionChanges(using cache: MetricsDatabase) throws -> IndexedSessionBatch {
         let sourceKey = codexHome.standardizedFileURL.path
         let checkpoint = try cache.sourceIndexCheckpoint(for: sourceKey)
         let databaseURLs = try locateDatabases()
@@ -269,20 +271,17 @@ public final class CodexStore: @unchecked Sendable {
             for attempt in 0..<attemptCount {
                 do {
                     let delta = try readIndexedSessions(from: databaseURL, after: checkpoint)
-                    let nextCheckpoint = MetricsDatabase.SourceIndexCheckpoint(
-                        maxRowID: max(checkpoint?.maxRowID ?? 0, delta.maxRowID),
-                        maxUpdatedAt: max(checkpoint?.maxUpdatedAt ?? 0, delta.maxUpdatedAt)
-                    )
                     let changed = try cache.changedSourceSessions(
                         sourceKey: sourceKey,
                         sessions: delta.sessions
                     )
-                    try cache.updateSourceIndex(
-                        sourceKey: sourceKey,
-                        sessions: delta.sessions,
-                        checkpoint: nextCheckpoint
+                    return IndexedSessionBatch(
+                        sessions: changed.map(\.metric).sorted { $0.updatedAt > $1.updatedAt },
+                        nextRowID: nil,
+                        sourceRowCount: delta.sessions.count,
+                        maxRowID: delta.maxRowID,
+                        maxUpdatedAt: delta.maxUpdatedAt
                     )
-                    return changed.map(\.metric).sorted { $0.updatedAt > $1.updatedAt }
                 } catch let failure as DatabaseReadFailure {
                     lastFailure = failure
                     guard failure.isTransient, attempt < attemptCount - 1 else { break }

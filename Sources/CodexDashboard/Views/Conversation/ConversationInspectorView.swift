@@ -128,16 +128,16 @@ struct ConversationInspectorView: View {
                         .buttonStyle(.borderedProminent)
                 }
                 .frame(maxWidth: .infinity, minHeight: 190)
-            } else if filteredItems.isEmpty {
-                ContentUnavailableView(
-                    "No matching events",
-                    systemImage: "line.3.horizontal.decrease.circle",
-                    description: Text("Try another direction filter, or this rollout may not contain conversation payloads.")
-                )
-                .frame(maxWidth: .infinity, minHeight: 180)
             } else {
                 controls
-                if mode == .timeline { timeline } else { rawEvents }
+                if filteredItems.isEmpty {
+                    ContentUnavailableView(
+                        "No matching events",
+                        systemImage: "line.3.horizontal.decrease.circle",
+                        description: Text("Try another direction filter, or this rollout may not contain conversation payloads.")
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 180)
+                } else if mode == .timeline { timeline } else { rawEvents }
                 footer
             }
         }
@@ -148,7 +148,7 @@ struct ConversationInspectorView: View {
         .task {
             if loadsAutomatically, transcript == nil, !isLoading { load() }
         }
-        .onDisappear { loadTask?.cancel() }
+        .onDisappear { reset() }
         .confirmationDialog(
             "Copy without redaction?",
             isPresented: Binding(
@@ -239,6 +239,13 @@ struct ConversationInspectorView: View {
     }
 
     @ViewBuilder private var footer: some View {
+        if transcript?.isTruncated == true {
+            Label(
+                "Large conversation: showing only the beginning (up to 10,000 events or 32 MiB of text) to limit memory use.",
+                systemImage: "exclamationmark.triangle.fill"
+            )
+            .font(.caption).foregroundStyle(.orange)
+        }
         if let transcript, transcript.omittedOversizedRecords > 0 {
             Label(
                 "\(transcript.omittedOversizedRecords) record\(transcript.omittedOversizedRecords == 1 ? " was" : "s were") omitted because each exceeded 2 MB.",
@@ -267,9 +274,7 @@ struct ConversationInspectorView: View {
         let path = rolloutPath
         loadTask = Task {
             do {
-                let loaded = try await Task.detached(priority: .userInitiated) {
-                    try ConversationParser.load(path: path) { Task.isCancelled }
-                }.value
+                let loaded = try await ConversationParser.loadAsync(path: path)
                 guard !Task.isCancelled else { return }
                 transcript = loaded
                 expandedTimeline = Set(loaded.items.filter {
@@ -277,8 +282,10 @@ struct ConversationInspectorView: View {
                 }.prefix(12).map(\.id))
                 isLoading = false
             } catch is CancellationError {
+                guard !Task.isCancelled else { return }
                 isLoading = false
             } catch {
+                guard !Task.isCancelled else { return }
                 errorMessage = error.localizedDescription
                 isLoading = false
             }
@@ -287,7 +294,9 @@ struct ConversationInspectorView: View {
 
     private func reset() {
         loadTask?.cancel()
+        loadTask = nil
         transcript = nil
+        unredactedCopyItem = nil
         errorMessage = nil
         isLoading = false
         expandedTimeline.removeAll()

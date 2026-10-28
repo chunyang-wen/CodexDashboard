@@ -413,6 +413,95 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(transcript.items[5].rawJSON, lines[6])
     }
 
+    func testCancellingConversationLoadCancelsDetachedReader() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let line = #"{"type":"event_msg","payload":{"type":"user_message","message":"Cancellation fixture"}}"# + "\n"
+        try Data(String(repeating: line, count: 10_000).utf8).write(to: file)
+
+        let load = Task { try await ConversationParser.loadAsync(path: file.path) }
+        load.cancel()
+        do {
+            _ = try await load.value
+            XCTFail("The detached parser must observe its caller's cancellation")
+        } catch is CancellationError {
+            // The parser stopped instead of returning a completed transcript.
+        }
+    }
+
+    func testConversationParserChecksCancellationWithinAReadChunk() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let line = #"{"type":"event_msg","payload":{"type":"user_message","message":"Small record"}}"# + "\n"
+        try Data(String(repeating: line, count: 100).utf8).write(to: file)
+        var checks = 0
+        XCTAssertThrowsError(try ConversationParser.load(path: file.path) {
+            checks += 1
+            return checks == 10
+        }) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(checks, 10)
+    }
+
+    func testConversationLoadStopsAtRecordLimitAndReportsTruncation() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let line = #"{"type":"event_msg","payload":{"type":"user_message","message":"Repeated fallback"}}"# + "\n"
+        try Data(String(repeating: line, count: ConversationParser.maximumRecords).utf8).write(to: file)
+        let exact = try await ConversationParser.loadAsync(path: file.path)
+        XCTAssertEqual(exact.items.count, ConversationParser.maximumRecords)
+        XCTAssertFalse(exact.isTruncated)
+
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(line.utf8))
+        try handle.close()
+        let limited = try ConversationParser.load(path: file.path)
+        XCTAssertEqual(limited.items.count, ConversationParser.maximumRecords)
+        XCTAssertTrue(limited.isTruncated)
+        XCTAssertEqual(limited.items.last?.id, ConversationParser.maximumRecords - 1)
+    }
+
+    func testConversationLoadBoundsRetainedTextBytes() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let body = String(repeating: "x", count: 1_000_000)
+        let line = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"\(body)\"}}"
+        FileManager.default.createFile(atPath: file.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: file)
+        let record = Data((line + "\n").utf8)
+        for _ in 0..<20 { try handle.write(contentsOf: record) }
+        try handle.close()
+
+        let transcript = try ConversationParser.load(path: file.path)
+        let retained = transcript.items.reduce(0) { $0 + $1.rawJSON.utf8.count + $1.body.utf8.count }
+        XCTAssertTrue(transcript.isTruncated)
+        XCTAssertFalse(transcript.items.isEmpty)
+        XCTAssertLessThanOrEqual(retained, ConversationParser.maximumRetainedBytes)
+        XCTAssertGreaterThan(retained + line.utf8.count + body.utf8.count, ConversationParser.maximumRetainedBytes)
+    }
+
+    func testConversationDedupPreservesRoleAndStrictTimeBoundary() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let lines = [
+            #"{"timestamp":"2026-08-01T10:00:00.999Z","type":"event_msg","payload":{"type":"user_message","message":"Same"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"Same"}}"#,
+            #"{"type":"event_msg","payload":{"type":"user_message","message":"Same"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":"Same"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:01Z","type":"response_item","payload":{"type":"message","role":"assistant","content":"Same"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:10Z","type":"event_msg","payload":{"type":"user_message","message":"Undated canonical"}}"#,
+            #"{"type":"response_item","payload":{"type":"message","role":"user","content":"Undated canonical"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:20Z","type":"response_item","payload":{"type":"message","role":"user","content":"Same"}}"#,
+            #"{"timestamp":"2026-08-01T10:00:19.500Z","type":"event_msg","payload":{"type":"user_message","message":"Same"}}"#
+        ]
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: file)
+        let transcript = try ConversationParser.load(path: file.path)
+        XCTAssertEqual(transcript.items.map(\.rawJSON), [lines[1], lines[3], lines[4], lines[6], lines[7]])
+        XCTAssertFalse(transcript.isTruncated)
+    }
+
     func testConversationTimelineUsesPlaintextReasoningWithoutChangingRawEvent() throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: file) }
@@ -2454,6 +2543,43 @@ final class AnalyticsTests: XCTestCase {
         let titles = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.title) })
         XCTAssertEqual(titles["named"], "Fix project overview visibility")
         XCTAssertEqual(titles["legacy"], "Legacy title")
+    }
+
+    func testIndexedChangesRemainPendingUntilMetricsArePersisted() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexHome = home.appendingPathComponent(".codex", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        var source: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(codexHome.appendingPathComponent("state_5.sqlite").path, &source), SQLITE_OK)
+        defer { if let source { sqlite3_close(source) } }
+        XCTAssertEqual(sqlite3_exec(source, """
+            CREATE TABLE threads (id TEXT PRIMARY KEY, updated_at INTEGER);
+            INSERT INTO threads VALUES ('pending', 100);
+            """, nil, nil, nil), SQLITE_OK)
+
+        let first = try CodexStore(codexHome: codexHome, userHome: home).loadIndexedSessionChanges()
+        XCTAssertEqual(first.map(\.id), ["pending"])
+        // Simulate failure/exit before persisting metrics, then reopen the store.
+        let retry = try CodexStore(codexHome: codexHome, userHome: home).loadIndexedSessionChanges()
+        XCTAssertEqual(retry.map(\.id), ["pending"])
+
+        let store = CodexStore(codexHome: codexHome, userHome: home)
+        let batch = try store.loadIndexedSessionChangeBatch()
+        let cache = try MetricsDatabase(userHome: home)
+        XCTAssertNil(try cache.sourceIndexCheckpoint(for: codexHome.standardizedFileURL.path))
+        let history = HistoricalStore(userHome: home)
+        _ = try await history.record(batch.sessions)
+        try await history.updateStoredMetricsIndex(for: batch.sessions, pricing: .bundled, calendar: .current)
+        try store.commitIndexedSessionBatch(batch)
+        XCTAssertTrue(try store.loadIndexedSessionChanges().isEmpty)
+
+        // New rows at the committed timestamp and later updates must still appear.
+        XCTAssertEqual(sqlite3_exec(source, """
+            INSERT INTO threads VALUES ('same-timestamp', 100);
+            UPDATE threads SET updated_at = 200 WHERE id = 'pending';
+            """, nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(Set(try store.loadIndexedSessionChanges().map(\.id)), ["pending", "same-timestamp"])
     }
 
     func testCodexStoreIncrementallyMirrorsNewAndUpdatedThreadRows() throws {

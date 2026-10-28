@@ -62,10 +62,12 @@ public struct ConversationItem: Identifiable, Codable, Hashable, Sendable {
 public struct ConversationTranscript: Sendable {
     public let items: [ConversationItem]
     public let omittedOversizedRecords: Int
+    public let isTruncated: Bool
 
-    public init(items: [ConversationItem], omittedOversizedRecords: Int = 0) {
+    public init(items: [ConversationItem], omittedOversizedRecords: Int = 0, isTruncated: Bool = false) {
         self.items = items
         self.omittedOversizedRecords = omittedOversizedRecords
+        self.isTruncated = isTruncated
     }
 }
 
@@ -85,6 +87,21 @@ public enum ConversationParserError: LocalizedError {
 /// written to the metrics cache or historical database.
 public enum ConversationParser {
     private static let maximumRecordBytes = 2_000_000
+    static let maximumRetainedBytes = 32 * 1_024 * 1_024
+    static let maximumRecords = 10_000
+
+    /// Keep file parsing off the caller's actor, but tie its lifetime to the
+    /// task awaiting it (including cancellation before the handler is installed).
+    public static func loadAsync(path: String) async throws -> ConversationTranscript {
+        let reader = Task.detached(priority: .userInitiated) {
+            try load(path: path) { Task.isCancelled }
+        }
+        return try await withTaskCancellationHandler {
+            try await reader.value
+        } onCancel: {
+            reader.cancel()
+        }
+    }
 
     public static func load(path: String, shouldCancel: () -> Bool = { false }) throws -> ConversationTranscript {
         guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else {
@@ -99,12 +116,14 @@ public enum ConversationParser {
         var carry = Data()
         var omitted = 0
         var sequence = 0
+        var retainedBytes = 0
+        var isTruncated = false
         var discardingOversizedRecord = false
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let whole = ISO8601DateFormatter()
 
-        while !shouldCancel() {
+        reading: while !shouldCancel() {
             guard let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty else { break }
             var incoming = chunk
             if discardingOversizedRecord {
@@ -114,6 +133,7 @@ public enum ConversationParser {
             }
             carry.append(incoming)
             while let newline = carry.firstIndex(of: 0x0A) {
+                if shouldCancel() { throw CancellationError() }
                 let line = Data(carry[..<newline])
                 carry.removeSubrange(...newline)
                 defer { sequence += 1 }
@@ -122,7 +142,14 @@ public enum ConversationParser {
                     continue
                 }
                 if let candidate = parse(line, sequence: sequence, fractional: fractional, whole: whole) {
+                    let bytes = candidate.rawJSON.utf8.count + candidate.body.utf8.count
+                    guard candidates.count < maximumRecords,
+                          retainedBytes + bytes <= maximumRetainedBytes else {
+                        isTruncated = true
+                        break reading
+                    }
                     candidates.append(candidate)
+                    retainedBytes += bytes
                 }
             }
             // Do not retain an unbounded unterminated or malformed record.
@@ -135,22 +162,43 @@ public enum ConversationParser {
 
         if shouldCancel() { throw CancellationError() }
 
-        let filtered = candidates.filter { candidate in
-            guard candidate.isFallback, let role = candidate.messageRole else { return true }
-            return !candidates.contains { canonical in
-                guard !canonical.isFallback,
-                      canonical.messageRole == role,
-                      canonical.body == candidate.body else { return false }
-                switch (canonical.date, candidate.date) {
-                case (.some(let left), .some(let right)):
-                    return abs(left.timeIntervalSince(right)) < 1
-                default:
-                    return true
-                }
+        // Index canonical messages by role/text, then binary-search their times.
+        // Repeated messages must still retain the original one-second dedup rule.
+        var canonicalDates: [MessageKey: [Date]] = [:]
+        var undatedCanonical = Set<MessageKey>()
+        for candidate in candidates where !candidate.isFallback {
+            if shouldCancel() { throw CancellationError() }
+            guard let role = candidate.messageRole else { continue }
+            let key = MessageKey(role: role, body: candidate.body)
+            if let date = candidate.date {
+                canonicalDates[key, default: []].append(date)
+            } else {
+                undatedCanonical.insert(key)
             }
         }
-        let items = filtered.enumerated().map { index, candidate in
-            ConversationItem(
+        canonicalDates = canonicalDates.mapValues { $0.sorted() }
+        let filtered = try candidates.filter { candidate in
+            if shouldCancel() { throw CancellationError() }
+            guard candidate.isFallback, let role = candidate.messageRole else { return true }
+            let key = MessageKey(role: role, body: candidate.body)
+            if undatedCanonical.contains(key) { return false }
+            guard let dates = canonicalDates[key] else { return true }
+            guard let date = candidate.date else { return false }
+            var lower = 0
+            var upper = dates.count
+            while lower < upper {
+                let middle = (lower + upper) / 2
+                if dates[middle] <= date.addingTimeInterval(-1) {
+                    lower = middle + 1
+                } else {
+                    upper = middle
+                }
+            }
+            return lower == dates.count || dates[lower].timeIntervalSince(date) >= 1
+        }
+        let items = try filtered.enumerated().map { index, candidate in
+            if shouldCancel() { throw CancellationError() }
+            return ConversationItem(
                 id: index,
                 date: candidate.date,
                 direction: candidate.direction,
@@ -161,7 +209,12 @@ public enum ConversationParser {
                 rawJSON: candidate.rawJSON
             )
         }
-        return ConversationTranscript(items: items, omittedOversizedRecords: omitted)
+        return ConversationTranscript(items: items, omittedOversizedRecords: omitted, isTruncated: isTruncated)
+    }
+
+    private struct MessageKey: Hashable {
+        let role: String
+        let body: String
     }
 
     private struct Candidate {

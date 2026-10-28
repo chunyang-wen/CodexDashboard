@@ -1,8 +1,36 @@
 @testable import CodexDashboard
+import CoreServices
 import Foundation
 import XCTest
 
 final class SourceWatcherTests: XCTestCase {
+    func testDirectoryRecoveryEventsSurvivePathFiltering() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let watcher = try CodexSourceWatcher(codexHome: home, sinceEventID: nil, latency: 60)
+        defer { watcher.stop() }
+        let recoveryFlags = [
+            kFSEventStreamEventFlagMustScanSubDirs,
+            kFSEventStreamEventFlagUserDropped,
+            kFSEventStreamEventFlagKernelDropped,
+            kFSEventStreamEventFlagEventIdsWrapped,
+            kFSEventStreamEventFlagRootChanged
+        ]
+        for path in [home.path, home.appendingPathComponent("sessions").path] {
+            for flag in recoveryFlags {
+                watcher.receive(paths: [path], flags: [FSEventStreamEventFlags(flag)], eventIDs: [123])
+                let batch = try XCTUnwrap(watcher.takePendingBatch())
+                XCTAssertTrue(batch.requiresReconciliation)
+                XCTAssertTrue(batch.hasSessionActivity)
+                XCTAssertEqual(batch.latestEventID, 123)
+                XCTAssertTrue(batch.rolloutPaths.isEmpty)
+            }
+            watcher.receive(paths: [path], flags: [0], eventIDs: [124])
+            XCTAssertNil(watcher.takePendingBatch(), "Ordinary directory events should remain ignored")
+        }
+    }
+
     func testIndexOnlyBatchDoesNotCountAsSessionActivity() {
         let batch = CodexSourceChangeBatch(
             rolloutPaths: [],

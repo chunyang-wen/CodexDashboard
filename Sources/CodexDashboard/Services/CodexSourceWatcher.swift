@@ -125,7 +125,7 @@ final class CodexSourceWatcher: @unchecked Sendable {
         }
     }
 
-    private func receive(
+    func receive(
         paths: [String],
         flags: UnsafePointer<FSEventStreamEventFlags>,
         eventIDs: UnsafePointer<FSEventStreamEventId>
@@ -145,12 +145,15 @@ final class CodexSourceWatcher: @unchecked Sendable {
         )
 
         for index in paths.indices {
-            let classification = classifier.classify(paths[index])
-            guard classification != .irrelevant else { continue }
-            batch.latestEventID = max(batch.latestEventID, UInt64(eventIDs[index]))
-            if flags[index] & recoveryFlags != 0 {
+            // Recovery events can name the watched root or a directory rather
+            // than a rollout. They must survive ordinary path filtering.
+            let requiresRecovery = flags[index] & recoveryFlags != 0
+            if requiresRecovery {
                 batch.requiresReconciliation = true
             }
+            let classification = classifier.classify(paths[index])
+            guard requiresRecovery || classification != .irrelevant else { continue }
+            batch.latestEventID = max(batch.latestEventID, UInt64(eventIDs[index]))
             switch classification {
             case .rollout(let path): batch.rolloutPaths.insert(path)
             case .index: batch.indexChanged = true

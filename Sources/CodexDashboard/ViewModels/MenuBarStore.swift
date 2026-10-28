@@ -619,7 +619,7 @@ final class MenuBarStore: ObservableObject {
         indexChanged: Bool,
         requiresReconciliation: Bool
     ) async -> Bool {
-        guard !sourceRefreshInFlight else { return true }
+        guard !sourceRefreshInFlight else { return false }
         sourceRefreshInFlight = true
         defer { sourceRefreshInFlight = false }
         do {
@@ -628,26 +628,26 @@ final class MenuBarStore: ObservableObject {
             if requiresReconciliation {
                 return await reconcileSourceInBatches(codexHome: codexHome, userHome: userHome)
             }
-            let indexed: [SessionMetric] = try await Task.detached(priority: .background) {
-                let store = CodexStore(codexHome: codexHome, userHome: userHome)
-                if indexChanged {
-                    let changed = try store.loadIndexedSessionChanges()
-                    if !changed.isEmpty || changedPaths.isEmpty {
-                        return changed
-                    }
-                }
-                return try store.loadIndexedSessions(forRolloutPaths: changedPaths)
+            let store = CodexStore(codexHome: codexHome, userHome: userHome)
+            let (indexed, changes) = try await Task.detached(priority: .background) {
+                let changes = indexChanged ? try store.loadIndexedSessionChangeBatch() : nil
+                let changed = changes?.sessions ?? []
+                let remainingPaths = changedPaths.subtracting(changed.map(\.rolloutPath))
+                let fromPaths = try store.loadIndexedSessions(forRolloutPaths: remainingPaths)
+                return (changed + fromPaths, changes)
             }.value
+            try Task.checkCancellation()
             guard !indexed.isEmpty else { return true }
 
             let pricing = try await historicalStore.storedPricingHistory()
-            let store = CodexStore(codexHome: codexHome, userHome: userHome)
             var batch: [SessionMetric] = []
             batch.reserveCapacity(10)
             for chunkStart in stride(from: 0, to: indexed.count, by: 25) {
                 let chunkEnd = min(chunkStart + 25, indexed.count)
+                var completed = 0
                 for await progress in store.enrichmentStream(Array(indexed[chunkStart..<chunkEnd])) {
-                    guard !Task.isCancelled else { return true }
+                    try Task.checkCancellation()
+                    completed += 1
                     batch.append(progress.session)
                     if batch.count >= 10 {
                         try await persistSourceBatch(batch, pricing: pricing)
@@ -658,6 +658,13 @@ final class MenuBarStore: ObservableObject {
                     try await persistSourceBatch(batch, pricing: pricing)
                     batch.removeAll(keepingCapacity: true)
                 }
+                guard completed == chunkEnd - chunkStart else { return false }
+            }
+            try Task.checkCancellation()
+            if let changes {
+                try await Task.detached(priority: .background) {
+                    try store.commitIndexedSessionBatch(changes)
+                }.value
             }
 
             await reloadCompactSnapshot(includeSessionCount: false)
@@ -689,8 +696,10 @@ final class MenuBarStore: ObservableObject {
                 if !page.sessions.isEmpty {
                     var batch: [SessionMetric] = []
                     batch.reserveCapacity(batchSize)
+                    var completed = 0
                     for await progress in store.enrichmentStream(page.sessions) {
-                        guard !Task.isCancelled else { return true }
+                        try Task.checkCancellation()
+                        completed += 1
                         batch.append(progress.session)
                         if batch.count >= batchSize {
                             try await persistSourceBatch(batch, pricing: pricing)
@@ -700,9 +709,11 @@ final class MenuBarStore: ObservableObject {
                     if !batch.isEmpty {
                         try await persistSourceBatch(batch, pricing: pricing)
                     }
+                    guard completed == page.sessions.count else { return false }
                 }
 
                 // Advance the checkpoint only after this page's metrics are safe.
+                try Task.checkCancellation()
                 try await Task.detached(priority: .background) {
                     try store.commitIndexedSessionBatch(page)
                 }.value

@@ -394,11 +394,12 @@ final class DashboardStoreLifecycleTests: XCTestCase {
         store.activateDashboard()
         try await waitUntil { !store.isLoading && !store.isUpdatingAnalytics && store.usage.total > 0 }
 
+        let revision = store.analyticsRevision
         store.refreshPersistedMetrics()
 
         XCTAssertFalse(store.isLoading)
         XCTAssertFalse(store.isEnriching)
-        try await waitUntil { !store.isUpdatingAnalytics }
+        try await waitUntil { store.analyticsRevision != revision && !store.isUpdatingAnalytics }
     }
 
     func testMenuBarPathChangeClearsCompactStateAndSynchronizesSubscription() async throws {
